@@ -1,4 +1,4 @@
-//! Huber M-estimators: least squares that down-weights outlying points.
+//! Huber M-estimation: least squares that down-weights outlying points.
 
 use crate::stats::median;
 
@@ -6,93 +6,109 @@ use crate::stats::median;
 const HUBER_K: f64 = 1.345;
 const ITERATIONS: usize = 30;
 
-/// `y ≈ gain · x + offset`.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Line {
-    pub gain: f64,
-    pub offset: f64,
-    pub gain_stderr: f64,
+/// Coefficients of `y ≈ Σ coef[j] · row[j]` with their standard errors.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Model {
+    pub coef: Vec<f64>,
+    pub stderr: Vec<f64>,
 }
 
-/// Robust estimate of `b` in `y ≈ x + b`.
-pub fn fit_offset(xs: &[f64], ys: &[f64]) -> f64 {
-    let diffs: Vec<f64> = ys.iter().zip(xs).map(|(y, x)| y - x).collect();
-    let mut b = median(&diffs);
-    for _ in 0..ITERATIONS {
-        let residuals: Vec<f64> = diffs.iter().map(|d| d - b).collect();
-        let weights = huber_weights(&residuals);
-        let total: f64 = weights.iter().sum();
-        if total == 0.0 {
-            break;
-        }
-        let next = diffs.iter().zip(&weights).map(|(d, w)| d * w).sum::<f64>() / total;
-        if (next - b).abs() < 1e-9 {
-            b = next;
-            break;
-        }
-        b = next;
+/// Robust linear regression by iteratively reweighted least squares.
+///
+/// `rows[i]` are the regressors of observation `i` (include a constant 1 for an
+/// intercept). Returns `None` if the regressors are collinear or there are fewer
+/// observations than coefficients.
+pub fn fit(rows: &[Vec<f64>], ys: &[f64]) -> Option<Model> {
+    let k = rows.first()?.len();
+    if rows.len() <= k {
+        return None;
     }
-    b
-}
-
-/// Robust linear fit with iteratively reweighted least squares.
-pub fn fit_line(xs: &[f64], ys: &[f64]) -> Line {
-    let mut weights = vec![1.0; xs.len()];
-    let mut line = weighted_least_squares(xs, ys, &weights);
+    let mut weights = vec![1.0; rows.len()];
+    let (mut coef, _) = weighted_least_squares(rows, ys, &weights)?;
     for _ in 0..ITERATIONS {
-        let residuals: Vec<f64> = xs
-            .iter()
-            .zip(ys)
-            .map(|(x, y)| y - (line.gain * x + line.offset))
-            .collect();
-        weights = huber_weights(&residuals);
-        let next = weighted_least_squares(xs, ys, &weights);
-        let converged =
-            (next.gain - line.gain).abs() < 1e-9 && (next.offset - line.offset).abs() < 1e-9;
-        line = next;
+        weights = huber_weights(&residuals(rows, ys, &coef));
+        let (next, _) = weighted_least_squares(rows, ys, &weights)?;
+        let converged = next.iter().zip(&coef).all(|(a, b)| (a - b).abs() < 1e-10);
+        coef = next;
         if converged {
             break;
         }
     }
-    line
+    let (coef, inverse) = weighted_least_squares(rows, ys, &weights)?;
+    let r = residuals(rows, ys, &coef);
+    let total: f64 = weights.iter().sum();
+    let variance =
+        r.iter().zip(&weights).map(|(r, w)| w * r * r).sum::<f64>() / (total - k as f64).max(1.0);
+    let stderr = (0..k).map(|j| (variance * inverse[j][j]).sqrt()).collect();
+    Some(Model { coef, stderr })
 }
 
-fn weighted_least_squares(xs: &[f64], ys: &[f64], weights: &[f64]) -> Line {
-    let total: f64 = weights.iter().sum();
-    let mean_x = xs.iter().zip(weights).map(|(x, w)| x * w).sum::<f64>() / total;
-    let mean_y = ys.iter().zip(weights).map(|(y, w)| y * w).sum::<f64>() / total;
-    let sxx: f64 = xs
-        .iter()
-        .zip(weights)
-        .map(|(x, w)| w * (x - mean_x).powi(2))
-        .sum();
-    let sxy: f64 = xs
-        .iter()
+fn residuals(rows: &[Vec<f64>], ys: &[f64], coef: &[f64]) -> Vec<f64> {
+    rows.iter()
         .zip(ys)
-        .zip(weights)
-        .map(|((x, y), w)| w * (x - mean_x) * (y - mean_y))
-        .sum();
-    if sxx <= f64::EPSILON {
-        return Line {
-            gain: 1.0,
-            offset: mean_y - mean_x,
-            gain_stderr: f64::INFINITY,
-        };
+        .map(|(row, y)| y - row.iter().zip(coef).map(|(x, c)| x * c).sum::<f64>())
+        .collect()
+}
+
+/// Solves the weighted normal equations; returns the coefficients and `(XᵀWX)⁻¹`.
+fn weighted_least_squares(
+    rows: &[Vec<f64>],
+    ys: &[f64],
+    weights: &[f64],
+) -> Option<(Vec<f64>, Vec<Vec<f64>>)> {
+    let k = rows[0].len();
+    // Normal equations: (XᵀWX) coef = XᵀWy.
+    let mut normal = vec![vec![0.0; k]; k];
+    let mut rhs = vec![0.0; k];
+    for ((row, y), w) in rows.iter().zip(ys).zip(weights) {
+        for a in 0..k {
+            rhs[a] += w * row[a] * y;
+            for b in 0..k {
+                normal[a][b] += w * row[a] * row[b];
+            }
+        }
     }
-    let gain = sxy / sxx;
-    let offset = mean_y - gain * mean_x;
-    let residual_var = xs
+    let inverse = invert(normal)?;
+    let coef = (0..k)
+        .map(|a| (0..k).map(|b| inverse[a][b] * rhs[b]).sum())
+        .collect();
+    Some((coef, inverse))
+}
+
+/// Gauss–Jordan inversion with partial pivoting; `None` if (nearly) singular.
+fn invert(mut m: Vec<Vec<f64>>) -> Option<Vec<Vec<f64>>> {
+    let n = m.len();
+    let scale = m
         .iter()
-        .zip(ys)
-        .zip(weights)
-        .map(|((x, y), w)| w * (y - gain * x - offset).powi(2))
-        .sum::<f64>()
-        / (total - 2.0).max(1.0);
-    Line {
-        gain,
-        offset,
-        gain_stderr: (residual_var / sxx).sqrt(),
+        .flatten()
+        .fold(0.0_f64, |acc, v| acc.max(v.abs()))
+        .max(f64::MIN_POSITIVE);
+    let mut inv: Vec<Vec<f64>> = (0..n)
+        .map(|i| (0..n).map(|j| if i == j { 1.0 } else { 0.0 }).collect())
+        .collect();
+    for col in 0..n {
+        let pivot = (col..n).max_by(|&a, &b| m[a][col].abs().total_cmp(&m[b][col].abs()))?;
+        if m[pivot][col].abs() <= scale * 1e-12 {
+            return None;
+        }
+        m.swap(col, pivot);
+        inv.swap(col, pivot);
+        let p = m[col][col];
+        for j in 0..n {
+            m[col][j] /= p;
+            inv[col][j] /= p;
+        }
+        for row in 0..n {
+            if row != col {
+                let factor = m[row][col];
+                for j in 0..n {
+                    m[row][j] -= factor * m[col][j];
+                    inv[row][j] -= factor * inv[col][j];
+                }
+            }
+        }
     }
+    Some(inv)
 }
 
 fn huber_weights(residuals: &[f64]) -> Vec<f64> {
@@ -120,19 +136,42 @@ mod tests {
 
     #[test]
     fn line_ignores_outliers() {
-        let xs: Vec<f64> = (0..50).map(f64::from).collect();
-        let mut ys: Vec<f64> = xs.iter().map(|x| 1.05 * x - 2.0).collect();
+        let rows: Vec<Vec<f64>> = (0..50).map(|x| vec![f64::from(x), 1.0]).collect();
+        let mut ys: Vec<f64> = rows.iter().map(|r| 1.05 * r[0] - 2.0).collect();
         ys[10] += 30.0;
         ys[40] -= 25.0;
-        let line = fit_line(&xs, &ys);
-        assert!((line.gain - 1.05).abs() < 1e-3, "{line:?}");
-        assert!((line.offset + 2.0).abs() < 0.05, "{line:?}");
+        let model = fit(&rows, &ys).expect("well posed");
+        assert!((model.coef[0] - 1.05).abs() < 1e-3, "{model:?}");
+        assert!((model.coef[1] + 2.0).abs() < 0.05, "{model:?}");
     }
 
     #[test]
-    fn offset_ignores_outliers() {
-        let xs = [20.0, 21.0, 22.0, 23.0, 24.0, 25.0];
-        let ys = [20.3, 21.3, 22.3, 33.0, 24.3, 25.3];
-        assert!((fit_offset(&xs, &ys) - 0.3).abs() < 0.01);
+    fn three_regressors() {
+        // y = 0.9 a + 3 + 0.5 b with a bit of deterministic noise.
+        let rows: Vec<Vec<f64>> = (0..40)
+            .map(|i| {
+                let i = f64::from(i);
+                vec![i, 1.0, (i * 0.7).sin()]
+            })
+            .collect();
+        let ys: Vec<f64> = rows
+            .iter()
+            .enumerate()
+            .map(|(i, r)| 0.9 * r[0] + 3.0 + 0.5 * r[2] + 0.001 * (i as f64).cos())
+            .collect();
+        let model = fit(&rows, &ys).expect("well posed");
+        for (got, want) in model.coef.iter().zip([0.9, 3.0, 0.5]) {
+            assert!((got - want).abs() < 0.01, "{model:?}");
+        }
+        assert!(model.stderr.iter().all(|s| *s < 0.01));
+    }
+
+    #[test]
+    fn collinear_is_rejected() {
+        let rows: Vec<Vec<f64>> = (0..10)
+            .map(|x| vec![f64::from(x), 2.0 * f64::from(x)])
+            .collect();
+        let ys = vec![1.0; 10];
+        assert_eq!(fit(&rows, &ys), None);
     }
 }

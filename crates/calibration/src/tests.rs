@@ -49,17 +49,26 @@ fn simulate(
     outside: Option<(f64, f64)>,
     seed: u64,
 ) -> Vec<Vec<Reading>> {
+    simulate_air(sensors, hours, |t| air(t, outside), seed)
+}
+
+fn simulate_air(
+    sensors: &[Sensor],
+    hours: f64,
+    air: impl Fn(f64) -> (f64, f64),
+    seed: u64,
+) -> Vec<Vec<Reading>> {
     const STEP: f64 = 10.0;
     let mut rng = Rng(seed);
     sensors
         .iter()
         .map(|s| {
             let start = rng.uniform() * STEP;
-            let (mut t_case, mut h_case) = air(0.0, outside);
+            let (mut t_case, mut h_case) = air(0.0);
             let mut readings = Vec::new();
             let mut t = start;
             while t < hours * HOUR {
-                let (ta, ha) = air(t, outside);
+                let (ta, ha) = air(t);
                 let k = STEP / s.lag;
                 t_case += (ta - t_case) * k;
                 h_case += (ha - h_case) * k;
@@ -239,6 +248,68 @@ fn copes_with_lossy_reception() {
     );
     let t = report.temperature.spread;
     assert!(t.after < 0.04, "temperature {t:?}");
+}
+
+#[test]
+fn slow_drift_counts_as_steady() {
+    // A room cooling by 1 °C per hour all evening.
+    let data = simulate_air(&sensors(), 5.0, |t| (22.0 - t / HOUR, 55.0 + t / HOUR), 21);
+    let report = run(&data).expect("drift is usable");
+    assert!(
+        report.temperature.steady >= Duration::from_secs(3 * 3600),
+        "{:?}",
+        report.temperature
+    );
+    let t = report.temperature.spread;
+    assert!(t.before > 0.1 && t.after < 0.04, "temperature {t:?}");
+}
+
+#[test]
+fn lag_during_drift_does_not_bias_offsets() {
+    // Cases responding 2 to 15 minutes late, in a room that cools at 1.2 °C/h for a
+    // while: without modelling lag, the slowest sensor would look ~0.2 °C warm then.
+    let offsets = [0.20, -0.25, 0.05, -0.10, 0.30];
+    let lags = [120.0, 300.0, 900.0, 480.0, 600.0];
+    let truth: Vec<Sensor> = offsets
+        .iter()
+        .zip(lags)
+        .map(|(&o, lag)| Sensor {
+            temperature: (1.0, o),
+            humidity: (1.0, 0.0),
+            lag,
+        })
+        .collect();
+    // Steady, then cooling, then steady again: lag is only distinguishable from an
+    // offset when the rate of change varies.
+    let room = |t: f64| {
+        let cooling = (t / HOUR - 2.0).clamp(0.0, 3.0);
+        (22.0 - 1.2 * cooling, 55.0)
+    };
+    let data = simulate_air(&truth, 8.0, room, 31);
+    let report = run(&data).expect("drift is usable");
+
+    let mean_offset = offsets.iter().sum::<f64>() / 5.0;
+    let mean_lag = lags.iter().sum::<f64>() / 5.0;
+    let fitted_lags: Vec<f64> = report
+        .sensors
+        .iter()
+        .map(|s| s.temperature.lag.expect("lag modelled"))
+        .collect();
+    let mean_fitted_lag = fitted_lags.iter().sum::<f64>() / 5.0;
+    for (i, sensor) in report.sensors.iter().enumerate() {
+        let fit = sensor.temperature;
+        let expected = -(offsets[i] - mean_offset);
+        assert!(
+            (fit.offset - expected).abs() < 0.03,
+            "sensor {i}: {fit:?}, want offset {expected}"
+        );
+        let relative_lag = fitted_lags[i] - mean_fitted_lag;
+        let true_relative = lags[i] - mean_lag;
+        assert!(
+            (relative_lag - true_relative).abs() < 90.0,
+            "sensor {i}: lag {relative_lag:.0} s vs {true_relative:.0} s"
+        );
+    }
 }
 
 #[test]

@@ -101,7 +101,7 @@ fn summary(run: &calibrate::Run) -> Vec<Line<'static>> {
 
 fn table(run: &calibrate::Run) -> Table<'static> {
     let header = Row::new([
-        "Device", "T offset", "T gain", "T rms", "H offset", "H gain", "H rms", "Applies",
+        "Device", "T offset", "T gain", "T rms", "Lag", "H offset", "H gain", "H rms", "Applies",
     ])
     .style(Style::new().bold());
     let rows: Vec<Row> = run
@@ -127,6 +127,7 @@ fn table(run: &calibrate::Run) -> Table<'static> {
                 Cell::from(format!("{:+.3} °C", t.offset)),
                 Cell::from(gain(&t)),
                 Cell::from(format!("{:.3}", t.residual_rms)),
+                Cell::from(calibrate::format_lag(t.lag)),
                 Cell::from(format!("{:+.2} %", h.offset)),
                 Cell::from(gain(&h)),
                 Cell::from(format!("{:.2}", h.residual_rms)),
@@ -140,6 +141,7 @@ fn table(run: &calibrate::Run) -> Table<'static> {
             Constraint::Length(16),
             Constraint::Length(10),
             Constraint::Length(8),
+            Constraint::Length(7),
             Constraint::Length(7),
             Constraint::Length(10),
             Constraint::Length(8),

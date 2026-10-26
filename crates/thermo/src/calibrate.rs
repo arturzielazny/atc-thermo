@@ -125,16 +125,17 @@ pub fn format(run: &Run) -> String {
     let _ = writeln!(out, "Phases: {}", r.phases.len());
     let _ = writeln!(
         out,
-        "\n{:<14} {:>9} {:>8} {:>7}  {:>9} {:>8} {:>7}  note",
-        "device", "T offset", "T gain", "T rms", "H offset", "H gain", "H rms"
+        "\n{:<14} {:>9} {:>8} {:>7}  {:>9} {:>8} {:>7}  {:>6}  note",
+        "device", "T offset", "T gain", "T rms", "H offset", "H gain", "H rms", "lag"
     );
     for ((_, name), sensor) in run.devices.iter().zip(&r.sensors) {
         let (t, h) = (sensor.temperature, sensor.humidity);
         let _ = writeln!(
             out,
-            "{name:<14} {} {}  {}",
+            "{name:<14} {} {}  {:>6}  {}",
             format_fit(&t, 2),
             format_fit(&h, 1),
+            format_lag(t.lag),
             notes(&t, &h)
         );
     }
@@ -154,6 +155,11 @@ pub fn format_fit(fit: &Fit, decimals: usize) -> String {
         fit.residual_rms,
         decimals = decimals + 1
     )
+}
+
+/// Temperature lag behind the group, e.g. `"+2.5m"`, or `"–"` if not estimated.
+pub fn format_lag(lag: Option<f64>) -> String {
+    lag.map_or_else(|| "–".to_owned(), |secs| format!("{:+.1}m", secs / 60.0))
 }
 
 pub fn notes(t: &Fit, h: &Fit) -> String {

@@ -23,7 +23,7 @@ mod stats;
 use std::fmt;
 use std::time::Duration;
 
-use robust::{Line, fit_line, fit_offset};
+use robust::Model;
 use stats::{median, percentile, std_dev};
 
 /// One reading of one sensor.
@@ -48,6 +48,19 @@ pub struct Options {
     pub max_temperature_change: f64,
     /// Same for humidity, in %RH.
     pub max_humidity_change: f64,
+    /// After a big change (see below) readings are ignored for this long, while the
+    /// sensors' cases catch up at their different speeds.
+    pub settle_time: Duration,
+    /// A consensus temperature change of at least this many °C within
+    /// [`Options::settle_time`] counts as big, e.g. moving the sensors outside.
+    pub big_temperature_change: f64,
+    /// Same for humidity, in %RH.
+    pub big_humidity_change: f64,
+    /// Model case lag only if the temperature drifts by at least this many °C per hour
+    /// (10th to 90th percentile of rates), otherwise the lag term is just noise.
+    pub min_temperature_drift: f64,
+    /// Same for humidity, in %RH per hour.
+    pub min_humidity_drift: f64,
     /// Fit a temperature gain only if steady data spans at least this many °C.
     pub min_temperature_span: f64,
     /// Fit a humidity gain only if steady data spans at least this many %RH.
@@ -73,8 +86,16 @@ impl Default for Options {
             // second or third measurement arrives.
             bin: Duration::from_secs(5 * 60),
             steady_window: Duration::from_secs(30 * 60),
-            max_temperature_change: 0.15,
-            max_humidity_change: 0.75,
+            // Slow drifts like a room cooling in the evening (up to 1.5 °C/h) are fine:
+            // a lag difference of a minute or two between cases costs only a few
+            // hundredths of a degree, and the robust fit averages it out.
+            max_temperature_change: 0.75,
+            max_humidity_change: 3.5,
+            settle_time: Duration::from_secs(60 * 60),
+            big_temperature_change: 2.0,
+            big_humidity_change: 10.0,
+            min_temperature_drift: 0.3,
+            min_humidity_drift: 1.5,
             min_temperature_span: 5.0,
             min_humidity_span: 15.0,
             max_humidity: 95.0,
@@ -97,6 +118,10 @@ pub struct Fit {
     pub gain_stderr: f64,
     /// RMS difference to the consensus after correction, on steady bins.
     pub residual_rms: f64,
+    /// How many seconds the sensor responds later than the group (negative: earlier),
+    /// if the data drifted enough to tell. The firmware cannot correct this; it is
+    /// modelled only so that drifting periods don't bias gain and offset.
+    pub lag: Option<f64>,
     /// Disagreed so much with the others that it was left out of the consensus
     /// and the anchor. Its fit still pulls it to the others.
     pub outlier: bool,
@@ -111,6 +136,7 @@ impl Fit {
         gain_fitted: false,
         gain_stderr: 0.0,
         residual_rms: 0.0,
+        lag: None,
         outlier: false,
         steady: Duration::ZERO,
     };
@@ -210,6 +236,20 @@ impl Quantity {
         }
     }
 
+    fn min_drift_per_second(self, options: &Options) -> f64 {
+        match self {
+            Self::Temperature => options.min_temperature_drift / 3600.0,
+            Self::Humidity => options.min_humidity_drift / 3600.0,
+        }
+    }
+
+    fn big_change(self, options: &Options) -> f64 {
+        match self {
+            Self::Temperature => options.big_temperature_change,
+            Self::Humidity => options.big_humidity_change,
+        }
+    }
+
     fn min_span(self, options: &Options) -> f64 {
         match self {
             Self::Temperature => options.min_temperature_span,
@@ -247,6 +287,7 @@ pub fn calibrate(sensors: &[&[Reading]], options: &Options) -> Result<Report, Er
 
     let raw_t = resample(sensors, t0, bin, Quantity::Temperature);
     let temperature = settled(&raw_t, Quantity::Temperature, options);
+    let temperature_rates = rates(&raw_t, bin);
     let steady = options.bin * u32::try_from(steady_bin_count(&temperature)).unwrap_or(u32::MAX);
     if steady < options.min_steady {
         return Err(Error::NotEnoughSteadyData {
@@ -254,22 +295,25 @@ pub fn calibrate(sensors: &[&[Reading]], options: &Options) -> Result<Report, Er
             needed: options.min_steady,
         });
     }
-    let mut humidity = settled(
-        &resample(sensors, t0, bin, Quantity::Humidity),
-        Quantity::Humidity,
-        options,
-    );
+    let raw_h = resample(sensors, t0, bin, Quantity::Humidity);
+    let humidity_rates = rates(&raw_h, bin);
+    let mut humidity = settled(&raw_h, Quantity::Humidity, options);
     for cell in humidity.iter_mut().flatten() {
         if cell.is_some_and(|h| h > options.max_humidity) {
             *cell = None;
         }
     }
 
-    let (t_fits, t_report) = fit_quantity(&temperature, Quantity::Temperature, options);
+    let (t_fits, t_report) = fit_quantity(
+        &temperature,
+        &temperature_rates,
+        Quantity::Temperature,
+        options,
+    );
     let humidity_steady =
         options.bin * u32::try_from(steady_bin_count(&humidity)).unwrap_or(u32::MAX);
     let (h_fits, h_report) = if humidity_steady >= options.min_steady {
-        fit_quantity(&humidity, Quantity::Humidity, options)
+        fit_quantity(&humidity, &humidity_rates, Quantity::Humidity, options)
     } else {
         let identity = vec![Fit::IDENTITY; sensors.len()];
         let report = quantity_report(&humidity, &identity, options.bin);
@@ -291,24 +335,43 @@ pub fn calibrate(sensors: &[&[Reading]], options: &Options) -> Result<Report, Er
     })
 }
 
-fn fit_quantity(grid: &Grid, quantity: Quantity, options: &Options) -> (Vec<Fit>, QuantityReport) {
+fn fit_quantity(
+    grid: &Grid,
+    rates: &Grid,
+    quantity: Quantity,
+    options: &Options,
+) -> (Vec<Fit>, QuantityReport) {
     let sensors = grid.first().map_or(0, Vec::len);
     let mut good = vec![true; sensors];
-    let mut fits = fit_all(grid, &good, quantity, options);
+    let mut fits = fit_all(grid, rates, &good, quantity, options);
     if sensors >= 4 {
         let outliers = find_outliers(grid, &fits, quantity, options);
         if outliers.iter().any(|&o| o) {
             good = outliers.iter().map(|o| !o).collect();
-            fits = fit_all(grid, &good, quantity, options);
+            fits = fit_all(grid, rates, &good, quantity, options);
         }
     }
-    anchor(&mut fits, &good);
     let corrected = corrected_grid(grid, &fits);
     for (i, fit) in fits.iter_mut().enumerate() {
-        let (xs, ys) = pairs(grid, &corrected, &good, i);
-        fit.residual_rms = residual_rms(&xs, &ys, fit);
+        let p = pairs(grid, rates, &corrected, &good, i);
         fit.outlier = !good[i];
-        fit.steady = options.bin * u32::try_from(xs.len()).unwrap_or(u32::MAX);
+        fit.steady = options.bin * u32::try_from(p.xs.len()).unwrap_or(u32::MAX);
+    }
+    // Sensors with too little data neither define nor shift the group average.
+    let anchors: Vec<bool> = fits
+        .iter()
+        .map(|f| !f.outlier && f.steady >= options.min_steady)
+        .collect();
+    let anchors = if anchors.iter().any(|&a| a) {
+        anchors
+    } else {
+        good.clone()
+    };
+    anchor(&mut fits, &anchors);
+    let corrected = corrected_grid(grid, &fits);
+    for (i, fit) in fits.iter_mut().enumerate() {
+        let p = pairs(grid, rates, &corrected, &good, i);
+        fit.residual_rms = residual_rms(&p, fit);
     }
     let report = quantity_report(grid, &fits, options.bin);
     (fits, report)
@@ -378,21 +441,24 @@ fn consensus(row: &[Option<f64>], include: &[bool]) -> Option<f64> {
 }
 
 /// Keeps only readings taken while both the group median and the sensor itself stayed
-/// within [`Quantity::max_change`] over the steady window.
+/// within [`Quantity::max_change`] over the steady window, and not shortly after a
+/// big change of the group median.
 fn settled(grid: &Grid, quantity: Quantity, options: &Options) -> Grid {
-    let half = bin_index(
-        options.steady_window.as_secs_f64() / 2.0,
-        options.bin.as_secs_f64(),
-    );
+    let bin = options.bin.as_secs_f64();
+    let half = bin_index(options.steady_window.as_secs_f64() / 2.0, bin);
+    let settle = bin_index(options.settle_time.as_secs_f64(), bin);
     let limit = quantity.max_change(options);
     let sensors = grid.first().map_or(0, Vec::len);
     let all = vec![true; sensors];
     let group: Vec<Option<f64>> = grid.iter().map(|row| consensus(row, &all)).collect();
+    let settling: Vec<bool> = (0..grid.len())
+        .map(|b| range(&group[b.saturating_sub(settle)..=b]) >= quantity.big_change(options))
+        .collect();
     let calm_cells: Vec<Vec<bool>> = (0..sensors)
         .map(|i| {
             let own: Vec<Option<f64>> = grid.iter().map(|row| row[i]).collect();
             (0..grid.len())
-                .map(|b| calm(&group, b, half, limit) && calm(&own, b, half, limit))
+                .map(|b| !settling[b] && calm(&group, b, half, limit) && calm(&own, b, half, limit))
                 .collect()
         })
         .collect();
@@ -425,29 +491,59 @@ fn calm(series: &[Option<f64>], b: usize, half: usize, limit: f64) -> bool {
         return false;
     }
     let window = &series[b - half..=b + half];
-    let present: Vec<f64> = window.iter().flatten().copied().collect();
-    if present.len() * 2 < window.len() {
-        return false;
-    }
-    let (lo, hi) = present
+    let present = window.iter().flatten().count();
+    present * 2 >= window.len() && range(window) <= limit
+}
+
+/// Largest minus smallest observed value; 0 if none.
+fn range(values: &[Option<f64>]) -> f64 {
+    let (lo, hi) = values
         .iter()
+        .flatten()
         .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), &v| {
             (lo.min(v), hi.max(v))
         });
-    hi - lo <= limit
+    if lo <= hi { hi - lo } else { 0.0 }
 }
 
 /// Iteratively fits every sensor against the median of the other included sensors.
-fn fit_all(grid: &Grid, include: &[bool], quantity: Quantity, options: &Options) -> Vec<Fit> {
+fn fit_all(
+    grid: &Grid,
+    rates: &Grid,
+    include: &[bool],
+    quantity: Quantity,
+    options: &Options,
+) -> Vec<Fit> {
     const ITERATIONS: usize = 4;
     let mut fits = vec![Fit::IDENTITY; include.len()];
     for _ in 0..ITERATIONS {
         let corrected = corrected_grid(grid, &fits);
         fits = (0..include.len())
-            .map(|i| fit_sensor(grid, &corrected, include, i, quantity, options))
+            .map(|i| fit_sensor(grid, rates, &corrected, include, i, quantity, options))
             .collect();
     }
     fits
+}
+
+/// Rate of change per second of every sensor's raw series, from neighbouring bins.
+fn rates(raw: &Grid, bin: f64) -> Grid {
+    let sensors = raw.first().map_or(0, Vec::len);
+    (0..raw.len())
+        .map(|b| {
+            (0..sensors)
+                .map(|i| {
+                    let at = |b: Option<usize>| b.and_then(|b| raw.get(b)).and_then(|row| row[i]);
+                    let (before, here, after) = (at(b.checked_sub(1)), raw[b][i], at(Some(b + 1)));
+                    match (before, here, after) {
+                        (Some(x0), _, Some(x2)) => Some((x2 - x0) / (2.0 * bin)),
+                        (Some(x0), Some(x1), None) => Some((x1 - x0) / bin),
+                        (None, Some(x1), Some(x2)) => Some((x2 - x1) / bin),
+                        _ => None,
+                    }
+                })
+                .collect()
+        })
+        .collect()
 }
 
 fn corrected_grid(grid: &Grid, fits: &[Fit]) -> Grid {
@@ -461,8 +557,15 @@ fn corrected_grid(grid: &Grid, fits: &[Fit]) -> Grid {
         .collect()
 }
 
-/// Pairs of (raw reading of sensor `i`, median of the other included sensors in `reference`).
-fn pairs(grid: &Grid, reference: &Grid, include: &[bool], i: usize) -> (Vec<f64>, Vec<f64>) {
+/// Readings of one sensor paired with the median of the other included sensors.
+struct Pairs {
+    xs: Vec<f64>,
+    ys: Vec<f64>,
+    /// The sensor's own rate of change at each pair, per second.
+    rates: Vec<Option<f64>>,
+}
+
+fn pairs(grid: &Grid, rates: &Grid, reference: &Grid, include: &[bool], i: usize) -> Pairs {
     let mut others = include.to_vec();
     others[i] = false;
     if !others.iter().any(|&o| o) {
@@ -470,9 +573,12 @@ fn pairs(grid: &Grid, reference: &Grid, include: &[bool], i: usize) -> (Vec<f64>
         others = vec![true; include.len()];
         others[i] = false;
     }
-    let mut xs = Vec::new();
-    let mut ys = Vec::new();
-    for (row, ref_row) in grid.iter().zip(reference) {
+    let mut p = Pairs {
+        xs: Vec::new(),
+        ys: Vec::new(),
+        rates: Vec::new(),
+    };
+    for ((row, rate_row), ref_row) in grid.iter().zip(rates).zip(reference) {
         let Some(x) = row[i] else { continue };
         let values: Vec<f64> = ref_row
             .iter()
@@ -482,45 +588,99 @@ fn pairs(grid: &Grid, reference: &Grid, include: &[bool], i: usize) -> (Vec<f64>
         if values.is_empty() {
             continue;
         }
-        xs.push(x);
-        ys.push(median(&values));
+        p.xs.push(x);
+        p.ys.push(median(&values));
+        p.rates.push(rate_row[i]);
     }
-    (xs, ys)
+    p
 }
 
 fn fit_sensor(
     grid: &Grid,
+    rates: &Grid,
     corrected: &Grid,
     include: &[bool],
     i: usize,
     quantity: Quantity,
     options: &Options,
 ) -> Fit {
-    let (xs, ys) = pairs(grid, corrected, include, i);
-    if xs.is_empty() {
+    let mut p = pairs(grid, rates, corrected, include, i);
+    if p.xs.is_empty() {
         return Fit::IDENTITY;
     }
-    let offset_only = Fit {
-        offset: fit_offset(&xs, &ys),
-        ..Fit::IDENTITY
+    // Model lag only with enough drift; then use just the pairs with a known rate.
+    let known: Vec<f64> = p.rates.iter().flatten().copied().collect();
+    let with_lag = known.len() * 5 >= p.xs.len() * 4
+        && percentile(&known, 0.9) - percentile(&known, 0.1)
+            >= quantity.min_drift_per_second(options);
+    if with_lag {
+        let keep: Vec<bool> = p.rates.iter().map(Option::is_some).collect();
+        let filter = |v: &[f64]| -> Vec<f64> {
+            v.iter()
+                .zip(&keep)
+                .filter(|&(_, &k)| k)
+                .map(|(x, _)| *x)
+                .collect()
+        };
+        p = Pairs {
+            xs: filter(&p.xs),
+            ys: filter(&p.ys),
+            rates: p.rates.into_iter().flatten().map(Some).collect(),
+        };
+    }
+    let rate = |j: usize| p.rates[j].unwrap_or(0.0);
+
+    // y − x ≈ offset (+ k·rate)
+    let offset_only = {
+        let rows: Vec<Vec<f64>> = (0..p.xs.len())
+            .map(|j| {
+                if with_lag {
+                    vec![1.0, rate(j)]
+                } else {
+                    vec![1.0]
+                }
+            })
+            .collect();
+        let diffs: Vec<f64> = p.ys.iter().zip(&p.xs).map(|(y, x)| y - x).collect();
+        match robust::fit(&rows, &diffs) {
+            Some(Model { coef, .. }) => Fit {
+                offset: coef[0],
+                lag: coef.get(1).copied(),
+                ..Fit::IDENTITY
+            },
+            None => Fit {
+                offset: median(&diffs),
+                ..Fit::IDENTITY
+            },
+        }
     };
-    if percentile(&xs, 0.95) - percentile(&xs, 0.05) < quantity.min_span(options) {
+    if percentile(&p.xs, 0.95) - percentile(&p.xs, 0.05) < quantity.min_span(options) {
         return offset_only;
     }
-    let Line {
-        gain,
-        offset,
-        gain_stderr,
-    } = fit_line(&xs, &ys);
+    // y ≈ gain·x + offset (+ k·rate), with lag = k / gain
+    let rows: Vec<Vec<f64>> = (0..p.xs.len())
+        .map(|j| {
+            if with_lag {
+                vec![p.xs[j], 1.0, rate(j)]
+            } else {
+                vec![p.xs[j], 1.0]
+            }
+        })
+        .collect();
+    let Some(Model { coef, stderr }) = robust::fit(&rows, &p.ys) else {
+        return offset_only;
+    };
+    let (gain, gain_stderr) = (coef[0], stderr[0]);
     // A gain indistinguishable from 1 only adds noise.
     if (gain - 1.0).abs() < 2.0 * gain_stderr {
         return offset_only;
     }
     Fit {
         gain,
-        offset,
+        offset: coef[1],
         gain_fitted: true,
         gain_stderr,
+        lag: coef.get(2).map(|k| k / gain),
         ..Fit::IDENTITY
     }
 }
@@ -563,16 +723,19 @@ fn anchor(fits: &mut [Fit], include: &[bool]) {
     }
 }
 
-fn residual_rms(xs: &[f64], ys: &[f64], fit: &Fit) -> f64 {
-    if xs.is_empty() {
+/// RMS of what the fit (including lag, where modelled) leaves unexplained.
+fn residual_rms(p: &Pairs, fit: &Fit) -> f64 {
+    if p.xs.is_empty() {
         return 0.0;
     }
-    let sum: f64 = xs
-        .iter()
-        .zip(ys)
-        .map(|(x, y)| (fit.apply(*x) - y).powi(2))
+    let lag_term = |j: usize| match (fit.lag, p.rates[j]) {
+        (Some(lag), Some(rate)) => fit.gain * lag * rate,
+        _ => 0.0,
+    };
+    let sum: f64 = (0..p.xs.len())
+        .map(|j| (fit.apply(p.xs[j]) + lag_term(j) - p.ys[j]).powi(2))
         .sum();
-    (sum / xs.len() as f64).sqrt()
+    (sum / p.xs.len() as f64).sqrt()
 }
 
 fn spread(grid: &Grid, include: &[bool], fits: &[Fit]) -> Spread {

@@ -51,6 +51,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d3fb67a6e08acf24fdeccbac2cb6ac4305825bd1f117462e0e6f2f193345ad56"
 
 [[package]]
+name = "atc"
+version = "0.1.0"
+dependencies = [
+ "bluer",
+ "futures",
+ "tokio",
+]
+
+[[package]]
 name = "atomic"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -205,6 +214,10 @@ name = "bytes"
 version = "1.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
+
+[[package]]
+name = "calibration"
+version = "0.1.0"
 
 [[package]]
 name = "castaway"
@@ -2073,8 +2086,10 @@ name = "thermo"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "atc",
  "bluer",
  "bthome",
+ "calibration",
  "crossterm",
  "futures",
  "image",

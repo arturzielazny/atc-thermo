@@ -7,15 +7,17 @@ rust-version.workspace = true
 
 [dependencies]
 anyhow = "1.0.104"
-bluer = { version = "0.17.4", features = ["bluetoothd"] }
+atc.workspace = true
+bluer.workspace = true
 bthome.workspace = true
+calibration.workspace = true
 crossterm = { version = "0.29.0", features = ["event-stream"] }
-futures = "0.3.34"
+futures.workspace = true
 image = { version = "0.25.10", default-features = false }
 ratatui = "0.30.2"
 ratatui-image = { version = "11.1.0", default-features = false, features = ["crossterm"] }
 tiny-skia = "0.12.0"
-tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+tokio.workspace = true
 
 [lints]
 workspace = true

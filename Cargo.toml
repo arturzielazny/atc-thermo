@@ -7,7 +7,12 @@ edition = "2024"
 rust-version = "1.85"
 
 [workspace.dependencies]
+atc = { path = "crates/atc" }
 bthome = { path = "crates/bthome" }
+calibration = { path = "crates/calibration" }
+bluer = { version = "0.17.4", features = ["bluetoothd"] }
+futures = "0.3.34"
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

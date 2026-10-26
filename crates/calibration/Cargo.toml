@@ -1,0 +1,11 @@
+[package]
+name = "calibration"
+version = "0.1.0"
+description = "Consensus calibration of co-located temperature and humidity sensors"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

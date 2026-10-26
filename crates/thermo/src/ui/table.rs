@@ -5,11 +5,11 @@ use std::time::{Duration, SystemTime};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Flex, Rect};
 use ratatui::style::{Modifier, Style, Stylize};
-use ratatui::text::Text;
+use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Cell, Row, Table, TableState};
 
 use super::{device_color, ratatui_color};
-use crate::app::App;
+use crate::app::{App, format_offset};
 use crate::devices::Device;
 
 /// Rows of devices not heard from for this long are dimmed.
@@ -22,10 +22,11 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         .devices
         .iter()
         .enumerate()
-        .map(|(i, device)| row(device, device_color(i), now))
+        .map(|(i, device)| row(app, device, device_color(i), now))
         .collect();
     let header = Row::new([
-        "", "Device", "Address", "Temp", "Humidity", "Battery", "Voltage", "RSSI", "Seen",
+        "", "Device", "Address", "Temp", "Humidity", "Battery", "Voltage", "RSSI", "Seen", "Clock",
+        "Status",
     ])
     .style(Style::new().bold());
     let name_width = app
@@ -36,7 +37,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         .unwrap_or(0)
         .max(MIN_NAME_WIDTH);
     let widths = [
-        Constraint::Length(1),
+        Constraint::Length(2),
         Constraint::Length(u16::try_from(name_width).unwrap_or(u16::MAX)),
         Constraint::Length(17),
         Constraint::Length(8),
@@ -45,8 +46,19 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         Constraint::Length(7),
         Constraint::Length(8),
         Constraint::Length(5),
+        Constraint::Length(7),
+        Constraint::Min(10),
     ];
-    let title = format!(" Devices ({}) ", app.devices.len());
+    let marked = app
+        .devices
+        .iter()
+        .filter(|d| app.is_marked(d.address))
+        .count();
+    let title = if marked > 0 {
+        format!(" Devices ({}, {marked} marked) ", app.devices.len())
+    } else {
+        format!(" Devices ({}) ", app.devices.len())
+    };
     let table = Table::new(rows, widths)
         .header(header)
         .block(Block::bordered().title(title))
@@ -71,7 +83,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_stateful_widget(table, area, &mut state);
 }
 
-fn row(device: &Device, color: (u8, u8, u8), now: SystemTime) -> Row<'static> {
+fn row(app: &App, device: &Device, color: (u8, u8, u8), now: SystemTime) -> Row<'static> {
     let fmt = |value: Option<f32>, unit: &str, decimals: usize| {
         value.map_or_else(|| "–".to_owned(), |v| format!("{v:.decimals$}{unit}"))
     };
@@ -84,8 +96,20 @@ fn row(device: &Device, color: (u8, u8, u8), now: SystemTime) -> Row<'static> {
         )
     };
     let age = now.duration_since(device.last_seen).unwrap_or_default();
+    let mark = if app.is_marked(device.address) {
+        "✓"
+    } else {
+        " "
+    };
+    let state = app.state(device.address);
+    let clock = state
+        .and_then(|s| s.clock_offset)
+        .map_or_else(|| "?".to_owned(), format_offset);
     let row = Row::new([
-        Cell::from("●").style(Style::new().fg(ratatui_color(color))),
+        Cell::from(Line::from(vec![
+            Span::from(mark).bold(),
+            Span::from("●").fg(ratatui_color(color)),
+        ])),
         Cell::from(device.name.clone()),
         Cell::from(device.address.to_string()),
         Cell::from(temperature),
@@ -102,11 +126,32 @@ fn row(device: &Device, color: (u8, u8, u8), now: SystemTime) -> Row<'static> {
                 .map_or_else(|| "–".to_owned(), |r| format!("{r} dBm")),
         ),
         Cell::from(format_age(age)),
+        Cell::from(clock),
+        status_cell(state),
     ]);
     if age > STALE_AFTER {
         row.dark_gray()
     } else {
         row
+    }
+}
+
+fn status_cell(state: Option<&crate::app::DeviceState>) -> Cell<'static> {
+    let Some(state) = state else {
+        return Cell::from("");
+    };
+    let waiting = state
+        .queued
+        .saturating_sub(usize::from(state.busy.is_some()));
+    match (&state.busy, &state.last) {
+        (Some(label), _) if waiting > 0 => {
+            Cell::from(format!("⟳ {label}… (+{waiting} queued)")).yellow()
+        }
+        (Some(label), _) => Cell::from(format!("⟳ {label}…")).yellow(),
+        (None, _) if waiting > 0 => Cell::from(format!("… {waiting} queued")).yellow(),
+        (None, Some(Ok(message))) => Cell::from(format!("✓ {message}")).green(),
+        (None, Some(Err(message))) => Cell::from(format!("✗ {message}")).red(),
+        (None, None) => Cell::from(""),
     }
 }
 

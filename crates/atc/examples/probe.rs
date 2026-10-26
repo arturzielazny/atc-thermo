@@ -8,10 +8,7 @@ use futures::StreamExt;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let address: Address = std::env::args()
-        .nth(1)
-        .ok_or("usage: probe MAC")?
-        .parse()?;
+    let address: Address = std::env::args().nth(1).ok_or("usage: probe MAC")?.parse()?;
     let session = bluer::Session::new().await?;
     let adapter = session.default_adapter().await?;
 
@@ -22,17 +19,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ..Default::default()
         })
         .await?;
-    let discovery = adapter.discover_devices().await?;
-    tokio::pin!(discovery);
-    tokio::time::timeout(Duration::from_secs(30), async {
-        while let Some(event) = discovery.next().await {
-            if matches!(event, bluer::AdapterEvent::DeviceAdded(a) if a == address) {
-                break;
+    {
+        // Discovery stops when the stream is dropped at the end of this block.
+        let discovery = adapter.discover_devices().await?;
+        tokio::pin!(discovery);
+        tokio::time::timeout(Duration::from_secs(30), async {
+            while let Some(event) = discovery.next().await {
+                if matches!(event, bluer::AdapterEvent::DeviceAdded(a) if a == address) {
+                    break;
+                }
             }
-        }
-    })
-    .await?;
-    drop(discovery);
+        })
+        .await?;
+    }
 
     let mut thermometer = Thermometer::connect(&adapter, address).await?;
     let info = thermometer.info();

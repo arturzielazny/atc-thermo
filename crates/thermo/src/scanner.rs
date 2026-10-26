@@ -1,7 +1,7 @@
 //! Background BLE scan that forwards BTHome adverts from BlueZ.
 
 use std::collections::{HashMap, HashSet};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use anyhow::{Context, Result, bail, ensure};
 use bluer::{
@@ -9,13 +9,15 @@ use bluer::{
     DiscoveryTransport, Uuid,
 };
 use futures::stream::SelectAll;
-use futures::{StreamExt, pin_mut};
-use tokio::sync::mpsc::UnboundedSender;
+use futures::{Stream, StreamExt};
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 /// BTHome's 16-bit UUID expanded with the Bluetooth base UUID.
 const BTHOME_UUID: Uuid = Uuid::from_u128(
     ((bthome::SERVICE_UUID16 as u128) << 96) | 0x0000_0000_0000_1000_8000_0080_5f9b_34fb,
 );
+
+const DISCOVERY_RESTART_PAUSE: Duration = Duration::from_millis(500);
 
 /// Something the scanner wants the app to know.
 #[derive(Debug)]
@@ -39,14 +41,37 @@ pub struct Advert {
 }
 
 /// Scans until the receiver is dropped, reporting a failure as [`ScanEvent::Failed`].
-pub async fn run(events: UnboundedSender<ScanEvent>) {
-    if let Err(err) = scan(&events).await {
+///
+/// A message on `restarts` restarts discovery. BlueZ suspends discovery while it
+/// connects to a device and may resume it with duplicate filtering, after which
+/// adverts trickle in only rarely; restarting re-applies the filter.
+pub async fn run(events: UnboundedSender<ScanEvent>, restarts: UnboundedReceiver<()>) {
+    if let Err(err) = scan(&events, restarts).await {
         // The app may already be gone; nothing else to do with the error then.
         let _ = events.send(ScanEvent::Failed(format!("{err:#}")));
     }
 }
 
-async fn scan(events: &UnboundedSender<ScanEvent>) -> Result<()> {
+async fn start_discovery(adapter: &Adapter) -> Result<impl Stream<Item = AdapterEvent> + use<>> {
+    adapter
+        .set_discovery_filter(DiscoveryFilter {
+            transport: DiscoveryTransport::Le,
+            // Report every advert, not only the first one per device.
+            duplicate_data: true,
+            ..Default::default()
+        })
+        .await
+        .context("setting the discovery filter")?;
+    adapter
+        .discover_devices()
+        .await
+        .context("starting discovery")
+}
+
+async fn scan(
+    events: &UnboundedSender<ScanEvent>,
+    mut restarts: UnboundedReceiver<()>,
+) -> Result<()> {
     let session = bluer::Session::new().await.context("connecting to BlueZ")?;
     let adapter = session
         .default_adapter()
@@ -57,20 +82,7 @@ async fn scan(events: &UnboundedSender<ScanEvent>) -> Result<()> {
         "Bluetooth adapter {} is powered off",
         adapter.name()
     );
-    adapter
-        .set_discovery_filter(DiscoveryFilter {
-            transport: DiscoveryTransport::Le,
-            // Report every advert, not only the first one per device.
-            duplicate_data: true,
-            ..Default::default()
-        })
-        .await
-        .context("setting the discovery filter")?;
-    let adapter_events = adapter
-        .discover_devices()
-        .await
-        .context("starting discovery")?;
-    pin_mut!(adapter_events);
+    let mut discovery = Some(Box::pin(start_discovery(&adapter).await?));
     if events
         .send(ScanEvent::Started {
             adapter: adapter.name().to_owned(),
@@ -86,7 +98,13 @@ async fn scan(events: &UnboundedSender<ScanEvent>) -> Result<()> {
     let mut rssi: HashMap<Address, i16> = HashMap::new();
     loop {
         tokio::select! {
-            Some(event) = adapter_events.next() => match event {
+            Some(()) = restarts.recv() => {
+                // Dropping the stream stops discovery; give BlueZ a moment before restarting.
+                drop(discovery.take());
+                tokio::time::sleep(DISCOVERY_RESTART_PAUSE).await;
+                discovery = Some(Box::pin(start_discovery(&adapter).await?));
+            }
+            Some(event) = next_event(&mut discovery) => match event {
                 AdapterEvent::DeviceAdded(address) if watched.insert(address) => {
                     let device = adapter.device(address)?;
                     device_events.push(device.events().await?.map(move |e| (address, e)));
@@ -132,6 +150,13 @@ async fn scan(events: &UnboundedSender<ScanEvent>) -> Result<()> {
         }
     }
     bail!("BlueZ ended discovery")
+}
+
+async fn next_event<S: Stream + Unpin>(stream: &mut Option<S>) -> Option<S::Item> {
+    match stream {
+        Some(stream) => stream.next().await,
+        None => None,
+    }
 }
 
 async fn alias(adapter: &Adapter, address: Address) -> String {

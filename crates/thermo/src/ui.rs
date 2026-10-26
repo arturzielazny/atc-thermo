@@ -1,7 +1,9 @@
-//! Screen layout: chart on top, device table below, status bar at the bottom.
+//! Screen layout: chart (or calibration panel) on top, device table below, status at the bottom.
 
+mod calibration;
 mod chart;
 mod plot;
+mod popup;
 mod table;
 
 use std::path::{Path, PathBuf};
@@ -12,7 +14,7 @@ use ratatui::style::{Color, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui_image::picker::Picker;
 
-use crate::app::{App, ScanStatus};
+use crate::app::{App, Mode, ScanStatus};
 
 pub use chart::ChartView;
 
@@ -54,16 +56,28 @@ pub fn draw(frame: &mut Frame, app: &App, ui: &mut Ui) {
     let table_height = u16::try_from(app.devices.len().max(1))
         .unwrap_or(u16::MAX)
         .saturating_add(3);
-    let [chart_area, table_area, status_area] = Layout::vertical([
+    let [top_area, table_area, status_area] = Layout::vertical([
         Constraint::Min(8),
         Constraint::Length(table_height),
-        Constraint::Length(1),
+        Constraint::Length(2),
     ])
     .areas(frame.area());
 
-    ui.chart.render(frame, chart_area, app);
+    match &app.mode {
+        Mode::Calibration(screen) => calibration::render(frame, top_area, app, screen),
+        _ => ui.chart.render(frame, top_area, app),
+    }
     table::render(frame, table_area, app);
-    frame.render_widget(status_line(app), status_area);
+    let [status, keys] =
+        Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).areas(status_area);
+    frame.render_widget(status_line(app), status);
+    frame.render_widget(key_help(app), keys);
+
+    match &app.mode {
+        Mode::Rename { address, input } => popup::rename(frame, app, *address, input),
+        Mode::Settings(form) => popup::settings(frame, app, form),
+        Mode::Normal | Mode::Calibration(_) => {}
+    }
 }
 
 /// Shows paths under `$HOME` as `~/...`.
@@ -87,13 +101,24 @@ fn status_line(app: &App) -> Line<'_> {
         ScanStatus::Failed(reason) => vec![Span::from(format!(" ✖ scan failed: {reason}")).red()],
     };
     if let Some(dir) = app.store_dir() {
-        spans.push(Span::from(format!("   history: {}", home_relative(dir))));
+        spans.push(Span::from(format!("   history: {}", home_relative(dir))).dark_gray());
     }
     if let Some(warning) = &app.warning {
         spans.push(Span::from(format!("   ⚠ {warning}")).yellow());
     }
-    spans.push(Span::from(
-        "   t/h/Tab metric · w window · ↑↓ select · Esc deselect · q quit",
-    ));
-    Line::from(spans).style(Style::new().dark_gray())
+    Line::from(spans)
+}
+
+fn key_help(app: &App) -> Line<'static> {
+    let help = match &app.mode {
+        Mode::Normal => {
+            " ↑↓ select · space mark · a all · n rename · s sync clock · e settings · d download log · c calibrate · t/h metric · w window · q quit"
+        }
+        Mode::Rename { .. } => " type a name · Enter save (empty = default) · Esc cancel",
+        Mode::Settings(_) => " ↑↓ field · ←→ value · Enter apply · Esc cancel",
+        Mode::Calibration(_) => {
+            " ←→ window · Enter apply · s sync clocks · x factory reset · space/a mark devices first to pick a subset · Esc back"
+        }
+    };
+    Line::from(help).style(Style::new().dark_gray())
 }

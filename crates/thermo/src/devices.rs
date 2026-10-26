@@ -8,8 +8,17 @@ use bthome::{Object, ParseError, Payload};
 
 use crate::scanner::Advert;
 
-/// How far back history is kept in memory; matches the longest chart window.
-pub const HISTORY_SPAN: Duration = Duration::from_secs(24 * 60 * 60);
+/// How far back history is kept in memory: the longest calibration window.
+pub const HISTORY_SPAN: Duration = Duration::from_secs(48 * 60 * 60);
+
+/// Where a sample came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Source {
+    /// Received in an advert.
+    Live,
+    /// Downloaded from the device's own log: an average over a longer period.
+    Log,
+}
 
 /// One temperature and humidity measurement.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -17,6 +26,19 @@ pub struct Sample {
     pub at: SystemTime,
     pub temperature: f32,
     pub humidity: f32,
+    pub source: Source,
+}
+
+/// A record from a device's log, already mapped to host time.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LoggedSample {
+    /// Middle of the averaging period.
+    pub at: SystemTime,
+    pub temperature: f32,
+    pub humidity: f32,
+    pub voltage: f32,
+    /// Length of the averaging period.
+    pub span: Duration,
 }
 
 /// A sample together with the device context it was taken in; the unit of persistence.
@@ -98,20 +120,44 @@ impl Device {
             at,
             temperature,
             humidity,
+            source: Source::Live,
         };
-        self.push(sample);
+        self.insert(sample);
         Some(sample)
     }
 
-    fn push(&mut self, sample: Sample) {
-        self.history.push_back(sample);
+    /// Inserts in time order and drops samples older than [`HISTORY_SPAN`] before the newest.
+    fn insert(&mut self, sample: Sample) {
+        let position = self.history.partition_point(|s| s.at <= sample.at);
+        self.history.insert(position, sample);
+        let newest = self.history.back().map_or(sample.at, |s| s.at);
         while self
             .history
             .front()
-            .is_some_and(|s| sample.at.duration_since(s.at).unwrap_or_default() > HISTORY_SPAN)
+            .is_some_and(|s| newest.duration_since(s.at).unwrap_or_default() > HISTORY_SPAN)
         {
             self.history.pop_front();
         }
+    }
+
+    /// Whether any sample lies within `radius` of `at`.
+    fn has_sample_near(&self, at: SystemTime, radius: Duration) -> bool {
+        let from = at.checked_sub(radius).unwrap_or(at);
+        let first = self.history.partition_point(|s| s.at < from);
+        self.history.get(first).is_some_and(|s| s.at <= at + radius)
+    }
+
+    /// Whether history between `since` and `until` has a hole longer than `max_gap`.
+    pub fn has_gap(&self, since: SystemTime, until: SystemTime, max_gap: Duration) -> bool {
+        let first = self.history.partition_point(|s| s.at < since);
+        let mut previous = since;
+        for sample in self.history.range(first..).take_while(|s| s.at <= until) {
+            if sample.at.duration_since(previous).unwrap_or_default() > max_gap {
+                return true;
+            }
+            previous = sample.at;
+        }
+        until.duration_since(previous).unwrap_or_default() > max_gap
     }
 }
 
@@ -173,12 +219,53 @@ impl Devices {
             .entry(address)
             .or_insert_with(|| Device::new(address, name.clone(), sample.at));
         device.name = name;
-        device.temperature = Some(sample.temperature);
-        device.humidity = Some(sample.humidity);
-        device.battery = battery.or(device.battery);
-        device.voltage = voltage.or(device.voltage);
-        device.last_seen = sample.at;
-        device.push(sample);
+        if sample.at >= device.last_seen {
+            device.temperature = Some(sample.temperature);
+            device.humidity = Some(sample.humidity);
+            device.battery = battery.or(device.battery);
+            device.voltage = voltage.or(device.voltage);
+        }
+        device.last_seen = device.last_seen.max(sample.at);
+        device.insert(sample);
+    }
+
+    /// Adds downloaded log records where history has no sample within half a record's
+    /// span; returns the added ones so they can be saved.
+    pub fn merge_log(&mut self, address: Address, records: &[LoggedSample]) -> Vec<Measurement> {
+        let Some(device) = self.by_address.get_mut(&address) else {
+            return Vec::new();
+        };
+        let mut added = Vec::new();
+        for record in records {
+            if device.has_sample_near(record.at, record.span / 2) {
+                continue;
+            }
+            let sample = Sample {
+                at: record.at,
+                temperature: record.temperature,
+                humidity: record.humidity,
+                source: Source::Log,
+            };
+            device.insert(sample);
+            added.push(Measurement {
+                address,
+                name: device.name.clone(),
+                sample,
+                battery: None,
+                voltage: Some(record.voltage),
+            });
+        }
+        added
+    }
+
+    pub fn get(&self, address: Address) -> Option<&Device> {
+        self.by_address.get(&address)
+    }
+
+    pub fn rename(&mut self, address: Address, name: String) {
+        if let Some(device) = self.by_address.get_mut(&address) {
+            device.name = name;
+        }
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &Device> {
@@ -277,6 +364,7 @@ mod tests {
                     at: start + Duration::from_secs(10 * i as u64),
                     temperature: t,
                     humidity: 50.0,
+                    source: Source::Live,
                 },
                 battery: Some(90),
                 voltage: None,
@@ -287,5 +375,34 @@ mod tests {
         assert_eq!(d.temperature, Some(21.5));
         assert_eq!(d.name, "Kitchen");
         assert_eq!(d.last_seen, start + Duration::from_secs(10));
+    }
+
+    #[test]
+    fn log_records_fill_only_gaps() {
+        let mut devices = Devices::default();
+        let start = SystemTime::now() - Duration::from_secs(3 * 3600);
+        devices.record(advert(&MEASUREMENT, start)).expect("valid");
+        let half_hour = Duration::from_secs(1800);
+        let records: Vec<LoggedSample> = (0..4)
+            .map(|i| LoggedSample {
+                at: start + half_hour * i,
+                temperature: 20.0,
+                humidity: 50.0,
+                voltage: 2.9,
+                span: half_hour,
+            })
+            .collect();
+        let d = device(&devices);
+        assert!(d.has_gap(start, start + half_hour * 3, Duration::from_secs(900)));
+
+        let added = devices.merge_log(ADDR, &records);
+        // The first record overlaps the live sample; the other three fill the gap.
+        assert_eq!(added.len(), 3);
+        let d = device(&devices);
+        let times: Vec<SystemTime> = d.history().iter().map(|s| s.at).collect();
+        assert!(times.is_sorted());
+        assert_eq!(d.history()[1].source, Source::Log);
+        // Live values stay those of the newest live advert.
+        assert_eq!(d.temperature, Some(22.44));
     }
 }

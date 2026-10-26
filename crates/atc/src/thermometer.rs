@@ -27,8 +27,11 @@ const MIN_VERSION: u16 = 0x47;
 /// Longest name the firmware stores.
 pub const MAX_NAME_LEN: usize = 20;
 
-const CONNECT_ATTEMPTS: u32 = 3;
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
+const CONNECT_ATTEMPTS: u32 = 4;
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(25);
+const CONNECT_RETRY_PAUSE: Duration = Duration::from_secs(1);
+/// How long to wait for a device BlueZ has forgotten to advertise again.
+const DEVICE_APPEAR_TIMEOUT: Duration = Duration::from_secs(30);
 /// Writes are unacknowledged, so a command is resent if no answer arrives in time.
 const COMMAND_ATTEMPTS: u32 = 5;
 const REPLY_TIMEOUT: Duration = Duration::from_millis(1500);
@@ -74,16 +77,24 @@ impl Thermometer {
     pub async fn connect(adapter: &Adapter, address: Address) -> Result<Self, Error> {
         let device = adapter.device(address)?;
         let mut attempt = 0;
-        while !device.is_connected().await? {
-            attempt += 1;
-            match timeout(CONNECT_TIMEOUT, device.connect()).await {
-                Ok(Ok(())) => {}
-                Ok(Err(err)) if attempt >= CONNECT_ATTEMPTS => return Err(err.into()),
-                Err(_) if attempt >= CONNECT_ATTEMPTS => {
-                    return Err(Error::Timeout { command: 0 });
-                }
-                _ => tokio::time::sleep(Duration::from_millis(500)).await,
+        loop {
+            wait_until_known(adapter, address).await?;
+            if device.is_connected().await? {
+                break;
             }
+            attempt += 1;
+            let error = match timeout(CONNECT_TIMEOUT, device.connect()).await {
+                Ok(Ok(())) => continue,
+                Ok(Err(err)) => Error::Bluetooth(err),
+                Err(_) => Error::Timeout { command: 0 },
+            };
+            // A timed-out or concurrent attempt may still be pending inside BlueZ, which
+            // makes the next one fail with "in progress"; cancelling it clears that.
+            let _ = device.disconnect().await;
+            if attempt >= CONNECT_ATTEMPTS {
+                return Err(error);
+            }
+            tokio::time::sleep(CONNECT_RETRY_PAUSE).await;
         }
 
         let mut command = None;
@@ -298,7 +309,8 @@ impl Thermometer {
         Ok(self.device.disconnect().await?)
     }
 
-    async fn write(&self, payload: &[u8]) -> Result<(), Error> {
+    async fn write(&mut self, payload: &[u8]) -> Result<(), Error> {
+        // `&mut` keeps the futures `Send` without requiring `Thermometer: Sync`.
         Ok(self.command.write(payload).await?)
     }
 
@@ -333,6 +345,27 @@ impl Thermometer {
         }
     }
 }
+
+/// Waits for BlueZ to list the device. It drops devices it has not heard from in a
+/// while (e.g. after discovery restarts) and lists them again on their next advert.
+async fn wait_until_known(adapter: &Adapter, address: Address) -> Result<(), Error> {
+    let deadline = Instant::now() + DEVICE_APPEAR_TIMEOUT;
+    while !adapter.device_addresses().await?.contains(&address) {
+        if Instant::now() >= deadline {
+            return Err(Error::InvalidValue(format!(
+                "{address} is not in range (not seen by BlueZ)"
+            )));
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    Ok(())
+}
+
+// Connections are handed to background tasks, so they must stay `Send`.
+const _: () = {
+    const fn assert_send<T: Send>() {}
+    assert_send::<Thermometer>();
+};
 
 fn decode_name(bytes: &[u8]) -> String {
     let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());

@@ -3,6 +3,7 @@
 //! Files live in `$XDG_DATA_HOME/thermo` (usually `~/.local/share/thermo`) and are
 //! named `YYYY-MM-DD.csv`. Old files are never deleted, so they double as a long-term log.
 
+use std::collections::HashMap;
 use std::env;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
@@ -10,11 +11,16 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
+use atc::{Coefficients, Correction};
 use bluer::Address;
 
-use crate::devices::{Measurement, Sample};
+use crate::devices::{Measurement, Sample, Source};
 
-const HEADER: &str = "time_ms,address,name,temperature_c,humidity_pct,battery_pct,voltage_v";
+const HEADER: &str = "time_ms,address,name,temperature_c,humidity_pct,battery_pct,voltage_v,source";
+const CALIBRATION_FILE: &str = "calibrations.csv";
+const DOWNLOAD_FILE: &str = "downloads.csv";
+const DOWNLOAD_HEADER: &str = "time_ms,address";
+const CALIBRATION_HEADER: &str = "time_ms,address,name,action,temperature_gain,temperature_offset,humidity_gain,humidity_offset,coefficients_before,coefficients_after";
 const SECS_PER_DAY: u64 = 24 * 60 * 60;
 
 /// Measurements read back from disk.
@@ -73,7 +79,8 @@ impl Store {
             };
             for line in BufReader::new(file).lines() {
                 let line = line.with_context(|| format!("reading {}", path.display()))?;
-                if line.is_empty() || line == HEADER {
+                // Files written before the `source` column have a shorter header.
+                if line.is_empty() || line.starts_with("time_ms,") {
                     continue;
                 }
                 match parse_line(&line) {
@@ -99,19 +106,7 @@ impl Store {
             .as_ref()
             .is_none_or(|(open_day, _)| *open_day != day)
         {
-            let path = self.dir.join(file_name(day));
-            let mut file = OpenOptions::new()
-                .create(true)
-                .read(true)
-                .append(true)
-                .open(&path)
-                .with_context(|| format!("opening {}", path.display()))?;
-            match file.metadata()?.len() {
-                0 => writeln!(file, "{HEADER}")?,
-                // Terminate a line torn by a crash so the next record starts cleanly.
-                len if last_byte(&mut file, len)? != b'\n' => writeln!(file)?,
-                _ => {}
-            }
+            let file = open_for_append(&self.dir.join(file_name(day)), HEADER)?;
             self.current = Some((day, file));
         }
         let (_, file) = self.current.as_mut().expect("day file was opened above");
@@ -119,6 +114,140 @@ impl Store {
         file.write_all(format!("{}\n", format_line(measurement)).as_bytes())
             .context("writing measurement")
     }
+
+    /// Appends a coefficient change to `calibrations.csv`.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the file cannot be opened or written.
+    pub fn record_calibration(&self, record: &CalibrationRecord) -> Result<()> {
+        let path = self.dir.join(CALIBRATION_FILE);
+        let mut file = open_for_append(&path, CALIBRATION_HEADER)?;
+        let ms = millis(record.at);
+        let (action, corrections) = match record.corrections {
+            Some((t, h)) => (
+                "apply",
+                format!(
+                    "{:.6},{:.4},{:.6},{:.4}",
+                    t.gain, t.offset, h.gain, h.offset
+                ),
+            ),
+            None => ("reset", ",,,".to_owned()),
+        };
+        let line = format!(
+            "{ms},{},{},{action},{corrections},{},{}\n",
+            record.address,
+            sanitize(&record.name),
+            format_coefficients(&record.before),
+            format_coefficients(&record.after),
+        );
+        file.write_all(line.as_bytes())
+            .with_context(|| format!("writing {}", path.display()))
+    }
+
+    /// Time of the most recent coefficient change per device.
+    ///
+    /// # Errors
+    ///
+    /// Fails if `calibrations.csv` exists but cannot be read.
+    pub fn last_calibrations(&self) -> Result<HashMap<Address, SystemTime>> {
+        latest_per_address(&self.dir.join(CALIBRATION_FILE))
+    }
+
+    /// Notes that a device's log was downloaded up to `at`.
+    ///
+    /// # Errors
+    ///
+    /// Fails if `downloads.csv` cannot be opened or written.
+    pub fn record_download(&self, address: Address, at: SystemTime) -> Result<()> {
+        let path = self.dir.join(DOWNLOAD_FILE);
+        let mut file = open_for_append(&path, DOWNLOAD_HEADER)?;
+        file.write_all(format!("{},{address}\n", millis(at)).as_bytes())
+            .with_context(|| format!("writing {}", path.display()))
+    }
+
+    /// Time of the most recent log download per device.
+    ///
+    /// # Errors
+    ///
+    /// Fails if `downloads.csv` exists but cannot be read.
+    pub fn last_downloads(&self) -> Result<HashMap<Address, SystemTime>> {
+        latest_per_address(&self.dir.join(DOWNLOAD_FILE))
+    }
+}
+
+/// Reads a CSV whose first two columns are `time_ms,address`; returns the newest time per address.
+fn latest_per_address(path: &Path) -> Result<HashMap<Address, SystemTime>> {
+    let file = match File::open(path) {
+        Ok(file) => file,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(HashMap::new()),
+        Err(err) => return Err(err).with_context(|| format!("opening {}", path.display())),
+    };
+    let mut latest = HashMap::new();
+    for line in BufReader::new(file).lines() {
+        let line = line.with_context(|| format!("reading {}", path.display()))?;
+        let mut fields = line.split(',');
+        let (Some(Ok(ms)), Some(Ok(address))) = (
+            fields.next().map(str::parse::<u64>),
+            fields.next().map(str::parse::<Address>),
+        ) else {
+            continue;
+        };
+        let at = UNIX_EPOCH + Duration::from_millis(ms);
+        latest
+            .entry(address)
+            .and_modify(|t: &mut SystemTime| *t = (*t).max(at))
+            .or_insert(at);
+    }
+    Ok(latest)
+}
+
+/// One change of a device's sensor coefficients.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CalibrationRecord {
+    pub at: SystemTime,
+    pub address: Address,
+    pub name: String,
+    /// The applied `(temperature, humidity)` corrections; `None` for a factory reset.
+    pub corrections: Option<(Correction, Correction)>,
+    pub before: Coefficients,
+    pub after: Coefficients,
+}
+
+fn format_coefficients(c: &Coefficients) -> String {
+    format!(
+        "{};{};{};{}",
+        c.temperature_gain, c.temperature_offset, c.humidity_gain, c.humidity_offset
+    )
+}
+
+/// Opens a CSV file for appending, writing `header` if it is new.
+fn open_for_append(path: &Path, header: &str) -> Result<File> {
+    let mut file = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .append(true)
+        .open(path)
+        .with_context(|| format!("opening {}", path.display()))?;
+    match file.metadata()?.len() {
+        0 => writeln!(file, "{header}")?,
+        // Terminate a line torn by a crash so the next record starts cleanly.
+        len if last_byte(&mut file, len)? != b'\n' => writeln!(file)?,
+        _ => {}
+    }
+    Ok(file)
+}
+
+fn millis(time: SystemTime) -> u128 {
+    time.duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+}
+
+fn sanitize(name: &str) -> String {
+    name.chars()
+        .map(|c| if c == ',' || c.is_control() { ' ' } else { c })
+        .collect()
 }
 
 fn last_byte(file: &mut File, len: u64) -> io::Result<u8> {
@@ -129,21 +258,16 @@ fn last_byte(file: &mut File, len: u64) -> io::Result<u8> {
 }
 
 fn format_line(m: &Measurement) -> String {
-    let ms = m
-        .sample
-        .at
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis();
-    let name: String = m
-        .name
-        .chars()
-        .map(|c| if c == ',' || c.is_control() { ' ' } else { c })
-        .collect();
+    let ms = millis(m.sample.at);
+    let name = sanitize(&m.name);
     let battery = m.battery.map(|b| b.to_string()).unwrap_or_default();
     let voltage = m.voltage.map(|v| format!("{v:.3}")).unwrap_or_default();
+    let source = match m.sample.source {
+        Source::Live => "",
+        Source::Log => "log",
+    };
     format!(
-        "{ms},{},{name},{:.2},{:.2},{battery},{voltage}",
+        "{ms},{},{name},{:.2},{:.2},{battery},{voltage},{source}",
         m.address, m.sample.temperature, m.sample.humidity
     )
 }
@@ -158,6 +282,11 @@ fn parse_line(line: &str) -> Option<Measurement> {
     let humidity: f32 = next()?.parse().ok()?;
     let battery = optional(next()?).ok()?;
     let voltage = optional(next()?).ok()?;
+    let source = match next() {
+        None | Some("") => Source::Live,
+        Some("log") => Source::Log,
+        Some(_) => return None,
+    };
     Some(Measurement {
         address,
         name,
@@ -165,6 +294,7 @@ fn parse_line(line: &str) -> Option<Measurement> {
             at: UNIX_EPOCH + Duration::from_millis(ms),
             temperature,
             humidity,
+            source,
         },
         battery,
         voltage,
@@ -225,6 +355,7 @@ mod tests {
                 at,
                 temperature,
                 humidity: 56.94,
+                source: Source::Live,
             },
             battery: Some(87),
             voltage: None,
@@ -245,7 +376,7 @@ mod tests {
         let line = format_line(&measurement(at, -3.5));
         assert_eq!(
             line,
-            "1793046191123,A4:C1:38:84:7E:FC,Living  room,-3.50,56.94,87,"
+            "1793046191123,A4:C1:38:84:7E:FC,Living  room,-3.50,56.94,87,,"
         );
         let parsed = parse_line(&line).expect("round trip");
         assert_eq!(
@@ -253,12 +384,20 @@ mod tests {
             Sample {
                 at,
                 temperature: -3.5,
-                humidity: 56.94
+                humidity: 56.94,
+                source: Source::Live,
             }
         );
         assert_eq!(parsed.battery, Some(87));
         assert_eq!(parsed.voltage, None);
         assert!(parse_line("1793046191123,A4:C1:38:84:7E:FC,x,21.").is_none());
+        // Lines written before the source column existed.
+        let old =
+            parse_line("1793046191123,A4:C1:38:84:7E:FC,x,21.00,50.00,,").expect("old format");
+        assert_eq!(old.sample.source, Source::Live);
+        let logged = parse_line("1793046191123,A4:C1:38:84:7E:FC,x,21.00,50.00,,2.900,log")
+            .expect("log line");
+        assert_eq!(logged.sample.source, Source::Log);
     }
 
     #[test]
@@ -290,5 +429,35 @@ mod tests {
             .collect();
         assert_eq!(temperatures, [21.0, 22.0]);
         assert_eq!(loaded.skipped_lines, 1);
+    }
+
+    #[test]
+    fn calibration_log() {
+        let dir = env::temp_dir().join(format!("thermo-calibration-test-{}", std::process::id()));
+        let store = Store::open(dir.clone()).expect("temp dir");
+        let address = Address([0xa4, 0xc1, 0x38, 0x84, 0x7e, 0xfc]);
+        let coefficients = Coefficients {
+            temperature_gain: 17_500,
+            humidity_gain: 12_500,
+            temperature_offset: -4_500,
+            humidity_offset: -600,
+        };
+        let early = UNIX_EPOCH + Duration::from_secs(1_793_000_000);
+        let late = early + Duration::from_secs(3600);
+        for at in [late, early] {
+            store
+                .record_calibration(&CalibrationRecord {
+                    at,
+                    address,
+                    name: "ATC_847EFC".to_owned(),
+                    corrections: Some((Correction::IDENTITY, Correction::IDENTITY)),
+                    before: coefficients,
+                    after: coefficients,
+                })
+                .expect("write");
+        }
+        let latest = store.last_calibrations().expect("read");
+        fs::remove_dir_all(&dir).expect("cleanup");
+        assert_eq!(latest.get(&address), Some(&late));
     }
 }

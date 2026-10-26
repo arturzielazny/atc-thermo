@@ -100,60 +100,57 @@ be pinned by one of:
 If the laptop can't hear the devices outside, the app downloads the gap from
 each device's logger after the session.
 
-## 4. Algorithm
+## 4. Algorithm (as implemented in `crates/calibration`)
 
 All of it is pure computation on time series: no Bluetooth involved, fully unit-testable.
+Temperature and humidity are handled independently.
 
-1. **Gather** per-device samples for the session window: live CSV history,
-   merged with logger downloads where live data has gaps.
-2. **Resample** to a common 1-minute grid (mean per bin; empty bins dropped).
-   Devices sample unsynchronized every ~10 s, so raw samples never line up.
-3. **Select steady bins.** Compute the group consensus (median across
-   devices) and keep a bin only if
-   - the consensus temperature changes less than ~0.02 °C/min over a 15-min window, and
-   - every device has data in it.
+1. **Gather** each device's *live* samples for the window (downloaded log records
+   are 30-minute averages and are not used). The window starts no earlier than the
+   last coefficient change of any participating device (`calibrations.csv`).
+2. **Resample** to a common 5-minute grid. Reception on this laptop is lossy (only
+   every second or third measurement arrives), so 1-minute bins were mostly empty.
+3. **Select usable readings.** A device's bin is used only if, over a 30-minute
+   window, both the group median and the device itself changed by at most
+   0.75 °C / 3.5 %RH, and the group median did not change by 2 °C / 10 %RH or more
+   in the preceding hour. That allows ordinary drifts (a room cooling in the
+   evening) but drops the settling hour after a move.
+4. **Fit** each device against the median of the others (robust Huber regression,
+   iterated four times):
+   `reference ≈ gain · reading + offset + k · rate`, where `rate` is the device's own
+   rate of change. The `k · rate` term absorbs case *lag*: in real data the devices
+   responded up to ~6 minutes apart, which during a 1 °C/h drift looked like a
+   0.1 °C offset. Lag is modelled only when rates vary enough to tell it from an
+   offset (a constant drift makes the two indistinguishable); it is reported but
+   cannot be written to the firmware.
+5. **Gain or offset only.** A gain is fitted only if the steady data spans ≥ 5 °C /
+   15 %RH and differs from 1 by more than two standard errors.
+6. **Outliers.** With four or more devices, a device whose correction at the typical
+   operating point has a robust z-score above 3.5 is excluded from the consensus
+   and the anchor (its own fit still pulls it to the group).
+7. **Anchor** so that gains average 1 and offsets 0 over devices that are not
+   outliers and have at least an hour of usable data.
+8. **Apply** after confirmation: compose onto the device's current coefficients
+   (`k' = a·k`, `z' = a·z + 100·b`), write with `0x25`, read back and verify, log old
+   and new values to `calibrations.csv`. `x` on the calibration screen restores the
+   factory coefficients.
 
-   This automatically discards the minutes to hours after each move while the
-   cases equilibrate (the time constant is measured from the data, not assumed),
-   plus door-opening spikes and similar. Phases are detected as the large
-   transitions between steady stretches. That is used for validation and for
-   reporting "range achieved", not for fitting.
-4. **Fit temperature.** For each device, fit `ref = a_i · reading_i + b_i` by
-   robust regression (Huber loss) against the consensus of the *other*
-   devices, on steady bins of phases A+B. Re-compute the consensus from
-   corrected data and repeat 2–3 times (converges quickly). Then apply the
-   chosen anchor (§2).
-5. **Decide gain vs offset only.** If the temperature span of steady data is
-   small (< ~5 °C), or `a_i` is within two standard errors of 1, use an
-   offset-only fit. A noisy slope does more harm than good.
-6. **Fit humidity** the same way, after temperature correction. Exclude bins
-   above ~95 %RH: the firmware clamps at 99.99, and SHT4x creep is worst there.
-   Refinement: compare via dew point, so that a device sitting 0.1 °C
-   warmer is not mis-attributed as a humidity error.
-7. **Validate** on phase C: report per-device residuals and the group spread
-   before → after. Accept only if the spread improves.
-8. **Apply** after confirmation: compute `k', z'` (§1), write with `0x25`,
-   read back and verify. Record old and new coefficients and the fit summary in
-   `~/.local/share/thermo/calibrations/` for undo.
+## 5. Status
 
-## 5. Implementation plan
+Done: `crates/atc` (BLE client), `crates/calibration` (fit), `thermo calibrate
+[HOURS]` (offline report), the TUI calibration screen (`c`), clock sync, and log
+download with drift-corrected time mapping.
 
-| Step | Crate | Content |
-|---|---|---|
-| 1 | `crates/atc` | pvvx GATT client on `bluer`: connect, command/notify, read/write config (`0x55`), sensor coefficients (`0x25`/`0x26`), clock (`0x23`), logger download (`0x35`). Port of `atc_config.py`. |
-| 2 | `crates/calibration` | Pure maths: resampling, steady-state detection, robust fit, anchoring, coefficient conversion. Tests on synthetic sessions with known injected gains/offsets, noise, lag and transients: the fit must recover them. |
-| 3 | `thermo calibrate` CLI | Run the fit offline on existing CSV history for a time range and print proposals. Nothing is written to devices, so the maths can be judged on real data first. |
-| 4 | TUI | Calibration screen: start/stop session, live progress (steady minutes per phase, temperature/humidity range covered), result preview with corrected curves, apply with confirmation, undo. |
-| 5 | Logger | Download and merge on-device history for phases out of radio range. |
+Findings from the first real run (5 devices on a table, 2026-10-26):
 
-Safety rules for writing to devices: write only after explicit confirmation;
-refuse if a device's coefficients changed since the session started; always
-read back after writing; keep the previous values for one-key undo.
+- None of the device clocks had ever been set; they counted seconds since flashing.
+  Log records are mapped to host time via the clock offset (and linear drift since
+  the last set, if the clock was set to real time). Syncing a clock first downloads
+  the history newer than the last download, since older records can't be dated
+  reliably afterwards.
+- Connecting makes BlueZ pause discovery; the scanner restarts it 5 s after the
+  last device job. A connection that BlueZ completes after we gave up is
+  disconnected explicitly, because a connected thermometer stops advertising.
 
-## 6. Open questions
-
-- **Anchor:** consensus only, or a reference instrument or salt test?
-- **Radio range:** do the devices reach the laptop from the planned outdoor
-  spot? If yes, step 5 can wait.
-- **Humidity gain:** apply it, or offsets only for humidity? Gain is where
-  sensor ageing shows, so it is worth fitting but is the least certain part.
+Not done: dew-point-based humidity comparison, clock trimming (`0x24`) from
+measured drift, validation fit on a held-out last phase.

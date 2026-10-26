@@ -737,4 +737,169 @@ mod tests {
         assert_eq!(format_offset(-9000.0), "-2.5h");
         assert_eq!(format_offset(-1_793_040_361.0), "-20753d");
     }
+
+    use tokio::sync::mpsc::{self, UnboundedReceiver};
+
+    use crate::jobs::Settings;
+    use crate::scanner::Advert;
+
+    const A: Address = Address([0xa4, 0xc1, 0x38, 0, 0, 1]);
+    const B: Address = Address([0xa4, 0xc1, 0x38, 0, 0, 2]);
+    // A pvvx measurement packet (temperature 22.44 °C, humidity 56.94 %).
+    const MEASUREMENT: [u8; 11] = [
+        0x40, 0x00, 0xa4, 0x01, 0x57, 0x02, 0xc4, 0x08, 0x03, 0x3e, 0x16,
+    ];
+
+    fn app_with_devices() -> (App, UnboundedReceiver<Job>) {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let mut app = App::new(Some(tx), None);
+        for (address, name) in [(A, "ATC_000001"), (B, "ATC_000002")] {
+            app.on_scan_event(ScanEvent::Advert(Advert {
+                address,
+                name: name.to_owned(),
+                rssi: Some(-50),
+                payload: MEASUREMENT.to_vec(),
+                received: SystemTime::now(),
+            }));
+        }
+        (app, rx)
+    }
+
+    fn press(app: &mut App, code: KeyCode) {
+        app.on_key(KeyEvent::new(code, KeyModifiers::NONE));
+    }
+
+    fn drain(rx: &mut UnboundedReceiver<Job>) -> Vec<Job> {
+        std::iter::from_fn(|| rx.try_recv().ok()).collect()
+    }
+
+    #[test]
+    fn new_devices_without_history_get_their_log_downloaded() {
+        let (_app, mut rx) = app_with_devices();
+        let jobs = drain(&mut rx);
+        assert_eq!(jobs.len(), 2);
+        assert!(
+            jobs.iter()
+                .all(|j| matches!(j.action, Action::Download { .. }))
+        );
+    }
+
+    #[test]
+    fn actions_apply_to_marked_devices_or_the_selected_one() {
+        let (mut app, mut rx) = app_with_devices();
+        drain(&mut rx);
+
+        press(&mut app, KeyCode::Char('s'));
+        assert!(drain(&mut rx).is_empty(), "nothing selected yet");
+        assert!(app.warning.is_some());
+
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Char('s'));
+        let jobs = drain(&mut rx);
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].address, A);
+        assert!(matches!(jobs[0].action, Action::SyncClock { .. }));
+
+        press(&mut app, KeyCode::Char('a'));
+        press(&mut app, KeyCode::Char('s'));
+        let addresses: Vec<Address> = drain(&mut rx).iter().map(|j| j.address).collect();
+        assert_eq!(addresses, [A, B]);
+
+        // Esc clears the marks first, then the selection.
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.targets(), [A]);
+        press(&mut app, KeyCode::Esc);
+        assert!(app.targets().is_empty());
+    }
+
+    #[test]
+    fn space_toggles_marks_and_advances() {
+        let (mut app, _rx) = app_with_devices();
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Char(' '));
+        assert!(app.is_marked(A));
+        assert_eq!(app.selected_index(), Some(1));
+        press(&mut app, KeyCode::Up);
+        press(&mut app, KeyCode::Char(' '));
+        assert!(!app.is_marked(A));
+    }
+
+    #[test]
+    fn rename_edits_the_current_name() {
+        let (mut app, mut rx) = app_with_devices();
+        drain(&mut rx);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Char('n'));
+        for _ in 0..6 {
+            press(&mut app, KeyCode::Backspace);
+        }
+        for c in "Kitchen".chars() {
+            press(&mut app, KeyCode::Char(c));
+        }
+        press(&mut app, KeyCode::Enter);
+        let jobs = drain(&mut rx);
+        assert_eq!(
+            jobs,
+            [Job {
+                address: A,
+                action: Action::Rename("ATC_Kitchen".to_owned())
+            }]
+        );
+        assert!(matches!(app.mode, Mode::Normal));
+
+        // Renaming several devices at once is refused.
+        press(&mut app, KeyCode::Char('a'));
+        press(&mut app, KeyCode::Char('n'));
+        assert!(matches!(app.mode, Mode::Normal));
+        assert!(drain(&mut rx).is_empty());
+    }
+
+    #[test]
+    fn settings_form_sends_only_changed_fields() {
+        let (mut app, mut rx) = app_with_devices();
+        drain(&mut rx);
+        press(&mut app, KeyCode::Char('a'));
+        press(&mut app, KeyCode::Char('e'));
+        press(&mut app, KeyCode::Right); // advertising: keep → 1 s
+        press(&mut app, KeyCode::Enter);
+        let jobs = drain(&mut rx);
+        assert_eq!(jobs.len(), 2);
+        let expected = Settings {
+            advertising_interval: Some(Duration::from_secs(1)),
+            ..Settings::default()
+        };
+        assert!(jobs.iter().all(|j| j.action == Action::Configure(expected)));
+    }
+
+    #[test]
+    fn downloaded_records_fill_history_and_are_remembered() {
+        let (mut app, mut rx) = app_with_devices();
+        drain(&mut rx);
+        let at = SystemTime::now() - Duration::from_secs(3600);
+        app.on_job_event(JobEvent::Started {
+            address: A,
+            label: "downloading log",
+        });
+        app.on_job_event(JobEvent::Finished {
+            address: A,
+            outcome: Ok(Outcome::Downloaded {
+                samples: vec![LoggedSample {
+                    at,
+                    temperature: 20.0,
+                    humidity: 50.0,
+                    voltage: 2.9,
+                    span: Duration::from_secs(1800),
+                }],
+                clock_offset: -5.0,
+            }),
+        });
+        let device = app.devices.get(A).expect("device");
+        assert_eq!(device.history().len(), 2);
+        let state = app.state(A).expect("state");
+        assert_eq!(state.clock_offset, Some(-5.0));
+        assert_eq!(state.busy, None);
+        assert_eq!(state.last, Some(Ok("1 of 1 log records added".to_owned())));
+        // Later downloads start from now, not a day back.
+        assert!(app.download_since(A) > at);
+    }
 }

@@ -61,24 +61,27 @@ pub struct Options {
     pub temperature_outlier_floor: f64,
     /// Same for humidity, in %RH.
     pub humidity_outlier_floor: f64,
-    /// Fewest steady temperature bins needed for a result.
-    pub min_steady_bins: usize,
+    /// Least steady temperature data needed for a result (and per sensor, for its fit
+    /// to count as reliable).
+    pub min_steady: Duration,
 }
 
 impl Default for Options {
     fn default() -> Self {
         Self {
-            bin: Duration::from_secs(60),
-            steady_window: Duration::from_secs(15 * 60),
-            max_temperature_change: 0.1,
-            max_humidity_change: 0.5,
+            // Bins and window are wide because BLE reception is lossy: often only every
+            // second or third measurement arrives.
+            bin: Duration::from_secs(5 * 60),
+            steady_window: Duration::from_secs(30 * 60),
+            max_temperature_change: 0.15,
+            max_humidity_change: 0.75,
             min_temperature_span: 5.0,
             min_humidity_span: 15.0,
             max_humidity: 95.0,
             outlier_threshold: 3.5,
             temperature_outlier_floor: 0.15,
             humidity_outlier_floor: 1.5,
-            min_steady_bins: 30,
+            min_steady: Duration::from_secs(60 * 60),
         }
     }
 }
@@ -97,8 +100,8 @@ pub struct Fit {
     /// Disagreed so much with the others that it was left out of the consensus
     /// and the anchor. Its fit still pulls it to the others.
     pub outlier: bool,
-    /// Steady bins this fit is based on.
-    pub bins: usize,
+    /// Amount of steady data this fit is based on.
+    pub steady: Duration,
 }
 
 impl Fit {
@@ -109,7 +112,7 @@ impl Fit {
         gain_stderr: 0.0,
         residual_rms: 0.0,
         outlier: false,
-        bins: 0,
+        steady: Duration::ZERO,
     };
 
     #[must_use]
@@ -136,8 +139,8 @@ pub struct Spread {
 /// Summary for temperature or humidity.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct QuantityReport {
-    /// Bins with at least two steady sensors.
-    pub steady_bins: usize,
+    /// Time with at least two steady sensors.
+    pub steady: Duration,
     /// 5th to 95th percentile of the steady consensus, `(low, high)`.
     pub range: (f64, f64),
     pub spread: Spread,
@@ -148,7 +151,7 @@ pub struct QuantityReport {
 pub struct Phase {
     pub start: f64,
     pub end: f64,
-    pub steady_bins: usize,
+    pub steady: Duration,
     pub temperature: f64,
 }
 
@@ -167,19 +170,18 @@ pub enum Error {
     /// Consensus needs at least two sensors with data.
     TooFewSensors(usize),
     /// Not enough steady, co-observed data yet.
-    NotEnoughSteadyData { steady_bins: usize, needed: usize },
+    NotEnoughSteadyData { steady: Duration, needed: Duration },
 }
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::TooFewSensors(n) => write!(f, "need at least 2 sensors with data, have {n}"),
-            Self::NotEnoughSteadyData {
-                steady_bins,
-                needed,
-            } => write!(
+            Self::NotEnoughSteadyData { steady, needed } => write!(
                 f,
-                "only {steady_bins} steady minutes, need {needed}; keep the sensors together and undisturbed longer"
+                "only {} steady minutes, need {}; keep the sensors together and undisturbed longer",
+                steady.as_secs() / 60,
+                needed.as_secs() / 60
             ),
         }
     }
@@ -231,7 +233,7 @@ type Grid = Vec<Vec<Option<f64>>>;
 /// # Errors
 ///
 /// Fails with fewer than two sensors with readings, or without
-/// [`Options::min_steady_bins`] steady temperature bins.
+/// [`Options::min_steady`] of steady temperature data.
 pub fn calibrate(sensors: &[&[Reading]], options: &Options) -> Result<Report, Error> {
     let with_data = sensors.iter().filter(|s| !s.is_empty()).count();
     if with_data < 2 {
@@ -245,11 +247,11 @@ pub fn calibrate(sensors: &[&[Reading]], options: &Options) -> Result<Report, Er
 
     let raw_t = resample(sensors, t0, bin, Quantity::Temperature);
     let temperature = settled(&raw_t, Quantity::Temperature, options);
-    let temperature_bins = steady_bin_count(&temperature);
-    if temperature_bins < options.min_steady_bins {
+    let steady = options.bin * u32::try_from(steady_bin_count(&temperature)).unwrap_or(u32::MAX);
+    if steady < options.min_steady {
         return Err(Error::NotEnoughSteadyData {
-            steady_bins: temperature_bins,
-            needed: options.min_steady_bins,
+            steady,
+            needed: options.min_steady,
         });
     }
     let mut humidity = settled(
@@ -264,11 +266,13 @@ pub fn calibrate(sensors: &[&[Reading]], options: &Options) -> Result<Report, Er
     }
 
     let (t_fits, t_report) = fit_quantity(&temperature, Quantity::Temperature, options);
-    let (h_fits, h_report) = if steady_bin_count(&humidity) >= options.min_steady_bins {
+    let humidity_steady =
+        options.bin * u32::try_from(steady_bin_count(&humidity)).unwrap_or(u32::MAX);
+    let (h_fits, h_report) = if humidity_steady >= options.min_steady {
         fit_quantity(&humidity, Quantity::Humidity, options)
     } else {
         let identity = vec![Fit::IDENTITY; sensors.len()];
-        let report = quantity_report(&humidity, &identity);
+        let report = quantity_report(&humidity, &identity, options.bin);
         (identity, report)
     };
     let good_t: Vec<bool> = t_fits.iter().map(|f| !f.outlier).collect();
@@ -304,20 +308,20 @@ fn fit_quantity(grid: &Grid, quantity: Quantity, options: &Options) -> (Vec<Fit>
         let (xs, ys) = pairs(grid, &corrected, &good, i);
         fit.residual_rms = residual_rms(&xs, &ys, fit);
         fit.outlier = !good[i];
-        fit.bins = xs.len();
+        fit.steady = options.bin * u32::try_from(xs.len()).unwrap_or(u32::MAX);
     }
-    let report = quantity_report(grid, &fits);
+    let report = quantity_report(grid, &fits, options.bin);
     (fits, report)
 }
 
-fn quantity_report(grid: &Grid, fits: &[Fit]) -> QuantityReport {
+fn quantity_report(grid: &Grid, fits: &[Fit], bin: Duration) -> QuantityReport {
     let good: Vec<bool> = fits.iter().map(|f| !f.outlier).collect();
     let consensus: Vec<f64> = grid
         .iter()
         .filter_map(|row| consensus(row, &good))
         .collect();
     QuantityReport {
-        steady_bins: steady_bin_count(grid),
+        steady: bin * u32::try_from(steady_bin_count(grid)).unwrap_or(u32::MAX),
         range: (percentile(&consensus, 0.05), percentile(&consensus, 0.95)),
         spread: spread(grid, &good, fits),
     }
@@ -422,7 +426,7 @@ fn calm(series: &[Option<f64>], b: usize, half: usize, limit: f64) -> bool {
     }
     let window = &series[b - half..=b + half];
     let present: Vec<f64> = window.iter().flatten().copied().collect();
-    if present.len() * 4 < window.len() * 3 {
+    if present.len() * 2 < window.len() {
         return false;
     }
     let (lo, hi) = present
@@ -623,7 +627,7 @@ fn phases(grid: &Grid, include: &[bool], t0: f64, bin: f64) -> Vec<Phase> {
         .map(|(start, end, ts)| Phase {
             start: t0 + start as f64 * bin,
             end: t0 + (end + 1) as f64 * bin,
-            steady_bins: ts.len(),
+            steady: Duration::from_secs_f64(bin * ts.len() as f64),
             temperature: median(&ts),
         })
         .collect()

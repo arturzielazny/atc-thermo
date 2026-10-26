@@ -74,8 +74,8 @@ fn summary(run: &calibrate::Run) -> Vec<Line<'static>> {
     vec![
         Line::from(format!(
             "Data from the last {since:.1} h · steady: {} min temperature, {} min humidity · {} phase(s)",
-            r.temperature.steady_bins,
-            r.humidity.steady_bins,
+            r.temperature.steady.as_secs() / 60,
+            r.humidity.steady.as_secs() / 60,
             r.phases.len()
         )),
         Line::from(format!(

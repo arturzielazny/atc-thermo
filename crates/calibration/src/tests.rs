@@ -219,6 +219,29 @@ fn transients_are_not_steady() {
 }
 
 #[test]
+fn copes_with_lossy_reception() {
+    // Keep only ~30 % of readings, like a laptop receiving every third advert.
+    let mut rng = Rng(99);
+    let data: Vec<Vec<Reading>> = simulate(&sensors(), 6.0, None, 13)
+        .into_iter()
+        .map(|readings| {
+            readings
+                .into_iter()
+                .filter(|_| rng.uniform() < 0.3)
+                .collect()
+        })
+        .collect();
+    let report = run(&data).expect("enough data despite losses");
+    assert!(
+        report.temperature.steady >= Duration::from_secs(3600),
+        "{:?}",
+        report.temperature
+    );
+    let t = report.temperature.spread;
+    assert!(t.after < 0.04, "temperature {t:?}");
+}
+
+#[test]
 fn errors() {
     let data = simulate(&sensors(), 0.3, None, 1);
     assert!(matches!(run(&data), Err(Error::NotEnoughSteadyData { .. })));

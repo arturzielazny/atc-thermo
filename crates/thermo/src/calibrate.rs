@@ -82,7 +82,7 @@ pub fn run(
 /// The correction to write for a fit, or `None` if it should not be applied
 /// (outlier or too little data for this device).
 pub fn correction(fit: &Fit) -> Option<Correction> {
-    let enough = fit.bins >= Options::default().min_steady_bins;
+    let enough = fit.steady >= Options::default().min_steady;
     (enough && !fit.outlier).then_some(Correction {
         gain: fit.gain,
         offset: fit.offset,
@@ -107,8 +107,8 @@ pub fn format(run: &Run) -> String {
     let _ = writeln!(
         out,
         "Steady data: {} min temperature, {} min humidity; range {:.1}–{:.1} °C, {:.0}–{:.0} %RH",
-        r.temperature.steady_bins,
-        r.humidity.steady_bins,
+        r.temperature.steady.as_secs() / 60,
+        r.humidity.steady.as_secs() / 60,
         r.temperature.range.0,
         r.temperature.range.1,
         r.humidity.range.0,

@@ -222,7 +222,8 @@ impl Graphics {
             let compress = self
                 .picker
                 .capabilities()
-                .contains(&Capability::KittyCompression);
+                .contains(&Capability::KittyCompression)
+                || known_to_inflate();
             let kitty = Kitty::new(
                 image,
                 size,
@@ -239,6 +240,17 @@ impl Graphics {
         };
         Ok(protocol)
     }
+}
+
+/// Whether the terminal is known to accept zlib-compressed images (`o=z`).
+///
+/// Ghostty does but doesn't answer ratatui-image's probe for it; uncompressed, a chart
+/// on a high-density screen is over 10 MB of escape codes per frame and stalls the terminal.
+fn known_to_inflate() -> bool {
+    let var = |name| std::env::var(name).unwrap_or_default();
+    ["ghostty", "kitty"]
+        .iter()
+        .any(|t| var("TERM_PROGRAM") == *t || var("TERM").contains(t))
 }
 
 fn render_y_labels(frame: &mut Frame, area: Rect, axes: &Axes) {

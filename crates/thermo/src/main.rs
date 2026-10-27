@@ -20,6 +20,7 @@ use futures::StreamExt;
 use ratatui::DefaultTerminal;
 use ratatui_image::picker::Picker;
 use tokio::sync::mpsc;
+use tokio::time::MissedTickBehavior;
 
 use crate::app::App;
 use crate::store::Store;
@@ -97,15 +98,24 @@ async fn run(terminal: &mut DefaultTerminal, picker: Option<Picker>) -> Result<(
     let mut ui = Ui::new(picker);
     let mut input = EventStream::new();
     let mut tick = tokio::time::interval(TICK);
+    tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
     while !app.should_quit() {
         terminal.draw(|frame| ui::draw(frame, &app, &mut ui))?;
+        // Keys first so they never wait behind adverts; adverts that piled up during a
+        // slow frame are applied together and cost a single redraw.
         tokio::select! {
-            Some(event) = scan_rx.recv() => app.on_scan_event(event),
-            Some(event) = job_events.recv() => app.on_job_event(event),
+            biased;
             Some(event) = input.next() => {
                 if let Event::Key(key) = event? {
                     app.on_key(key);
+                }
+            }
+            Some(event) = job_events.recv() => app.on_job_event(event),
+            Some(event) = scan_rx.recv() => {
+                app.on_scan_event(event);
+                while let Ok(event) = scan_rx.try_recv() {
+                    app.on_scan_event(event);
                 }
             }
             _ = tick.tick() => app.on_tick(),

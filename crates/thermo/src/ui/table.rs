@@ -14,6 +14,12 @@ use crate::devices::Device;
 
 /// Rows of devices not heard from for this long are dimmed.
 const STALE_AFTER: Duration = Duration::from_secs(120);
+/// Battery percentages from which a level counts as fine, then as getting low.
+const BATTERY_FINE: u8 = 50;
+const BATTERY_LOW: u8 = 20;
+/// Signal strengths (dBm) from which reception counts as reliable, then as marginal.
+const RSSI_FINE: i16 = -75;
+const RSSI_MARGINAL: i16 = -85;
 const MIN_NAME_WIDTH: usize = "Device".len();
 
 pub fn render(frame: &mut Frame, area: Rect, app: &App) {
@@ -101,6 +107,12 @@ fn row(app: &App, device: &Device, color: (u8, u8, u8), now: SystemTime) -> Row<
     } else {
         " "
     };
+    let is_stale = age > STALE_AFTER;
+    // A stale row is dimmed as a whole; colors would suggest current values.
+    let level_cell = |text: String, level: Option<Level>| match level {
+        Some(level) if !is_stale => Cell::from(text).style(level.style()),
+        _ => Cell::from(text),
+    };
     let state = app.state(device.address);
     let clock = state
         .and_then(|s| s.clock_offset)
@@ -114,25 +126,58 @@ fn row(app: &App, device: &Device, color: (u8, u8, u8), now: SystemTime) -> Row<
         Cell::from(device.address.to_string()),
         Cell::from(temperature),
         Cell::from(humidity),
-        Cell::from(
+        level_cell(
             device
                 .battery
                 .map_or_else(|| "–".to_owned(), |b| format!("{b} %")),
+            device.battery.map(battery_level),
         ),
         Cell::from(fmt(device.voltage, " V", 2)),
-        Cell::from(
+        level_cell(
             device
                 .rssi
                 .map_or_else(|| "–".to_owned(), |r| format!("{r} dBm")),
+            device.rssi.map(rssi_level),
         ),
         Cell::from(format_age(age)),
         Cell::from(clock),
         status_cell(state),
     ]);
-    if age > STALE_AFTER {
-        row.dark_gray()
-    } else {
-        row
+    if is_stale { row.dark_gray() } else { row }
+}
+
+/// How a battery or signal value rates, shown as green, yellow or red.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Level {
+    Fine,
+    Marginal,
+    Bad,
+}
+
+impl Level {
+    fn style(self) -> Style {
+        match self {
+            Self::Fine => Style::new().green(),
+            Self::Marginal => Style::new().yellow(),
+            Self::Bad => Style::new().red(),
+        }
+    }
+}
+
+fn battery_level(percent: u8) -> Level {
+    match percent {
+        p if p >= BATTERY_FINE => Level::Fine,
+        p if p >= BATTERY_LOW => Level::Marginal,
+        _ => Level::Bad,
+    }
+}
+
+/// Below about -85 dBm adverts get lost and connections become unreliable.
+fn rssi_level(dbm: i16) -> Level {
+    match dbm {
+        r if r >= RSSI_FINE => Level::Fine,
+        r if r >= RSSI_MARGINAL => Level::Marginal,
+        _ => Level::Bad,
     }
 }
 
@@ -173,5 +218,17 @@ mod tests {
         assert_eq!(format_age(Duration::from_secs(5)), "5s");
         assert_eq!(format_age(Duration::from_secs(150)), "2m");
         assert_eq!(format_age(Duration::from_secs(7300)), "2h");
+    }
+
+    #[test]
+    fn levels() {
+        assert_eq!(battery_level(100), Level::Fine);
+        assert_eq!(battery_level(50), Level::Fine);
+        assert_eq!(battery_level(49), Level::Marginal);
+        assert_eq!(battery_level(19), Level::Bad);
+        assert_eq!(rssi_level(-45), Level::Fine);
+        assert_eq!(rssi_level(-75), Level::Fine);
+        assert_eq!(rssi_level(-80), Level::Marginal);
+        assert_eq!(rssi_level(-86), Level::Bad);
     }
 }

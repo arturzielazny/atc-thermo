@@ -52,11 +52,15 @@ pub struct Shared {
 }
 
 impl Shared {
-    /// Escape sequence that loads the image as `id`, replacing any earlier image with
-    /// that id, and stretches it over `cols` × `rows` placeholder cells.
+    /// Escape sequences that load the image as `id` and stretch it over `cols` × `rows`
+    /// placeholder cells.
+    ///
+    /// Any earlier image with that id is deleted first: retransmitting alone swaps the
+    /// pixels but keeps the old placement's size (seen in Ghostty after a resize).
     pub fn transmit(&self, id: u32, cols: u16, rows: u16) -> String {
         format!(
-            "\x1b_Ga=T,U=1,q=2,i={id},f=32,t=s,s={},v={},S={},c={cols},r={rows};{}\x1b\\",
+            "{}\x1b_Ga=T,U=1,q=2,i={id},f=32,t=s,s={},v={},S={},c={cols},r={rows};{}\x1b\\",
+            delete(id),
             self.width,
             self.height,
             self.len,
@@ -274,7 +278,8 @@ mod tests {
         };
         assert_eq!(
             shared.transmit(7, 2, 2),
-            "\x1b_Ga=T,U=1,q=2,i=7,f=32,t=s,s=28,v=64,S=7168,c=2,r=2;L3RoZXJtby1jaGFydC0xLTA=\x1b\\"
+            "\x1b_Ga=d,d=I,i=7,q=2\x1b\\\
+             \x1b_Ga=T,U=1,q=2,i=7,f=32,t=s,s=28,v=64,S=7168,c=2,r=2;L3RoZXJtby1jaGFydC0xLTA=\x1b\\"
         );
     }
 }

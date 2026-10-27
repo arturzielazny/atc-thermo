@@ -12,7 +12,7 @@ use ratatui_image::picker::Picker;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
 use super::{device_color, kitty, plot, ratatui_color};
-use crate::app::{App, Metric};
+use crate::app::{App, ChartStyle, Metric};
 use crate::devices::{Sample, Source};
 
 /// Kitty image id for the chart; reusing it makes the terminal replace the old frame.
@@ -198,13 +198,18 @@ fn spawn_renderer(
     std::thread::spawn(move || {
         let mut memory = kitty::SharedMemory::new();
         for request in received {
-            let image = plot::rasterize(&request.axes, cell_width, cell_height, &request.series)
-                .ok_or_else(|| "chart area too large".to_owned())
-                .and_then(|pixels| {
-                    memory
-                        .write(&pixels)
-                        .map_err(|e| format!("writing to shared memory: {e}"))
-                });
+            let image = plot::rasterize(
+                &request.axes,
+                (cell_width, cell_height),
+                request.view.style,
+                &request.series,
+            )
+            .ok_or_else(|| "chart area too large".to_owned())
+            .and_then(|pixels| {
+                memory
+                    .write(&pixels)
+                    .map_err(|e| format!("writing to shared memory: {e}"))
+            });
             let update = ChartUpdate {
                 view: request.view,
                 axes: request.axes,
@@ -240,6 +245,7 @@ struct Shown {
 struct View {
     area: Rect,
     metric: Metric,
+    style: ChartStyle,
     window: Duration,
     selected: Option<usize>,
     devices: usize,
@@ -274,6 +280,7 @@ impl Graphics {
         let view = View {
             area: image_area,
             metric: app.metric,
+            style: app.style,
             window: app.window(),
             selected: app.selected_index(),
             devices: app.devices.len(),

@@ -26,7 +26,7 @@ to `~/.local/share/thermo/YYYY-MM-DD.csv` and reloaded on start; gaps in the las
 | `e` | settings: advertising interval, measurement interval, TX power, log interval |
 | `d` | download the device log for the last 24 h |
 | `c` | calibration screen (see [docs/calibration.md](docs/calibration.md)) |
-| `t` `h` `Tab` · `w` | temperature / humidity · chart time span |
+| `t` `h` `Tab` · `w` · `p` | temperature / humidity · chart time span · lines or points |
 | `q` | quit |
 
 ## Crates

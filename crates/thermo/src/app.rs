@@ -39,6 +39,15 @@ const DEFAULT_CALIBRATION_HOURS: usize = 3;
 /// How often the calibration screen refits as new data arrives.
 const CALIBRATION_REFRESH: Duration = Duration::from_secs(60);
 
+/// How the chart draws samples.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ChartStyle {
+    /// Consecutive samples joined by lines.
+    Lines,
+    /// Every sample on its own.
+    Points,
+}
+
 /// Which reading the chart shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Metric {
@@ -130,6 +139,7 @@ impl CalibrationScreen {
 pub struct App {
     pub devices: Devices,
     pub metric: Metric,
+    pub style: ChartStyle,
     pub scan_status: ScanStatus,
     /// Most recent problem worth showing in the status bar.
     pub warning: Option<String>,
@@ -162,6 +172,7 @@ impl App {
         Self {
             devices: Devices::default(),
             metric: Metric::Temperature,
+            style: ChartStyle::Lines,
             scan_status: ScanStatus::Starting,
             warning: None,
             mode: Mode::Normal,
@@ -500,6 +511,12 @@ impl App {
                 };
             }
             KeyCode::Char('w') => self.window_index = (self.window_index + 1) % WINDOWS.len(),
+            KeyCode::Char('p') => {
+                self.style = match self.style {
+                    ChartStyle::Lines => ChartStyle::Points,
+                    ChartStyle::Points => ChartStyle::Lines,
+                };
+            }
             KeyCode::Down | KeyCode::Char('j') => self.move_selection(1),
             KeyCode::Up | KeyCode::Char('k') => self.move_selection(-1),
             KeyCode::Char(' ') => {

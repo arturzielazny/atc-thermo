@@ -6,6 +6,7 @@ use tiny_skia::{
 
 use super::chart::{Axes, Emphasis, Point, Series};
 use super::kitty::Rgba;
+use crate::app::ChartStyle;
 
 const GRID_RGBA: (u8, u8, u8, u8) = (128, 128, 128, 60);
 const DIMMED_ALPHA: u8 = 80;
@@ -15,8 +16,8 @@ const DIMMED_ALPHA: u8 = 80;
 /// The background stays transparent so the terminal's own background shows through.
 pub fn rasterize(
     axes: &Axes,
-    cell_width: u32,
-    cell_height: u32,
+    (cell_width, cell_height): (u32, u32),
+    style: ChartStyle,
     series: &[Series],
 ) -> Option<Rgba> {
     let mut pixmap = Pixmap::new(
@@ -35,7 +36,7 @@ pub fn rasterize(
     // Draw dimmed lines first so the selected one ends up on top.
     ordered.sort_by_key(|s| s.emphasis);
     for s in ordered {
-        draw_series(&mut pixmap, &mapping, s, line_width);
+        draw_series(&mut pixmap, &mapping, s, line_width, style);
     }
 
     // Most pixels are transparent and stay zero; only the rest need un-premultiplying.
@@ -113,7 +114,13 @@ fn draw_grid(pixmap: &mut Pixmap, mapping: &Mapping) {
     }
 }
 
-fn draw_series(pixmap: &mut Pixmap, mapping: &Mapping, series: &Series, line_width: f32) {
+fn draw_series(
+    pixmap: &mut Pixmap,
+    mapping: &Mapping,
+    series: &Series,
+    line_width: f32,
+    style: ChartStyle,
+) {
     let Some(&Point {
         x: last_x,
         y: last_y,
@@ -131,6 +138,33 @@ fn draw_series(pixmap: &mut Pixmap, mapping: &Mapping, series: &Series, line_wid
     let mut paint = Paint::default();
     paint.set_color(Color::from_rgba8(r, g, b, alpha));
 
+    match style {
+        ChartStyle::Lines => draw_lines(pixmap, mapping, series, &paint, width),
+        ChartStyle::Points => draw_points(pixmap, mapping, series, &paint, width),
+    }
+    if let Some(dot) = PathBuilder::from_circle(mapping.x(last_x), mapping.y(last_y), width * 1.4) {
+        pixmap.fill_path(&dot, &paint, FillRule::Winding, Transform::identity(), None);
+    }
+}
+
+/// One dot per sample, skipping samples that land on the previous one's pixel.
+fn draw_points(pixmap: &mut Pixmap, mapping: &Mapping, series: &Series, paint: &Paint, width: f32) {
+    let mut dots = PathBuilder::new();
+    let mut previous: Option<(f32, f32)> = None;
+    for point in &series.points {
+        let (px, py) = (mapping.x(point.x).round(), mapping.y(point.y).round());
+        if previous.is_some_and(|(x, y)| same_pixel(x, px) && same_pixel(y, py)) {
+            continue;
+        }
+        previous = Some((px, py));
+        dots.push_circle(px, py, width * 0.6);
+    }
+    if let Some(dots) = dots.finish() {
+        pixmap.fill_path(&dots, paint, FillRule::Winding, Transform::identity(), None);
+    }
+}
+
+fn draw_lines(pixmap: &mut Pixmap, mapping: &Mapping, series: &Series, paint: &Paint, width: f32) {
     let mut path = PathBuilder::new();
     let mut column: Option<Column> = None;
     let mut dots = PathBuilder::new();
@@ -161,19 +195,10 @@ fn draw_series(pixmap: &mut Pixmap, mapping: &Mapping, series: &Series, line_wid
             line_join: LineJoin::Round,
             ..Stroke::default()
         };
-        pixmap.stroke_path(&path, &paint, &stroke, Transform::identity(), None);
+        pixmap.stroke_path(&path, paint, &stroke, Transform::identity(), None);
     }
     if let Some(dots) = dots.finish() {
-        pixmap.fill_path(
-            &dots,
-            &paint,
-            FillRule::Winding,
-            Transform::identity(),
-            None,
-        );
-    }
-    if let Some(dot) = PathBuilder::from_circle(mapping.x(last_x), mapping.y(last_y), width * 1.4) {
-        pixmap.fill_path(&dot, &paint, FillRule::Winding, Transform::identity(), None);
+        pixmap.fill_path(&dots, paint, FillRule::Winding, Transform::identity(), None);
     }
 }
 
@@ -284,7 +309,7 @@ mod tests {
 
     #[test]
     fn image_covers_whole_cells() {
-        let image = rasterize(&AXES, 8, 16, &[]).expect("small image");
+        let image = rasterize(&AXES, (8, 16), ChartStyle::Lines, &[]).expect("small image");
         assert_eq!((image.width, image.height), (88, 96));
         assert_eq!(image.data.len(), 88 * 96 * 4);
     }
@@ -309,7 +334,7 @@ mod tests {
             points: line([(-100.0, 5.0), (-50.0, 5.0), (0.0, 5.0)]),
             emphasis: Emphasis::Normal,
         };
-        let image = rasterize(&AXES, 8, 16, &[series]).expect("small image");
+        let image = rasterize(&AXES, (8, 16), ChartStyle::Lines, &[series]).expect("small image");
         // Value 5.0 sits halfway between the first and last row centers: y = 48.
         assert_eq!(alpha_at(&image, 30, 48), 255);
         assert_eq!(pixel(&image, 30, 48), [255, 0, 0, 255]);
@@ -330,7 +355,7 @@ mod tests {
             })),
             emphasis: Emphasis::Normal,
         };
-        let image = rasterize(&AXES, 8, 16, &[series]).expect("small image");
+        let image = rasterize(&AXES, (8, 16), ChartStyle::Lines, &[series]).expect("small image");
         // All samples land in pixel column 83 (x from 83.2 to 84), which must still
         // show the full 2..8 swing.
         // Values 7.5, 5 and 2.5 sit at y = 8 + (10 - value) · 8.
@@ -353,12 +378,26 @@ mod tests {
             ],
             emphasis: Emphasis::Normal,
         };
-        let image = rasterize(&AXES, 8, 16, &[series]).expect("small image");
+        let image = rasterize(&AXES, (8, 16), ChartStyle::Lines, &[series]).expect("small image");
         // x = 4 + (value + 100) · 0.8; y = 48 for 5.0.
         // The dot is as wide as the line, centered on a pixel corner here.
         assert!(alpha_at(&image, 20, 48) > 100, "lone point at -80");
         assert_eq!(alpha_at(&image, 36, 48), 0, "no line from -80 to -50");
         assert_eq!(alpha_at(&image, 52, 48), 255, "line from -50 to -30");
         assert_eq!(alpha_at(&image, 70, 48), 0, "no line from -30 to 0");
+    }
+
+    #[test]
+    fn points_style_leaves_gaps_between_samples() {
+        let series = Series {
+            color: (255, 0, 0),
+            points: line([(-80.0, 5.0), (-50.0, 5.0), (0.0, 5.0)]),
+            emphasis: Emphasis::Normal,
+        };
+        let image = rasterize(&AXES, (8, 16), ChartStyle::Points, &[series]).expect("small image");
+        // x = 4 + (value + 100) · 0.8: samples at x 20 and 44, nothing between.
+        assert!(alpha_at(&image, 20, 48) > 100, "sample at -80");
+        assert!(alpha_at(&image, 44, 48) > 100, "sample at -50");
+        assert_eq!(alpha_at(&image, 32, 48), 0, "no line between");
     }
 }

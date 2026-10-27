@@ -53,6 +53,8 @@ pub enum ChartStyle {
 pub enum Metric {
     Temperature,
     Humidity,
+    /// Signal strength of received adverts.
+    Rssi,
 }
 
 impl Metric {
@@ -60,6 +62,7 @@ impl Metric {
         match self {
             Self::Temperature => "Temperature",
             Self::Humidity => "Humidity",
+            Self::Rssi => "Signal",
         }
     }
 
@@ -67,13 +70,16 @@ impl Metric {
         match self {
             Self::Temperature => "°C",
             Self::Humidity => "%",
+            Self::Rssi => "dBm",
         }
     }
 
-    pub fn of(self, sample: &Sample) -> f32 {
+    /// The sample's value; `None` for signal strength of log records.
+    pub fn of(self, sample: &Sample) -> Option<f32> {
         match self {
-            Self::Temperature => sample.temperature,
-            Self::Humidity => sample.humidity,
+            Self::Temperature => Some(sample.temperature),
+            Self::Humidity => Some(sample.humidity),
+            Self::Rssi => sample.rssi.map(f32::from),
         }
     }
 
@@ -82,6 +88,7 @@ impl Metric {
         match self {
             Self::Temperature => 1.0,
             Self::Humidity => 4.0,
+            Self::Rssi => 10.0,
         }
     }
 }
@@ -504,10 +511,12 @@ impl App {
             }
             KeyCode::Char('t') => self.metric = Metric::Temperature,
             KeyCode::Char('h') => self.metric = Metric::Humidity,
+            KeyCode::Char('r') => self.metric = Metric::Rssi,
             KeyCode::Tab => {
                 self.metric = match self.metric {
                     Metric::Temperature => Metric::Humidity,
-                    Metric::Humidity => Metric::Temperature,
+                    Metric::Humidity => Metric::Rssi,
+                    Metric::Rssi => Metric::Temperature,
                 };
             }
             KeyCode::Char('w') => self.window_index = (self.window_index + 1) % WINDOWS.len(),

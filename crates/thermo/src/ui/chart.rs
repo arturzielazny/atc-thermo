@@ -420,17 +420,18 @@ fn build_series(app: &App, now: SystemTime) -> Vec<Series> {
             let mut previous: Option<&Sample> = None;
             let points = samples
                 .into_iter()
-                .map(|sample| {
+                .filter_map(|sample| {
+                    let y = app.metric.of(sample)?;
                     let joined = previous.is_some_and(|prev| joins(prev, sample));
                     previous = Some(sample);
-                    Point {
+                    Some(Point {
                         x: -now
                             .duration_since(sample.at)
                             .unwrap_or_default()
                             .as_secs_f64(),
-                        y: f64::from(app.metric.of(sample)),
+                        y: f64::from(y),
                         joined,
-                    }
+                    })
                 })
                 .collect();
             let emphasis = match selected {
@@ -555,6 +556,7 @@ mod tests {
             at: start + Duration::from_secs(minutes * 60),
             temperature: 21.0,
             humidity: 50.0,
+            rssi: None,
             source,
         };
         let live = |m| sample(m, Source::Live);

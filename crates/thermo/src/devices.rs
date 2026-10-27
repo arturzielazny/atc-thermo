@@ -26,6 +26,8 @@ pub struct Sample {
     pub at: SystemTime,
     pub temperature: f32,
     pub humidity: f32,
+    /// Signal strength of the advert that carried it; `None` for log records.
+    pub rssi: Option<i16>,
     pub source: Source,
 }
 
@@ -91,7 +93,7 @@ impl Device {
     }
 
     /// Applies one packet's objects; returns the new sample if this was a new measurement.
-    fn apply(&mut self, objects: &[Object], at: SystemTime) -> Option<Sample> {
+    fn apply(&mut self, objects: &[Object], at: SystemTime, rssi: Option<i16>) -> Option<Sample> {
         let mut packet_id = None;
         let mut temperature = None;
         let mut humidity = None;
@@ -120,6 +122,7 @@ impl Device {
             at,
             temperature,
             humidity,
+            rssi,
             source: Source::Live,
         };
         self.insert(sample);
@@ -194,7 +197,7 @@ impl Devices {
         };
         device.encrypted = false;
         let measurement = device
-            .apply(&objects, advert.received)
+            .apply(&objects, advert.received, advert.rssi)
             .map(|sample| Measurement {
                 address: device.address,
                 name: device.name.clone(),
@@ -244,6 +247,7 @@ impl Devices {
                 at: record.at,
                 temperature: record.temperature,
                 humidity: record.humidity,
+                rssi: None,
                 source: Source::Log,
             };
             device.insert(sample);
@@ -364,6 +368,7 @@ mod tests {
                     at: start + Duration::from_secs(10 * i as u64),
                     temperature: t,
                     humidity: 50.0,
+                    rssi: None,
                     source: Source::Live,
                 },
                 battery: Some(90),

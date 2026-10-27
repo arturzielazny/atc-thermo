@@ -16,7 +16,8 @@ use bluer::Address;
 
 use crate::devices::{Measurement, Sample, Source};
 
-const HEADER: &str = "time_ms,address,name,temperature_c,humidity_pct,battery_pct,voltage_v,source";
+const HEADER: &str =
+    "time_ms,address,name,temperature_c,humidity_pct,battery_pct,voltage_v,source,rssi_dbm";
 const CALIBRATION_FILE: &str = "calibrations.csv";
 const DOWNLOAD_FILE: &str = "downloads.csv";
 const DOWNLOAD_HEADER: &str = "time_ms,address";
@@ -223,6 +224,7 @@ fn format_coefficients(c: &Coefficients) -> String {
 
 /// Opens a CSV file for appending, writing `header` if it is new.
 fn open_for_append(path: &Path, header: &str) -> Result<File> {
+    upgrade_header(path, header).with_context(|| format!("updating {}", path.display()))?;
     let mut file = OpenOptions::new()
         .create(true)
         .read(true)
@@ -236,6 +238,28 @@ fn open_for_append(path: &Path, header: &str) -> Result<File> {
         _ => {}
     }
     Ok(file)
+}
+
+/// Replaces a file's header with `header` when that only adds columns at the end, so
+/// lines written with the new columns still match the header.
+fn upgrade_header(path: &Path, header: &str) -> io::Result<()> {
+    let contents = match fs::read_to_string(path) {
+        Ok(contents) => contents,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(err),
+    };
+    let (first, rest) = contents.split_once('\n').unwrap_or((&contents, ""));
+    let outdated = first != header
+        && header
+            .strip_prefix(first)
+            .is_some_and(|added| added.starts_with(','));
+    if !outdated {
+        return Ok(());
+    }
+    // Write beside it and rename, so a crash leaves either the old or the new file.
+    let temporary = path.with_extension("csv.tmp");
+    fs::write(&temporary, format!("{header}\n{rest}"))?;
+    fs::rename(&temporary, path)
 }
 
 fn millis(time: SystemTime) -> u128 {
@@ -266,8 +290,9 @@ fn format_line(m: &Measurement) -> String {
         Source::Live => "",
         Source::Log => "log",
     };
+    let rssi = m.sample.rssi.map(|r| r.to_string()).unwrap_or_default();
     format!(
-        "{ms},{},{name},{:.2},{:.2},{battery},{voltage},{source}",
+        "{ms},{},{name},{:.2},{:.2},{battery},{voltage},{source},{rssi}",
         m.address, m.sample.temperature, m.sample.humidity
     )
 }
@@ -282,11 +307,13 @@ fn parse_line(line: &str) -> Option<Measurement> {
     let humidity: f32 = next()?.parse().ok()?;
     let battery = optional(next()?).ok()?;
     let voltage = optional(next()?).ok()?;
+    // Columns added later are missing from older lines.
     let source = match next() {
         None | Some("") => Source::Live,
         Some("log") => Source::Log,
         Some(_) => return None,
     };
+    let rssi = optional(next().unwrap_or_default()).ok()?;
     Some(Measurement {
         address,
         name,
@@ -294,6 +321,7 @@ fn parse_line(line: &str) -> Option<Measurement> {
             at: UNIX_EPOCH + Duration::from_millis(ms),
             temperature,
             humidity,
+            rssi,
             source,
         },
         battery,
@@ -355,11 +383,30 @@ mod tests {
                 at,
                 temperature,
                 humidity: 56.94,
+                rssi: Some(-61),
                 source: Source::Live,
             },
             battery: Some(87),
             voltage: None,
         }
+    }
+
+    #[test]
+    fn old_header_gains_new_columns() {
+        let dir = std::env::temp_dir().join(format!("thermo-header-test-{}", std::process::id()));
+        fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("day.csv");
+        fs::write(&path, "a,b\n1,2\n").expect("write");
+        upgrade_header(&path, "a,b,c").expect("upgrade");
+        assert_eq!(fs::read_to_string(&path).expect("read"), "a,b,c\n1,2\n");
+        // Anything but appended columns is left alone.
+        fs::write(&path, "x,y\n1,2\n").expect("write");
+        upgrade_header(&path, "a,b,c").expect("upgrade");
+        assert_eq!(fs::read_to_string(&path).expect("read"), "x,y\n1,2\n");
+        fs::write(&path, "a,bc\n").expect("write");
+        upgrade_header(&path, "a,b").expect("upgrade");
+        assert_eq!(fs::read_to_string(&path).expect("read"), "a,bc\n");
+        fs::remove_dir_all(&dir).expect("cleanup");
     }
 
     #[test]
@@ -376,7 +423,7 @@ mod tests {
         let line = format_line(&measurement(at, -3.5));
         assert_eq!(
             line,
-            "1793046191123,A4:C1:38:84:7E:FC,Living  room,-3.50,56.94,87,,"
+            "1793046191123,A4:C1:38:84:7E:FC,Living  room,-3.50,56.94,87,,,-61"
         );
         let parsed = parse_line(&line).expect("round trip");
         assert_eq!(
@@ -385,6 +432,7 @@ mod tests {
                 at,
                 temperature: -3.5,
                 humidity: 56.94,
+                rssi: Some(-61),
                 source: Source::Live,
             }
         );
@@ -398,6 +446,7 @@ mod tests {
         let logged = parse_line("1793046191123,A4:C1:38:84:7E:FC,x,21.00,50.00,,2.900,log")
             .expect("log line");
         assert_eq!(logged.sample.source, Source::Log);
+        assert_eq!(logged.sample.rssi, None);
     }
 
     #[test]

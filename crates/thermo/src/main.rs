@@ -12,6 +12,7 @@ mod scanner;
 mod store;
 mod ui;
 
+use std::io::Write;
 use std::time::{Duration, SystemTime};
 
 use anyhow::{Context, Result, bail};
@@ -95,7 +96,7 @@ async fn run(terminal: &mut DefaultTerminal, picker: Option<Picker>) -> Result<(
         Ok(store) => app.use_store(store),
         Err(err) => app.warning = Some(format!("history is not saved: {err:#}")),
     }
-    let mut ui = Ui::new(picker);
+    let (mut ui, mut chart_updates) = Ui::new(picker);
     let mut input = EventStream::new();
     let mut tick = tokio::time::interval(TICK);
     tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -111,6 +112,11 @@ async fn run(terminal: &mut DefaultTerminal, picker: Option<Picker>) -> Result<(
                     app.on_key(key);
                 }
             }
+            Some(update) = chart_updates.recv() => {
+                if let Some(seq) = ui.accept_chart(update) {
+                    write_raw(terminal, &seq)?;
+                }
+            }
             Some(event) = job_events.recv() => app.on_job_event(event),
             Some(event) = scan_rx.recv() => {
                 app.on_scan_event(event);
@@ -121,5 +127,16 @@ async fn run(terminal: &mut DefaultTerminal, picker: Option<Picker>) -> Result<(
             _ = tick.tick() => app.on_tick(),
         }
     }
+    if let Some(seq) = ui.farewell() {
+        write_raw(terminal, &seq)?;
+    }
+    Ok(())
+}
+
+/// Sends escape sequences that bypass ratatui's cell buffer.
+fn write_raw(terminal: &mut DefaultTerminal, seq: &str) -> Result<()> {
+    let backend = terminal.backend_mut();
+    backend.write_all(seq.as_bytes())?;
+    backend.flush()?;
     Ok(())
 }

@@ -1,11 +1,11 @@
 //! Rasterizes chart series into an RGBA image sized to whole text cells.
 
-use image::RgbaImage;
 use tiny_skia::{
     Color, FillRule, LineCap, LineJoin, Paint, PathBuilder, Pixmap, Rect, Stroke, Transform,
 };
 
 use super::chart::{Axes, Emphasis, Series};
+use super::kitty::Rgba;
 
 /// Consecutive samples further apart than this are not joined by a line.
 const GAP_SECS: f64 = 300.0;
@@ -20,7 +20,7 @@ pub fn rasterize(
     cell_width: u32,
     cell_height: u32,
     series: &[Series],
-) -> Option<RgbaImage> {
+) -> Option<Rgba> {
     let mut pixmap = Pixmap::new(
         u32::from(axes.cols) * cell_width,
         u32::from(axes.rows) * cell_height,
@@ -40,15 +40,23 @@ pub fn rasterize(
         draw_series(&mut pixmap, &mapping, s, line_width);
     }
 
-    let rgba: Vec<u8> = pixmap
-        .pixels()
-        .iter()
-        .flat_map(|p| {
-            let c = p.demultiply();
-            [c.red(), c.green(), c.blue(), c.alpha()]
-        })
-        .collect();
-    RgbaImage::from_raw(pixmap.width(), pixmap.height(), rgba)
+    // Most pixels are transparent and stay zero; only the rest need un-premultiplying.
+    let mut data = vec![0; pixmap.data().len()];
+    for (out, p) in data.chunks_exact_mut(4).zip(pixmap.pixels()) {
+        match p.alpha() {
+            0 => {}
+            u8::MAX => out.copy_from_slice(&[p.red(), p.green(), p.blue(), u8::MAX]),
+            _ => {
+                let c = p.demultiply();
+                out.copy_from_slice(&[c.red(), c.green(), c.blue(), c.alpha()]);
+            }
+        }
+    }
+    Some(Rgba {
+        width: pixmap.width(),
+        height: pixmap.height(),
+        data,
+    })
 }
 
 struct Mapping {
@@ -121,14 +129,24 @@ fn draw_series(pixmap: &mut Pixmap, mapping: &Mapping, series: &Series, line_wid
     paint.set_color(Color::from_rgba8(r, g, b, alpha));
 
     let mut path = PathBuilder::new();
+    let mut column: Option<Column> = None;
     let mut previous_x = None;
     for &(x, y) in &series.points {
         let (px, py) = (mapping.x(x), mapping.y(y));
-        match previous_x {
-            Some(prev) if x - prev <= GAP_SECS => path.line_to(px, py),
-            _ => path.move_to(px, py),
-        }
+        let joined = previous_x.is_some_and(|prev| x - prev <= GAP_SECS);
         previous_x = Some(x);
+        match &mut column {
+            Some(c) if joined && same_pixel(c.pixel, px.floor()) => c.add(px, py),
+            _ => {
+                if let Some(c) = column.take() {
+                    c.extend(&mut path);
+                }
+                column = Some(Column::new(px, py, joined));
+            }
+        }
+    }
+    if let Some(c) = column {
+        c.extend(&mut path);
     }
     if let Some(path) = path.finish() {
         let stroke = Stroke {
@@ -144,6 +162,78 @@ fn draw_series(pixmap: &mut Pixmap, mapping: &Mapping, series: &Series, line_wid
     }
 }
 
+#[expect(clippy::float_cmp, reason = "both are floored, so exact whole numbers")]
+fn same_pixel(a: f32, b: f32) -> bool {
+    a == b
+}
+
+/// The points of a series that fall into one pixel column.
+///
+/// A 48-hour window has about nine samples per pixel column. Stroking each of them
+/// with round joins is slow and invisible, so a column becomes its average point, or
+/// its highest and lowest point when they are more than a pixel apart.
+struct Column {
+    pixel: f32,
+    /// Whether the line continues from the previous column.
+    joined: bool,
+    count: f32,
+    sum: (f32, f32),
+    /// `(order, x, y)`; y grows downwards, so `top` has the smallest y.
+    top: (u32, f32, f32),
+    bottom: (u32, f32, f32),
+}
+
+impl Column {
+    fn new(x: f32, y: f32, joined: bool) -> Self {
+        Self {
+            pixel: x.floor(),
+            joined,
+            count: 1.0,
+            sum: (x, y),
+            top: (0, x, y),
+            bottom: (0, x, y),
+        }
+    }
+
+    fn add(&mut self, x: f32, y: f32) {
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "a pixel column holds far fewer than 2^24 points"
+        )]
+        let point = (self.count as u32, x, y);
+        self.count += 1.0;
+        self.sum = (self.sum.0 + x, self.sum.1 + y);
+        if y < self.top.2 {
+            self.top = point;
+        }
+        if y > self.bottom.2 {
+            self.bottom = point;
+        }
+    }
+
+    fn extend(&self, path: &mut PathBuilder) {
+        let mut add = |first: bool, x: f32, y: f32| {
+            if first && !self.joined {
+                path.move_to(x, y);
+            } else {
+                path.line_to(x, y);
+            }
+        };
+        if self.bottom.2 - self.top.2 <= 1.0 {
+            add(true, self.sum.0 / self.count, self.sum.1 / self.count);
+        } else {
+            let (a, b) = if self.top.0 < self.bottom.0 {
+                (self.top, self.bottom)
+            } else {
+                (self.bottom, self.top)
+            };
+            add(true, a.1, a.2);
+            add(false, b.1, b.2);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -155,14 +245,20 @@ mod tests {
         rows: 6,
     };
 
-    fn alpha_at(image: &RgbaImage, x: u32, y: u32) -> u8 {
-        image.get_pixel(x, y).0[3]
+    fn pixel(image: &Rgba, x: u32, y: u32) -> [u8; 4] {
+        let i = 4 * (y * image.width + x) as usize;
+        image.data[i..i + 4].try_into().expect("four bytes")
+    }
+
+    fn alpha_at(image: &Rgba, x: u32, y: u32) -> u8 {
+        pixel(image, x, y)[3]
     }
 
     #[test]
     fn image_covers_whole_cells() {
         let image = rasterize(&AXES, 8, 16, &[]).expect("small image");
-        assert_eq!(image.dimensions(), (88, 96));
+        assert_eq!((image.width, image.height), (88, 96));
+        assert_eq!(image.data.len(), 88 * 96 * 4);
     }
 
     #[test]
@@ -188,8 +284,32 @@ mod tests {
         let image = rasterize(&AXES, 8, 16, &[series]).expect("small image");
         // Value 5.0 sits halfway between the first and last row centers: y = 48.
         assert_eq!(alpha_at(&image, 30, 48), 255);
-        assert_eq!(image.get_pixel(30, 48).0[..3], [255, 0, 0]);
+        assert_eq!(pixel(&image, 30, 48), [255, 0, 0, 255]);
         // Far from the line and off any gridline stays transparent.
         assert_eq!(alpha_at(&image, 30, 30), 0);
+    }
+
+    #[test]
+    fn dense_points_keep_their_extremes() {
+        // 400 samples alternating between 2 and 8 squeezed into a few pixel columns.
+        let series = Series {
+            color: (0, 0, 255),
+            points: (0..400)
+                .map(|i| {
+                    (
+                        -1.0 + f64::from(i) / 400.0,
+                        if i % 2 == 0 { 2.0 } else { 8.0 },
+                    )
+                })
+                .collect(),
+            emphasis: Emphasis::Normal,
+        };
+        let image = rasterize(&AXES, 8, 16, &[series]).expect("small image");
+        // All samples land in pixel column 83 (x from 83.2 to 84), which must still
+        // show the full 2..8 swing.
+        // Values 7.5, 5 and 2.5 sit at y = 8 + (10 - value) · 8.
+        for y in [28, 48, 68] {
+            assert_eq!(alpha_at(&image, 83, y), 255, "y {y}");
+        }
     }
 }

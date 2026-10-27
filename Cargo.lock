@@ -2092,7 +2092,6 @@ dependencies = [
  "calibration",
  "crossterm",
  "futures",
- "image",
  "ratatui",
  "ratatui-image",
  "tiny-skia",

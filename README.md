@@ -11,8 +11,9 @@ cargo run --release -p thermo            # or ./target/release/thermo
 cargo run --release -p thermo -- calibrate 6   # print a calibration proposal for the last 6 h
 ```
 
-A chart of every thermometer (drawn as an image in terminals with the kitty graphics
-protocol, e.g. Ghostty or kitty) above a table of current readings. History is saved
+A chart of every thermometer above a table of current readings. In terminals with the
+kitty graphics protocol (Ghostty, kitty) the chart is an image passed through shared
+memory (`/dev/shm`); over SSH, inside tmux or elsewhere it is drawn with braille. History is saved
 to `~/.local/share/thermo/YYYY-MM-DD.csv` and reloaded on start; gaps in the last
 24 h are filled from each device's own log.
 

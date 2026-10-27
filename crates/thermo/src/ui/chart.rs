@@ -2,25 +2,21 @@
 
 use std::time::{Duration, Instant, SystemTime};
 
-use anyhow::{Context, Result};
-use image::DynamicImage;
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Rect, Size};
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Style, Stylize};
 use ratatui::symbols::Marker;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Axis, Block, Chart, Dataset, GraphType, Paragraph};
-use ratatui_image::Image;
-use ratatui_image::Resize;
-use ratatui_image::picker::{Capability, Picker, ProtocolType};
-use ratatui_image::protocol::Protocol;
-use ratatui_image::protocol::kitty::Kitty;
+use ratatui_image::picker::Picker;
+use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
-use super::{device_color, plot, ratatui_color};
+use super::{device_color, kitty, plot, ratatui_color};
 use crate::app::{App, Metric};
 
 /// Kitty image id for the chart; reusing it makes the terminal replace the old frame.
-const CHART_IMAGE_ID: u32 = 0x7e3a_51c4;
+/// Below 2²⁴ so it fits in a placeholder's foreground color.
+const CHART_IMAGE_ID: u32 = 0x3a_51c4;
 /// How often the image is redrawn for new data and the scrolling time axis.
 const REFRESH: Duration = Duration::from_secs(5);
 /// Columns reserved left of the plot for y-axis labels.
@@ -90,14 +86,50 @@ pub struct ChartView {
 }
 
 impl ChartView {
-    pub fn new(picker: Option<Picker>) -> Self {
-        let graphics = picker
-            .filter(|p| p.protocol_type() != ProtocolType::Halfblocks)
-            .map(|picker| Graphics {
-                picker,
-                cache: None,
-            });
-        Self { graphics }
+    /// Images go to the terminal through shared memory when `picker` says that works;
+    /// otherwise the chart is drawn with braille characters. Finished images arrive on
+    /// the returned receiver and must be passed to [`ChartView::accept`].
+    pub fn new(picker: Option<Picker>) -> (Self, UnboundedReceiver<ChartUpdate>) {
+        let (updates, receiver) = mpsc::unbounded_channel();
+        let graphics = picker.filter(kitty::usable).map(|picker| {
+            let font = picker.font_size();
+            Graphics {
+                requests: spawn_renderer((font.width.into(), font.height.into()), updates.clone()),
+                in_flight: false,
+                shown: None,
+                failure: None,
+            }
+        });
+        (Self { graphics }, receiver)
+    }
+
+    /// Takes a finished image; returns the escape sequence to write to the terminal.
+    pub fn accept(&mut self, update: ChartUpdate) -> Option<String> {
+        let graphics = self.graphics.as_mut()?;
+        graphics.in_flight = false;
+        match update.image {
+            Ok(image) => {
+                graphics.failure = None;
+                let seq = image.transmit(CHART_IMAGE_ID, update.axes.cols, update.axes.rows);
+                graphics.shown = Some(Shown {
+                    view: update.view,
+                    axes: update.axes,
+                    requested_at: update.requested_at,
+                });
+                Some(seq)
+            }
+            Err(err) => {
+                graphics.failure = Some((err, Instant::now()));
+                None
+            }
+        }
+    }
+
+    /// Escape sequence that frees the chart image in the terminal, for shutdown.
+    pub fn farewell(&self) -> Option<String> {
+        self.graphics
+            .as_ref()
+            .map(|_| kitty::delete(CHART_IMAGE_ID))
     }
 
     pub fn render(&mut self, frame: &mut Frame, area: Rect, app: &App) {
@@ -120,22 +152,71 @@ impl ChartView {
         };
         let x = (-window.as_secs_f64(), 0.0);
         match &mut self.graphics {
-            Some(graphics) => graphics.render(frame, inner, app, &series, (x, y)),
+            Some(graphics) => graphics.render(frame, inner, app, series, (x, y)),
             None => render_braille(frame, inner, &series, (x, y)),
         }
     }
 }
 
-struct Graphics {
-    picker: Picker,
-    cache: Option<Cached>,
-}
-
-struct Cached {
+/// A finished chart image from the renderer thread.
+pub struct ChartUpdate {
     view: View,
     axes: Axes,
-    rendered_at: Instant,
-    protocol: Protocol,
+    requested_at: Instant,
+    image: Result<kitty::Shared, String>,
+}
+
+struct Request {
+    view: View,
+    axes: Axes,
+    requested_at: Instant,
+    series: Vec<Series>,
+}
+
+/// Rasterizes on its own thread so a slow frame never delays a keypress.
+fn spawn_renderer(
+    (cell_width, cell_height): (u32, u32),
+    updates: UnboundedSender<ChartUpdate>,
+) -> std::sync::mpsc::Sender<Request> {
+    let (requests, received) = std::sync::mpsc::channel::<Request>();
+    std::thread::spawn(move || {
+        let mut memory = kitty::SharedMemory::new();
+        for request in received {
+            let image = plot::rasterize(&request.axes, cell_width, cell_height, &request.series)
+                .ok_or_else(|| "chart area too large".to_owned())
+                .and_then(|pixels| {
+                    memory
+                        .write(&pixels)
+                        .map_err(|e| format!("writing to shared memory: {e}"))
+                });
+            let update = ChartUpdate {
+                view: request.view,
+                axes: request.axes,
+                requested_at: request.requested_at,
+                image,
+            };
+            if updates.send(update).is_err() {
+                break;
+            }
+        }
+    });
+    requests
+}
+
+struct Graphics {
+    requests: std::sync::mpsc::Sender<Request>,
+    /// A request is with the renderer; wait for it before asking again.
+    in_flight: bool,
+    /// What the terminal currently holds as [`CHART_IMAGE_ID`].
+    shown: Option<Shown>,
+    /// The last attempt's error; retried after [`REFRESH`].
+    failure: Option<(String, Instant)>,
+}
+
+struct Shown {
+    view: View,
+    axes: Axes,
+    requested_at: Instant,
 }
 
 /// Everything besides new data that changes the picture; a change redraws immediately.
@@ -156,7 +237,7 @@ impl Graphics {
         frame: &mut Frame,
         area: Rect,
         app: &App,
-        series: &[Series],
+        series: Vec<Series>,
         ranges: Ranges,
     ) {
         let [top, bottom] =
@@ -169,6 +250,10 @@ impl Graphics {
         if image_area.width < 2 || image_area.height < 2 {
             return;
         }
+        if let Some((err, _)) = &self.failure {
+            let msg = Paragraph::new(format!("chart image failed: {err}")).red();
+            frame.render_widget(msg, area);
+        }
 
         let view = View {
             area: image_area,
@@ -178,79 +263,42 @@ impl Graphics {
             devices: app.devices.len(),
         };
         let stale = self
-            .cache
+            .shown
             .as_ref()
-            .is_none_or(|c| c.view != view || c.rendered_at.elapsed() >= REFRESH);
-        if stale {
+            .is_none_or(|s| s.view != view || s.requested_at.elapsed() >= REFRESH);
+        let retry = self
+            .failure
+            .as_ref()
+            .is_none_or(|(_, at)| at.elapsed() >= REFRESH);
+        if stale && retry && !self.in_flight {
             let (x, y) = ranges;
-            let axes = Axes {
-                x,
-                y,
-                cols: image_area.width,
-                rows: image_area.height,
+            let request = Request {
+                view,
+                axes: Axes {
+                    x,
+                    y,
+                    cols: image_area.width,
+                    rows: image_area.height,
+                },
+                requested_at: Instant::now(),
+                series,
             };
-            match self.encode(&axes, series) {
-                Ok(protocol) => {
-                    self.cache = Some(Cached {
-                        view,
-                        axes,
-                        rendered_at: Instant::now(),
-                        protocol,
-                    });
-                }
-                Err(err) => {
-                    let msg = Paragraph::new(format!("chart image failed: {err:#}")).red();
-                    frame.render_widget(msg, area);
-                    return;
+            match self.requests.send(request) {
+                Ok(()) => self.in_flight = true,
+                Err(_) => {
+                    self.failure = Some(("chart renderer stopped".to_owned(), Instant::now()));
                 }
             }
         }
-        let cached = self.cache.as_ref().expect("cache was filled above");
-        frame.render_widget(Image::new(&cached.protocol), image_area);
-        // Labels come from the cached axes so they always match the image on screen.
-        render_y_labels(frame, y_labels, &cached.axes);
-        render_x_labels(frame, x_labels, &cached.axes);
+        // Until a new image arrives the previous one stays up; after a resize it
+        // would be the wrong size, so the area is left blank instead.
+        if let Some(shown) = self.shown.as_ref().filter(|s| s.view.area == image_area) {
+            kitty::place(frame.buffer_mut(), image_area, CHART_IMAGE_ID);
+            // Labels come from the shown image's axes so they always match it.
+            render_y_labels(frame, y_labels, &shown.axes);
+            render_x_labels(frame, x_labels, &shown.axes);
+        }
     }
-
-    fn encode(&self, axes: &Axes, series: &[Series]) -> Result<Protocol> {
-        let font = self.picker.font_size();
-        let image = plot::rasterize(axes, font.width.into(), font.height.into(), series)
-            .context("chart area too large")?;
-        let image = DynamicImage::ImageRgba8(image);
-        let size = Size::new(axes.cols, axes.rows);
-        let protocol = if self.picker.protocol_type() == ProtocolType::Kitty {
-            let compress = self
-                .picker
-                .capabilities()
-                .contains(&Capability::KittyCompression)
-                || known_to_inflate();
-            let kitty = Kitty::new(
-                image,
-                size,
-                CHART_IMAGE_ID,
-                self.picker.tmux_detected(),
-                compress,
-            )
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
-            Protocol::Kitty(kitty)
-        } else {
-            self.picker
-                .new_protocol(image, size, Resize::Fit(None))
-                .map_err(|e| anyhow::anyhow!("{e}"))?
-        };
-        Ok(protocol)
-    }
-}
-
-/// Whether the terminal is known to accept zlib-compressed images (`o=z`).
-///
-/// Ghostty does but doesn't answer ratatui-image's probe for it; uncompressed, a chart
-/// on a high-density screen is over 10 MB of escape codes per frame and stalls the terminal.
-fn known_to_inflate() -> bool {
-    let var = |name| std::env::var(name).unwrap_or_default();
-    ["ghostty", "kitty"]
-        .iter()
-        .any(|t| var("TERM_PROGRAM") == *t || var("TERM").contains(t))
 }
 
 fn render_y_labels(frame: &mut Frame, area: Rect, axes: &Axes) {

@@ -2,6 +2,7 @@
 
 mod calibration;
 mod chart;
+mod kitty;
 mod plot;
 mod popup;
 mod table;
@@ -13,10 +14,11 @@ use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Color, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui_image::picker::Picker;
+use tokio::sync::mpsc::UnboundedReceiver;
 
 use crate::app::{App, Mode, ScanStatus};
 
-pub use chart::ChartView;
+pub use chart::{ChartUpdate, ChartView};
 
 /// Line colors, assigned to devices in table order.
 const PALETTE: [(u8, u8, u8); 8] = [
@@ -45,10 +47,20 @@ pub struct Ui {
 
 impl Ui {
     /// `picker` is the terminal's graphics capability; `None` draws the chart with text.
-    pub fn new(picker: Option<Picker>) -> Self {
-        Self {
-            chart: ChartView::new(picker),
-        }
+    /// Chart images finish in the background and arrive on the returned receiver.
+    pub fn new(picker: Option<Picker>) -> (Self, UnboundedReceiver<ChartUpdate>) {
+        let (chart, updates) = ChartView::new(picker);
+        (Self { chart }, updates)
+    }
+
+    /// Takes a finished chart image; returns bytes to write to the terminal.
+    pub fn accept_chart(&mut self, update: ChartUpdate) -> Option<String> {
+        self.chart.accept(update)
+    }
+
+    /// Bytes to write to the terminal before exiting.
+    pub fn farewell(&self) -> Option<String> {
+        self.chart.farewell()
     }
 }
 

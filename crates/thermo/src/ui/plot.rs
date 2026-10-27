@@ -4,11 +4,9 @@ use tiny_skia::{
     Color, FillRule, LineCap, LineJoin, Paint, PathBuilder, Pixmap, Rect, Stroke, Transform,
 };
 
-use super::chart::{Axes, Emphasis, Series};
+use super::chart::{Axes, Emphasis, Point, Series};
 use super::kitty::Rgba;
 
-/// Consecutive samples further apart than this are not joined by a line.
-const GAP_SECS: f64 = 300.0;
 const GRID_RGBA: (u8, u8, u8, u8) = (128, 128, 128, 60);
 const DIMMED_ALPHA: u8 = 80;
 
@@ -116,7 +114,12 @@ fn draw_grid(pixmap: &mut Pixmap, mapping: &Mapping) {
 }
 
 fn draw_series(pixmap: &mut Pixmap, mapping: &Mapping, series: &Series, line_width: f32) {
-    let Some(&(last_x, last_y)) = series.points.last() else {
+    let Some(&Point {
+        x: last_x,
+        y: last_y,
+        ..
+    }) = series.points.last()
+    else {
         return;
     };
     let (r, g, b) = series.color;
@@ -130,11 +133,14 @@ fn draw_series(pixmap: &mut Pixmap, mapping: &Mapping, series: &Series, line_wid
 
     let mut path = PathBuilder::new();
     let mut column: Option<Column> = None;
-    let mut previous_x = None;
-    for &(x, y) in &series.points {
-        let (px, py) = (mapping.x(x), mapping.y(y));
-        let joined = previous_x.is_some_and(|prev| x - prev <= GAP_SECS);
-        previous_x = Some(x);
+    let mut dots = PathBuilder::new();
+    for (i, point) in series.points.iter().enumerate() {
+        let (px, py) = (mapping.x(point.x), mapping.y(point.y));
+        let joined = point.joined;
+        // A point joined to neither neighbor would leave no trace as a line.
+        if !joined && series.points.get(i + 1).is_none_or(|next| !next.joined) {
+            dots.push_circle(px, py, width / 2.0);
+        }
         match &mut column {
             Some(c) if joined && same_pixel(c.pixel, px.floor()) => c.add(px, py),
             _ => {
@@ -156,6 +162,15 @@ fn draw_series(pixmap: &mut Pixmap, mapping: &Mapping, series: &Series, line_wid
             ..Stroke::default()
         };
         pixmap.stroke_path(&path, &paint, &stroke, Transform::identity(), None);
+    }
+    if let Some(dots) = dots.finish() {
+        pixmap.fill_path(
+            &dots,
+            &paint,
+            FillRule::Winding,
+            Transform::identity(),
+            None,
+        );
     }
     if let Some(dot) = PathBuilder::from_circle(mapping.x(last_x), mapping.y(last_y), width * 1.4) {
         pixmap.fill_path(&dot, &paint, FillRule::Winding, Transform::identity(), None);
@@ -245,6 +260,19 @@ mod tests {
         rows: 6,
     };
 
+    /// Points joined into one line.
+    fn line(points: impl IntoIterator<Item = (f64, f64)>) -> Vec<Point> {
+        points
+            .into_iter()
+            .enumerate()
+            .map(|(i, (x, y))| Point {
+                x,
+                y,
+                joined: i > 0,
+            })
+            .collect()
+    }
+
     fn pixel(image: &Rgba, x: u32, y: u32) -> [u8; 4] {
         let i = 4 * (y * image.width + x) as usize;
         image.data[i..i + 4].try_into().expect("four bytes")
@@ -275,10 +303,10 @@ mod tests {
     }
 
     #[test]
-    fn draws_line_through_points_and_skips_gaps() {
+    fn draws_line_through_points() {
         let series = Series {
             color: (255, 0, 0),
-            points: vec![(-100.0, 5.0), (-50.0, 5.0), (0.0, 5.0)],
+            points: line([(-100.0, 5.0), (-50.0, 5.0), (0.0, 5.0)]),
             emphasis: Emphasis::Normal,
         };
         let image = rasterize(&AXES, 8, 16, &[series]).expect("small image");
@@ -294,14 +322,12 @@ mod tests {
         // 400 samples alternating between 2 and 8 squeezed into a few pixel columns.
         let series = Series {
             color: (0, 0, 255),
-            points: (0..400)
-                .map(|i| {
-                    (
-                        -1.0 + f64::from(i) / 400.0,
-                        if i % 2 == 0 { 2.0 } else { 8.0 },
-                    )
-                })
-                .collect(),
+            points: line((0..400).map(|i| {
+                (
+                    -1.0 + f64::from(i) / 400.0,
+                    if i % 2 == 0 { 2.0 } else { 8.0 },
+                )
+            })),
             emphasis: Emphasis::Normal,
         };
         let image = rasterize(&AXES, 8, 16, &[series]).expect("small image");
@@ -311,5 +337,28 @@ mod tests {
         for y in [28, 48, 68] {
             assert_eq!(alpha_at(&image, 83, y), 255, "y {y}");
         }
+    }
+
+    #[test]
+    fn breaks_lines_and_dots_lone_points() {
+        let point = |x, joined| Point { x, y: 5.0, joined };
+        let series = Series {
+            color: (255, 0, 0),
+            // A lone point at -80, a line from -50 to -30, and a lone point at 0.
+            points: vec![
+                point(-80.0, false),
+                point(-50.0, false),
+                point(-30.0, true),
+                point(0.0, false),
+            ],
+            emphasis: Emphasis::Normal,
+        };
+        let image = rasterize(&AXES, 8, 16, &[series]).expect("small image");
+        // x = 4 + (value + 100) · 0.8; y = 48 for 5.0.
+        // The dot is as wide as the line, centered on a pixel corner here.
+        assert!(alpha_at(&image, 20, 48) > 100, "lone point at -80");
+        assert_eq!(alpha_at(&image, 36, 48), 0, "no line from -80 to -50");
+        assert_eq!(alpha_at(&image, 52, 48), 255, "line from -50 to -30");
+        assert_eq!(alpha_at(&image, 70, 48), 0, "no line from -30 to 0");
     }
 }

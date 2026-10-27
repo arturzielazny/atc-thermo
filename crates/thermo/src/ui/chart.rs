@@ -13,6 +13,7 @@ use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
 use super::{device_color, kitty, plot, ratatui_color};
 use crate::app::{App, Metric};
+use crate::devices::{Sample, Source};
 
 /// Kitty image id for the chart; reusing it makes the terminal replace the old frame.
 /// Below 2²⁴ so it fits in a placeholder's foreground color.
@@ -22,13 +23,28 @@ const REFRESH: Duration = Duration::from_secs(5);
 /// Columns reserved left of the plot for y-axis labels.
 const Y_LABEL_WIDTH: u16 = 7;
 
+/// Live samples further apart than this are not joined by a line.
+const LIVE_GAP: Duration = Duration::from_secs(5 * 60);
+/// The same for stretches filled from device logs, which hold one averaged record per
+/// log period; the longest period the settings offer is an hour.
+const LOG_GAP: Duration = Duration::from_secs(65 * 60);
+
 /// One device's line on the chart.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Series {
     pub color: (u8, u8, u8),
-    /// `(seconds relative to now, value)`, oldest first; x is ≤ 0.
-    pub points: Vec<(f64, f64)>,
+    /// Oldest first.
+    pub points: Vec<Point>,
     pub emphasis: Emphasis,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Point {
+    /// Seconds relative to now, ≤ 0.
+    pub x: f64,
+    pub y: f64,
+    /// Whether a line connects this point to the previous one.
+    pub joined: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -335,9 +351,14 @@ fn render_x_labels(frame: &mut Frame, area: Rect, axes: &Axes) {
 }
 
 fn render_braille(frame: &mut Frame, area: Rect, series: &[Series], (x, y): Ranges) {
+    let coordinates: Vec<Vec<(f64, f64)>> = series
+        .iter()
+        .map(|s| s.points.iter().map(|p| (p.x, p.y)).collect())
+        .collect();
     let datasets: Vec<Dataset> = series
         .iter()
-        .map(|s| {
+        .zip(&coordinates)
+        .map(|(s, coordinates)| {
             let style = Style::new().fg(ratatui_color(s.color));
             let style = if s.emphasis == Emphasis::Dimmed {
                 style.dim()
@@ -348,7 +369,7 @@ fn render_braille(frame: &mut Frame, area: Rect, series: &[Series], (x, y): Rang
                 .marker(Marker::Braille)
                 .graph_type(GraphType::Line)
                 .style(style)
-                .data(&s.points)
+                .data(coordinates)
         })
         .collect();
     let x_labels: Vec<Line> = [x.0, x.0 / 2.0, 0.0]
@@ -382,16 +403,29 @@ fn build_series(app: &App, now: SystemTime) -> Vec<Series> {
         .iter()
         .enumerate()
         .map(|(i, device)| {
-            let mut points: Vec<(f64, f64)> = device
+            let mut samples: Vec<&Sample> = device
                 .history()
                 .iter()
                 .rev()
-                .map_while(|sample| {
-                    let ago = now.duration_since(sample.at).unwrap_or_default();
-                    (ago <= window).then(|| (-ago.as_secs_f64(), f64::from(app.metric.of(sample))))
+                .take_while(|sample| now.duration_since(sample.at).unwrap_or_default() <= window)
+                .collect();
+            samples.reverse();
+            let mut previous: Option<&Sample> = None;
+            let points = samples
+                .into_iter()
+                .map(|sample| {
+                    let joined = previous.is_some_and(|prev| joins(prev, sample));
+                    previous = Some(sample);
+                    Point {
+                        x: -now
+                            .duration_since(sample.at)
+                            .unwrap_or_default()
+                            .as_secs_f64(),
+                        y: f64::from(app.metric.of(sample)),
+                        joined,
+                    }
                 })
                 .collect();
-            points.reverse();
             let emphasis = match selected {
                 None => Emphasis::Normal,
                 Some(s) if s == i => Emphasis::Selected,
@@ -406,15 +440,24 @@ fn build_series(app: &App, now: SystemTime) -> Vec<Series> {
         .collect()
 }
 
+/// Whether a line belongs between two consecutive samples.
+fn joins(earlier: &Sample, later: &Sample) -> bool {
+    let limit = if earlier.source == Source::Log || later.source == Source::Log {
+        LOG_GAP
+    } else {
+        LIVE_GAP
+    };
+    later.at.duration_since(earlier.at).unwrap_or_default() <= limit
+}
+
 /// Y range covering all points with some headroom, or `None` without data.
 fn y_bounds(series: &[Series], metric: Metric) -> Option<(f64, f64)> {
-    let (lo, hi) =
-        series
-            .iter()
-            .flat_map(|s| &s.points)
-            .fold(None, |acc: Option<(f64, f64)>, &(_, v)| {
-                Some(acc.map_or((v, v), |(lo, hi)| (lo.min(v), hi.max(v))))
-            })?;
+    let (lo, hi) = series.iter().flat_map(|s| &s.points).fold(
+        None,
+        |acc: Option<(f64, f64)>, &Point { y: v, .. }| {
+            Some(acc.map_or((v, v), |(lo, hi)| (lo.min(v), hi.max(v))))
+        },
+    )?;
     let span = (hi - lo).max(metric.min_span());
     let center = f64::midpoint(lo, hi);
     Some((center - span * 0.55, center + span * 0.55))
@@ -478,12 +521,42 @@ mod tests {
     fn y_bounds_have_minimum_span() {
         let series = [Series {
             color: (0, 0, 0),
-            points: vec![(-10.0, 21.0), (0.0, 21.2)],
+            points: vec![
+                Point {
+                    x: -10.0,
+                    y: 21.0,
+                    joined: false,
+                },
+                Point {
+                    x: 0.0,
+                    y: 21.2,
+                    joined: true,
+                },
+            ],
             emphasis: Emphasis::Normal,
         }];
         let (lo, hi) = y_bounds(&series, Metric::Temperature).expect("has points");
         assert!(lo < 21.0 && hi > 21.2);
         assert!(hi - lo >= Metric::Temperature.min_span());
         assert_eq!(y_bounds(&[], Metric::Temperature), None);
+    }
+
+    #[test]
+    fn log_records_join_across_their_period() {
+        let start = SystemTime::UNIX_EPOCH + Duration::from_secs(1_793_000_000);
+        let sample = |minutes: u64, source| Sample {
+            at: start + Duration::from_secs(minutes * 60),
+            temperature: 21.0,
+            humidity: 50.0,
+            source,
+        };
+        let live = |m| sample(m, Source::Live);
+        let log = |m| sample(m, Source::Log);
+        assert!(joins(&live(0), &live(5)));
+        assert!(!joins(&live(0), &live(6)));
+        assert!(joins(&log(0), &log(30)));
+        assert!(joins(&log(0), &live(30)));
+        assert!(joins(&log(0), &log(60)));
+        assert!(!joins(&log(0), &log(70)));
     }
 }

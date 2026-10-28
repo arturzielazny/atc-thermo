@@ -2,7 +2,9 @@
 
 use std::time::{Duration, SystemTime};
 
-use atc::{ClockReading, Coefficients, Config, Correction, Thermometer, TxPower};
+use atc::{
+    ClockReading, Coefficients, Config, Correction, ScreenMessage, Smiley, Thermometer, TxPower,
+};
 use bluer::{Adapter, Address};
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
@@ -12,6 +14,9 @@ use crate::devices::LoggedSample;
 const JOB_TIMEOUT: Duration = Duration::from_secs(180);
 /// Wait after a failed connect before checking for a late, unwanted connection.
 const LATE_CONNECT_GRACE: Duration = Duration::from_secs(3);
+/// How long a device shows its number; long enough for a whole row of devices to be
+/// reached one connection after another.
+pub const IDENTIFY_DURATION: Duration = Duration::from_secs(10 * 60);
 
 /// Settings changes; `None` leaves a value as it is on the device.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -41,6 +46,10 @@ pub enum Action {
     SyncClock {
         download_since: SystemTime,
     },
+    /// Show `number` on the device's screen for [`IDENTIFY_DURATION`].
+    Identify {
+        number: u8,
+    },
     Rename(String),
     Configure(Settings),
     /// Compose a correction onto the device's current coefficients.
@@ -56,6 +65,7 @@ impl Action {
         match self {
             Self::Download { .. } => "downloading log",
             Self::SyncClock { .. } => "syncing clock",
+            Self::Identify { .. } => "identifying",
             Self::Rename(_) => "renaming",
             Self::Configure(_) => "configuring",
             Self::Calibrate { .. } => "calibrating",
@@ -80,6 +90,9 @@ pub enum Outcome {
         offset_before: f64,
         rate: RateTrim,
         samples: Vec<LoggedSample>,
+    },
+    Identified {
+        number: u8,
     },
     Renamed(String),
     Configured(Config),
@@ -205,6 +218,10 @@ async fn perform(t: &mut Thermometer, action: Action) -> Result<Outcome, atc::Er
                 samples,
             })
         }
+        Action::Identify { number } => {
+            t.show(&identify_message(number)).await?;
+            Ok(Outcome::Identified { number })
+        }
         Action::Rename(name) => Ok(Outcome::Renamed(t.set_name(&name).await?)),
         Action::Configure(settings) => {
             let mut config = t.config().await?;
@@ -235,6 +252,23 @@ async fn perform(t: &mut Thermometer, action: Action) -> Result<Outcome, atc::Er
             let after = t.reset_coefficients().await?;
             Ok(Outcome::CalibrationReset { before, after })
         }
+    }
+}
+
+/// `number` big and small with a happy face. Single digits are repeated (`333`) so
+/// they show without the decimal point a reading has and can't pass for one.
+fn identify_message(number: u8) -> ScreenMessage {
+    let n = i16::from(number);
+    let big_tenths = match n {
+        1..=9 => n * 111 * 10,
+        10..=19 => (n * 100 + n) * 10,
+        _ => n * 10,
+    };
+    ScreenMessage {
+        big_tenths,
+        small: i8::try_from(number).unwrap_or(i8::MAX).min(99),
+        smiley: Smiley::Happy,
+        duration: IDENTIFY_DURATION,
     }
 }
 
@@ -327,4 +361,20 @@ fn apply_settings(config: &mut Config, settings: &Settings) -> Result<(), atc::E
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn identify_numbers_cannot_pass_for_readings() {
+        let big = |n| identify_message(n).big_tenths;
+        // From 1996 tenths on the display drops the point: 3330 shows "333".
+        assert_eq!(big(3), 3330);
+        assert_eq!(big(12), 12_120);
+        assert_eq!(identify_message(3).small, 3);
+        assert_eq!(identify_message(200).small, 99);
+        assert!(identify_message(200).duration == IDENTIFY_DURATION);
+    }
 }

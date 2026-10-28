@@ -10,13 +10,15 @@ use crate::clock::ticks_delta;
 use crate::coefficients::COEFFICIENTS_LEN;
 use crate::config::CONFIG_LEN;
 use crate::log::LOG_RECORD_LEN;
-use crate::{ClockReading, Coefficients, Config, Error, LogRecord};
+use crate::screen::SCREEN_MESSAGE_LEN;
+use crate::{ClockReading, Coefficients, Config, Error, LogRecord, ScreenMessage};
 
 /// The firmware's command/notify characteristic `0x1F1F`.
 const COMMAND_UUID: Uuid = Uuid::from_u128(0x0000_1f1f_0000_1000_8000_0080_5f9b_34fb);
 
 const CMD_DEV_ID: u8 = 0x00;
 const CMD_NAME: u8 = 0x01;
+const CMD_SCREEN: u8 = 0x22;
 const CMD_CLOCK: u8 = 0x23;
 const CMD_SECOND_TICKS: u8 = 0x24;
 const CMD_COEFFICIENTS: u8 = 0x25;
@@ -252,6 +254,26 @@ impl Thermometer {
         payload.extend_from_slice(&secs.to_le_bytes());
         let reply = self.command(&payload, 5).await?;
         Ok(clock_from_reply(&reply, SystemTime::now()))
+    }
+
+    /// Shows `message` on the LCD, alternating with the readings.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the message cannot be displayed, or the device does not answer or
+    /// stores something else.
+    pub async fn show(&mut self, message: &ScreenMessage) -> Result<(), Error> {
+        let bytes = message.to_bytes()?;
+        let mut payload = vec![CMD_SCREEN];
+        payload.extend_from_slice(&bytes);
+        let reply = self.command(&payload, 1 + SCREEN_MESSAGE_LEN).await?;
+        if reply[1..=SCREEN_MESSAGE_LEN] != bytes {
+            return Err(Error::InvalidValue(format!(
+                "device stored screen data {:02x?} instead of {bytes:02x?}",
+                &reply[1..=SCREEN_MESSAGE_LEN]
+            )));
+        }
+        Ok(())
     }
 
     /// System timer ticks the device counts as one second of its clock, nominally

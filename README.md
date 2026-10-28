@@ -21,6 +21,7 @@ to `~/.local/share/thermo/YYYY-MM-DD.csv` and reloaded on start; gaps in the las
 |---|---|
 | `↑` `↓` | select a device · `Esc` clears marks, then the selection |
 | `space` / `a` | mark one / all devices: actions apply to marked devices, or the selected one |
+| `i` | identify: show the device's `#` from the table on its screen for 10 min (`333` for #3, with a smiley) |
 | `n` | rename the selected device |
 | `s` | sync device clocks with this computer and trim the drift measured since the last sync |
 | `e` | settings: advertising interval, measurement interval, TX power, log interval |

@@ -12,7 +12,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use crate::calibrate;
 use crate::devices::{Devices, HISTORY_SPAN, LoggedSample, Sample};
 use crate::forms::SettingsForm;
-use crate::jobs::{Action, Job, JobEvent, Outcome, RateTrim};
+use crate::jobs::{Action, IDENTIFY_DURATION, Job, JobEvent, Outcome, RateTrim};
 use crate::scanner::ScanEvent;
 use crate::store::{CalibrationRecord, Store};
 
@@ -368,6 +368,10 @@ impl App {
                     describe_rate(rate)
                 )
             }
+            Outcome::Identified { number } => format!(
+                "showing {number} for {} min",
+                IDENTIFY_DURATION.as_secs() / 60
+            ),
             Outcome::Renamed(name) => {
                 self.devices.rename(address, name.clone());
                 format!("renamed to {name}")
@@ -586,6 +590,19 @@ impl App {
                 let since = SystemTime::now() - DOWNLOAD_SPAN;
                 self.for_targets(|_| Action::Download { since });
             }
+            KeyCode::Char('i') => {
+                let numbers: Vec<(Address, u8)> = self
+                    .targets()
+                    .into_iter()
+                    .filter_map(|address| Some((address, self.device_number(address)?)))
+                    .collect();
+                if numbers.is_empty() {
+                    self.warn_no_targets();
+                }
+                for (address, number) in numbers {
+                    self.enqueue(address, Action::Identify { number });
+                }
+            }
             KeyCode::Char('e') => {
                 let targets = self.targets();
                 if targets.is_empty() {
@@ -605,6 +622,12 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    /// The device's row number in the table, from 1; what `i` shows on its screen.
+    pub fn device_number(&self, address: Address) -> Option<u8> {
+        let index = self.devices.iter().position(|d| d.address == address)?;
+        u8::try_from(index + 1).ok()
     }
 
     fn start_rename(&mut self) {
@@ -878,6 +901,17 @@ mod tests {
         press(&mut app, KeyCode::Char('s'));
         let addresses: Vec<Address> = drain(&mut rx).iter().map(|j| j.address).collect();
         assert_eq!(addresses, [A, B]);
+
+        // Each marked device shows its own row number.
+        press(&mut app, KeyCode::Char('i'));
+        let actions: Vec<Action> = drain(&mut rx).into_iter().map(|j| j.action).collect();
+        assert_eq!(
+            actions,
+            [
+                Action::Identify { number: 1 },
+                Action::Identify { number: 2 }
+            ]
+        );
 
         // Esc clears the marks first, then the selection.
         press(&mut app, KeyCode::Esc);

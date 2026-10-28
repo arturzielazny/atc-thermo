@@ -28,11 +28,11 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         .devices
         .iter()
         .enumerate()
-        .map(|(i, device)| row(app, device, device_color(i), now))
+        .map(|(i, device)| row(app, i + 1, device, device_color(i), now))
         .collect();
     let header = Row::new([
-        "", "Device", "Address", "Temp", "Humidity", "Battery", "Voltage", "RSSI", "Seen", "Clock",
-        "Status",
+        "", "#", "Device", "Address", "Temp", "Humidity", "Battery", "Voltage", "RSSI", "Seen",
+        "Clock", "Status",
     ])
     .style(Style::new().bold());
     let name_width = app
@@ -43,6 +43,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         .unwrap_or(0)
         .max(MIN_NAME_WIDTH);
     let widths = [
+        Constraint::Length(2),
         Constraint::Length(2),
         Constraint::Length(u16::try_from(name_width).unwrap_or(u16::MAX)),
         Constraint::Length(17),
@@ -89,7 +90,14 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_stateful_widget(table, area, &mut state);
 }
 
-fn row(app: &App, device: &Device, color: (u8, u8, u8), now: SystemTime) -> Row<'static> {
+/// `number` is what `i` shows on the device's screen.
+fn row(
+    app: &App,
+    number: usize,
+    device: &Device,
+    color: (u8, u8, u8),
+    now: SystemTime,
+) -> Row<'static> {
     let fmt = |value: Option<f32>, unit: &str, decimals: usize| {
         value.map_or_else(|| "–".to_owned(), |v| format!("{v:.decimals$}{unit}"))
     };
@@ -122,6 +130,7 @@ fn row(app: &App, device: &Device, color: (u8, u8, u8), now: SystemTime) -> Row<
             Span::from(mark).bold(),
             Span::from("●").fg(ratatui_color(color)),
         ])),
+        Cell::from(format!("{number:>2}")),
         Cell::from(device.name.clone()),
         Cell::from(device.address.to_string()),
         Cell::from(temperature),

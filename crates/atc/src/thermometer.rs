@@ -6,6 +6,7 @@ use bluer::{Adapter, Address, Device, Uuid};
 use futures::{Stream, StreamExt};
 use tokio::time::{Instant, timeout, timeout_at};
 
+use crate::clock::ticks_delta;
 use crate::coefficients::COEFFICIENTS_LEN;
 use crate::config::CONFIG_LEN;
 use crate::log::LOG_RECORD_LEN;
@@ -17,6 +18,7 @@ const COMMAND_UUID: Uuid = Uuid::from_u128(0x0000_1f1f_0000_1000_8000_0080_5f9b_
 const CMD_DEV_ID: u8 = 0x00;
 const CMD_NAME: u8 = 0x01;
 const CMD_CLOCK: u8 = 0x23;
+const CMD_SECOND_TICKS: u8 = 0x24;
 const CMD_COEFFICIENTS: u8 = 0x25;
 const CMD_COEFFICIENTS_DEFAULT: u8 = 0x26;
 const CMD_LOG: u8 = 0x35;
@@ -250,6 +252,38 @@ impl Thermometer {
         payload.extend_from_slice(&secs.to_le_bytes());
         let reply = self.command(&payload, 5).await?;
         Ok(clock_from_reply(&reply, SystemTime::now()))
+    }
+
+    /// System timer ticks the device counts as one second of its clock, nominally
+    /// [`NOMINAL_SECOND_TICKS`](crate::NOMINAL_SECOND_TICKS).
+    ///
+    /// # Errors
+    ///
+    /// Fails if the device does not answer, e.g. firmware built without time adjustment.
+    pub async fn second_ticks(&mut self) -> Result<u32, Error> {
+        let reply = self.command(&[CMD_SECOND_TICKS], 5).await?;
+        Ok(u32::from_le_bytes([reply[1], reply[2], reply[3], reply[4]]))
+    }
+
+    /// Sets the length of a clock second; the device keeps it in flash.
+    ///
+    /// # Errors
+    ///
+    /// Fails if `ticks` is outside nominal ± 32767, or the device does not answer or
+    /// stores something else.
+    pub async fn set_second_ticks(&mut self, ticks: u32) -> Result<u32, Error> {
+        let delta = ticks_delta(ticks).ok_or_else(|| {
+            Error::InvalidValue(format!("{ticks} ticks per second is out of range"))
+        })?;
+        let [lo, hi] = delta.to_le_bytes();
+        let reply = self.command(&[CMD_SECOND_TICKS, lo, hi], 5).await?;
+        let stored = u32::from_le_bytes([reply[1], reply[2], reply[3], reply[4]]);
+        if stored != ticks {
+            return Err(Error::InvalidValue(format!(
+                "device stored {stored} ticks per second instead of {ticks}"
+            )));
+        }
+        Ok(stored)
     }
 
     /// Downloads log records, newest first, while `wanted` returns `true` for them.

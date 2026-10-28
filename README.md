@@ -22,7 +22,7 @@ to `~/.local/share/thermo/YYYY-MM-DD.csv` and reloaded on start; gaps in the las
 | `↑` `↓` | select a device · `Esc` clears marks, then the selection |
 | `space` / `a` | mark one / all devices: actions apply to marked devices, or the selected one |
 | `n` | rename the selected device |
-| `s` | sync device clocks with this computer |
+| `s` | sync device clocks with this computer and trim the drift measured since the last sync |
 | `e` | settings: advertising interval, measurement interval, TX power, log interval |
 | `d` | download the device log for the last 24 h |
 | `c` | calibration screen (see [docs/calibration.md](docs/calibration.md)) |
@@ -33,7 +33,7 @@ to `~/.local/share/thermo/YYYY-MM-DD.csv` and reloaded on start; gaps in the las
 
 - `crates/bthome`: dependency-free BTHome v2 payload decoder.
 - `crates/atc`: async BLE client for the pvvx firmware's command interface (config,
-  name, clock, sensor coefficients, log download).
+  name, clock and its rate, sensor coefficients, log download).
 - `crates/calibration`: consensus calibration of co-located sensors.
 - `crates/thermo`: the dashboard.
 

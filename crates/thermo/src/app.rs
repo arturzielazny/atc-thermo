@@ -12,7 +12,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use crate::calibrate;
 use crate::devices::{Devices, HISTORY_SPAN, LoggedSample, Sample};
 use crate::forms::SettingsForm;
-use crate::jobs::{Action, Job, JobEvent, Outcome};
+use crate::jobs::{Action, Job, JobEvent, Outcome, RateTrim};
 use crate::scanner::ScanEvent;
 use crate::store::{CalibrationRecord, Store};
 
@@ -346,13 +346,15 @@ impl App {
             }
             Outcome::ClockSynced {
                 offset_before,
+                rate,
                 samples,
             } => {
                 state.clock_offset = Some(0.0);
                 let added = self.merge_downloaded(address, &samples);
                 format!(
-                    "clock synced, was {}; {added} log records added",
-                    format_offset(offset_before)
+                    "clock synced, was {}{}; {added} log records added",
+                    format_offset(offset_before),
+                    describe_rate(rate)
                 )
             }
             Outcome::Renamed(name) => {
@@ -749,6 +751,17 @@ impl App {
 }
 
 /// `"ok"`, `"+12s"`, `"-3m"`, `"+2.4h"`.
+/// Status text after the clock offset, e.g. `", drift +19 s/day trimmed"`.
+fn describe_rate(rate: RateTrim) -> String {
+    let per_day = |drift: f64| format!("{:+.1} s/day", drift * 86_400.0);
+    match rate {
+        RateTrim::Unknown => String::new(),
+        RateTrim::Trimmed { drift } => format!(", drift {} trimmed", per_day(drift)),
+        RateTrim::TooLarge { drift } => format!(", drift {} too large to trim", per_day(drift)),
+        RateTrim::Unsupported => ", rate not adjustable".to_owned(),
+    }
+}
+
 pub fn format_offset(secs: f64) -> String {
     match secs.abs() {
         a if a < 1.5 => "ok".to_owned(),
@@ -770,6 +783,13 @@ mod tests {
         assert_eq!(format_offset(600.0), "+10m");
         assert_eq!(format_offset(-9000.0), "-2.5h");
         assert_eq!(format_offset(-1_793_040_361.0), "-20753d");
+        assert_eq!(
+            describe_rate(RateTrim::Trimmed {
+                drift: 19.0 / 86_400.0
+            }),
+            ", drift +19.0 s/day trimmed"
+        );
+        assert_eq!(describe_rate(RateTrim::Unknown), "");
     }
 
     use tokio::sync::mpsc::{self, UnboundedReceiver};

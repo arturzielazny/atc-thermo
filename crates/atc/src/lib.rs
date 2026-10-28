@@ -15,7 +15,7 @@ mod error;
 mod log;
 mod thermometer;
 
-pub use clock::ClockReading;
+pub use clock::{ClockReading, NOMINAL_SECOND_TICKS, trimmed_second_ticks};
 pub use coefficients::{Coefficients, Correction};
 pub use config::{Config, TxPower};
 pub use error::Error;

@@ -138,8 +138,8 @@ Temperature and humidity are handled independently.
 ## 5. Status
 
 Done: `crates/atc` (BLE client), `crates/calibration` (fit), `thermo calibrate
-[HOURS]` (offline report), the TUI calibration screen (`c`), clock sync, and log
-download with drift-corrected time mapping.
+[HOURS]` (offline report), the TUI calibration screen (`c`), clock sync with rate
+trimming, and log download with drift-corrected time mapping.
 
 Findings from the first real run (5 devices on a table, 2026-10-26):
 
@@ -148,9 +148,14 @@ Findings from the first real run (5 devices on a table, 2026-10-26):
   the last set, if the clock was set to real time). Syncing a clock first downloads
   the history newer than the last download, since older records can't be dated
   reliably afterwards.
+- Synced clocks gained about 30 s in a day and a half (~200 ppm), all five alike:
+  the chip keeps time through sleep with its 32 kHz RC oscillator. When the last
+  sync is at least 12 h old, a sync also lengthens or shortens the device's second
+  (`0x24`, in 16 MHz timer ticks, ±2000 ppm, kept in flash) by the measured drift.
+  The rate still depends on temperature.
 - Connecting makes BlueZ pause discovery; the scanner restarts it 5 s after the
   last device job. A connection that BlueZ completes after we gave up is
   disconnected explicitly, because a connected thermometer stops advertising.
 
-Not done: dew-point-based humidity comparison, clock trimming (`0x24`) from
-measured drift, validation fit on a held-out last phase.
+Not done: dew-point-based humidity comparison, validation fit on a held-out last
+phase.

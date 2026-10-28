@@ -36,7 +36,8 @@ pub enum Action {
         since: SystemTime,
     },
     /// Download log records newer than `download_since` (they can only be dated with
-    /// the old clock), then set the clock to host time.
+    /// the old clock), trim the clock rate by the drift since the last sync, then set
+    /// the clock to host time.
     SyncClock {
         download_since: SystemTime,
     },
@@ -77,6 +78,7 @@ pub enum Outcome {
     },
     ClockSynced {
         offset_before: f64,
+        rate: RateTrim,
         samples: Vec<LoggedSample>,
     },
     Renamed(String),
@@ -91,6 +93,20 @@ pub enum Outcome {
         before: Coefficients,
         after: Coefficients,
     },
+}
+
+/// What a clock sync did about the rate the clock drifts at.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum RateTrim {
+    /// The clock was never synced, or too recently to measure its drift.
+    Unknown,
+    /// `drift` (fraction, positive = fast) is corrected from now on.
+    Trimmed { drift: f64 },
+    /// `drift` is more than the firmware can correct, which suggests the clock was
+    /// last set to something other than this computer's time.
+    TooLarge { drift: f64 },
+    /// The firmware has no rate adjustment.
+    Unsupported,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -180,9 +196,12 @@ async fn perform(t: &mut Thermometer, action: Action) -> Result<Outcome, atc::Er
         Action::SyncClock { download_since } => {
             let before = t.clock().await?;
             let samples = read_samples(t, &before, download_since).await?;
+            // Before setting the clock, so the new rate starts with the new time.
+            let rate = trim_rate(t, &before).await?;
             t.set_clock(SystemTime::now()).await?;
             Ok(Outcome::ClockSynced {
                 offset_before: before.offset_secs(),
+                rate,
                 samples,
             })
         }
@@ -217,6 +236,22 @@ async fn perform(t: &mut Thermometer, action: Action) -> Result<Outcome, atc::Er
             Ok(Outcome::CalibrationReset { before, after })
         }
     }
+}
+
+async fn trim_rate(t: &mut Thermometer, clock: &ClockReading) -> Result<RateTrim, atc::Error> {
+    let Some(drift) = clock.drift() else {
+        return Ok(RateTrim::Unknown);
+    };
+    let current = match t.second_ticks().await {
+        Ok(ticks) => ticks,
+        Err(atc::Error::Timeout { .. }) => return Ok(RateTrim::Unsupported),
+        Err(err) => return Err(err),
+    };
+    let Some(ticks) = atc::trimmed_second_ticks(current, drift) else {
+        return Ok(RateTrim::TooLarge { drift });
+    };
+    t.set_second_ticks(ticks).await?;
+    Ok(RateTrim::Trimmed { drift })
 }
 
 async fn download(t: &mut Thermometer, since: SystemTime) -> Result<Outcome, atc::Error> {

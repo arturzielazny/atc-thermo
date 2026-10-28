@@ -31,7 +31,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         .map(|(i, device)| row(app, i + 1, device, device_color(i), now))
         .collect();
     let header = Row::new([
-        "", "#", "Device", "Address", "Temp", "Humidity", "Battery", "Voltage", "RSSI", "Seen",
+        "", "#", "Device", "Address", "Temp", "Humidity", "Battery", "Voltage", "RSSI 5m", "Seen",
         "Clock", "Status",
     ])
     .style(Style::new().bold());
@@ -144,9 +144,9 @@ fn row(
         Cell::from(fmt(device.voltage, " V", 2)),
         level_cell(
             device
-                .rssi
+                .typical_rssi()
                 .map_or_else(|| "–".to_owned(), |r| format!("{r} dBm")),
-            device.rssi.map(rssi_level),
+            device.typical_rssi().map(rssi_level),
         ),
         Cell::from(format_age(age)),
         Cell::from(clock),

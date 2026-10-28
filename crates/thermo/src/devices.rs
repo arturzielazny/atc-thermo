@@ -10,6 +10,9 @@ use crate::scanner::Advert;
 
 /// How far back history is kept in memory: the longest calibration window.
 pub const HISTORY_SPAN: Duration = Duration::from_secs(48 * 60 * 60);
+/// Signal strengths of the adverts within this span before the latest one make up
+/// [`Device::typical_rssi`].
+const RSSI_SPAN: Duration = Duration::from_secs(5 * 60);
 
 /// Where a sample came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -68,6 +71,8 @@ pub struct Device {
     pub encrypted: bool,
     last_sample_packet: Option<u8>,
     history: VecDeque<Sample>,
+    /// Every advert's signal strength within [`RSSI_SPAN`], oldest first.
+    recent_rssi: VecDeque<(SystemTime, i16)>,
 }
 
 impl Device {
@@ -84,6 +89,36 @@ impl Device {
             encrypted: false,
             last_sample_packet: None,
             history: VecDeque::new(),
+            recent_rssi: VecDeque::new(),
+        }
+    }
+
+    /// Median signal strength of the adverts in the last [`RSSI_SPAN`] the device was
+    /// heard, or the latest one known. Single adverts jump by several dB from channel
+    /// to channel and fade to fade; the median shows the usual level.
+    pub fn typical_rssi(&self) -> Option<i16> {
+        let mut values: Vec<i16> = self.recent_rssi.iter().map(|&(_, rssi)| rssi).collect();
+        if values.is_empty() {
+            return self.rssi;
+        }
+        values.sort_unstable();
+        let mid = values.len() / 2;
+        Some(if values.len() % 2 == 0 {
+            let sum = i32::from(values[mid - 1]) + i32::from(values[mid]);
+            i16::try_from(sum.div_euclid(2)).expect("between two i16 values")
+        } else {
+            values[mid]
+        })
+    }
+
+    fn note_rssi(&mut self, at: SystemTime, rssi: i16) {
+        self.recent_rssi.push_back((at, rssi));
+        while self
+            .recent_rssi
+            .front()
+            .is_some_and(|&(t, _)| at.duration_since(t).unwrap_or_default() > RSSI_SPAN)
+        {
+            self.recent_rssi.pop_front();
         }
     }
 
@@ -186,6 +221,9 @@ impl Devices {
             .or_insert_with(|| Device::new(advert.address, advert.name.clone(), advert.received));
         device.name = advert.name;
         device.rssi = advert.rssi.or(device.rssi);
+        if let Some(rssi) = advert.rssi {
+            device.note_rssi(advert.received, rssi);
+        }
         device.last_seen = advert.received;
 
         let objects = match bthome::parse(&advert.payload)?.payload {
@@ -310,6 +348,25 @@ mod tests {
         0x40, 0x00, 0xa4, 0x01, 0x57, 0x02, 0xc4, 0x08, 0x03, 0x3e, 0x16,
     ];
     const VOLTAGE: [u8; 10] = [0x40, 0x00, 0xa4, 0x0c, 0x91, 0x0b, 0x10, 0x00, 0x11, 0x01];
+
+    #[test]
+    fn typical_rssi_is_the_recent_median() {
+        let mut devices = Devices::default();
+        let start = SystemTime::now();
+        let heard = |devices: &mut Devices, secs: u64, rssi: i16| {
+            let mut a = advert(&VOLTAGE, start + Duration::from_secs(secs));
+            a.rssi = Some(rssi);
+            devices.record(a).expect("valid");
+        };
+        // An old strong reading drops out of the span; a deep fade barely counts.
+        heard(&mut devices, 0, -40);
+        for (i, rssi) in [-80, -82, -95, -81, -79].into_iter().enumerate() {
+            heard(&mut devices, 400 + 10 * i as u64, rssi);
+        }
+        let d = device(&devices);
+        assert_eq!(d.rssi, Some(-79));
+        assert_eq!(d.typical_rssi(), Some(-81));
+    }
 
     #[test]
     fn merges_alternating_packets() {

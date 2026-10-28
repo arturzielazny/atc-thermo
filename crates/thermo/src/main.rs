@@ -8,6 +8,7 @@ mod calibrate;
 mod devices;
 mod forms;
 mod jobs;
+mod localtime;
 mod scanner;
 mod store;
 mod ui;
@@ -69,7 +70,8 @@ fn print_calibration(hours: u32) -> Result<()> {
     let now = SystemTime::now();
     let devices = app.calibration_devices();
     let last_changes = open_store()?.last_calibrations()?;
-    let since = calibrate::window_start(hours, now, &devices, &last_changes);
+    let requested = now - Duration::from_secs(u64::from(hours) * 3600);
+    let since = calibrate::window_start(requested, &devices, &last_changes);
     let run = calibrate::run(&app.devices, &devices, since, now)?;
     print!("{}", calibrate::format(&run));
     Ok(())

@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::fmt::Write;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use atc::Correction;
 use bluer::Address;
@@ -20,15 +20,13 @@ pub struct Run {
     pub report: Report,
 }
 
-/// The window start: `hours` back from `now`, but never before the last coefficient change
-/// of a participating device, since older data was recorded with other coefficients.
+/// The window start: `requested`, but never before the last coefficient change of a
+/// participating device, since older data was recorded with other coefficients.
 pub fn window_start(
-    hours: u32,
-    now: SystemTime,
+    requested: SystemTime,
     devices: &[Address],
     last_calibrations: &HashMap<Address, SystemTime>,
 ) -> SystemTime {
-    let requested = now - Duration::from_secs(u64::from(hours) * 3600);
     devices
         .iter()
         .filter_map(|a| last_calibrations.get(a))
@@ -190,6 +188,8 @@ pub fn notes(t: &Fit, h: &Fit) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
 
     #[test]
@@ -233,11 +233,11 @@ mod tests {
         let mut changes = HashMap::new();
         changes.insert(b, now - Duration::from_secs(3600));
         assert_eq!(
-            window_start(6, now, &[a], &changes),
+            window_start(now - Duration::from_secs(6 * 3600), &[a], &changes),
             now - Duration::from_secs(6 * 3600)
         );
         assert_eq!(
-            window_start(6, now, &[a, b], &changes),
+            window_start(now - Duration::from_secs(6 * 3600), &[a, b], &changes),
             now - Duration::from_secs(3600)
         );
     }

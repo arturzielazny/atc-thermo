@@ -14,6 +14,7 @@ use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use super::{device_color, kitty, plot, ratatui_color};
 use crate::app::{App, ChartStyle, Metric};
 use crate::devices::{Sample, Source};
+use crate::localtime;
 
 /// Kitty image id for the chart; reusing it makes the terminal replace the old frame.
 /// Below 2²⁴ so it fits in a placeholder's foreground color.
@@ -28,6 +29,11 @@ const Y_LABEL_WIDTH: u16 = 7;
 const Y_STEPS: [f64; 10] = [0.02, 0.05, 0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0];
 /// Fewest rows from one horizontal gridline to the next, so their labels don't touch.
 const MIN_GRID_ROWS: f64 = 2.0;
+/// Times between vertical gridlines in minutes, finest first; they fall on round
+/// local times such as 14:30.
+const X_STEPS_MINUTES: [u32; 11] = [1, 5, 10, 15, 30, 60, 120, 180, 360, 720, 1440];
+/// Fewest columns from one vertical gridline to the next, room for `14:30` and a gap.
+const MIN_GRID_COLS: f64 = 14.0;
 
 /// Live samples further apart than this are not joined by a line.
 const LIVE_GAP: Duration = Duration::from_secs(5 * 60);
@@ -72,12 +78,23 @@ pub struct Axes {
     pub rows: u16,
     /// Value between horizontal gridlines; `None` spreads them evenly instead.
     pub y_step: Option<f64>,
+    /// Local clock time at x = 0 (now), in seconds as from
+    /// [`localtime::local_seconds`]; x values are seconds relative to it.
+    pub x_origin: i64,
+    /// Seconds between vertical gridlines; `None` spreads them evenly instead.
+    pub x_step: Option<i64>,
 }
 
 impl Axes {
     /// Widens `y` so horizontal gridlines sit on rows at multiples of a round step,
     /// the finest from [`Y_STEPS`] (not below `min_step`) the rows have room for.
-    pub fn fit(x: (f64, f64), y: (f64, f64), (cols, rows): (u16, u16), min_step: f64) -> Self {
+    pub fn fit(
+        x: (f64, f64),
+        y: (f64, f64),
+        (cols, rows): (u16, u16),
+        min_step: f64,
+        x_origin: i64,
+    ) -> Self {
         let intervals = f64::from(rows.saturating_sub(1));
         let fitted = [MIN_GRID_ROWS, 1.0].into_iter().find_map(|min_rows| {
             Y_STEPS
@@ -96,13 +113,46 @@ impl Axes {
                 })
         });
         let (y, y_step) = fitted.map_or((y, None), |(y, step)| (y, Some(step)));
+        let cols_per_second = f64::from(cols.saturating_sub(1)) / (x.1 - x.0);
+        let x_step = X_STEPS_MINUTES
+            .into_iter()
+            .map(|minutes| i64::from(minutes) * 60)
+            .find(|&step| seconds(step) * cols_per_second >= MIN_GRID_COLS);
         Self {
             x,
             y,
             cols,
             rows,
             y_step,
+            x_origin,
+            x_step,
         }
+    }
+
+    /// Columns that get a gridline, with the local time each stands for.
+    pub fn grid_times(&self) -> Vec<(u16, i64)> {
+        let Some(step) = self.x_step else {
+            let last = self.cols.saturating_sub(1);
+            return evenly_spaced(last, if self.cols >= 40 { 4 } else { 1 })
+                .into_iter()
+                .map(|col| (col, self.x_origin + whole_seconds(self.value_at_col(col))))
+                .collect();
+        };
+        let (lo, hi) = self.x;
+        let (start, end) = (
+            self.x_origin + whole_seconds(lo.ceil()),
+            self.x_origin + whole_seconds(hi.floor()),
+        );
+        let last = f64::from(self.cols.saturating_sub(1));
+        let first = start + (-start).rem_euclid(step);
+        (first..=end)
+            .step_by(usize::try_from(step).expect("steps are positive"))
+            .filter_map(|time| {
+                let x = seconds(time - self.x_origin);
+                let col = ((x - lo) / (hi - lo) * last).round();
+                Some((whole_column(col)?, time))
+            })
+            .collect()
     }
 
     pub fn value_at_row(&self, row: u16) -> f64 {
@@ -140,9 +190,30 @@ impl Axes {
 
     /// Columns that get a gridline and a time label.
     pub fn grid_cols(&self) -> Vec<u16> {
-        let last = self.cols.saturating_sub(1);
-        evenly_spaced(last, if self.cols >= 40 { 4 } else { 1 })
+        self.grid_times().into_iter().map(|(col, _)| col).collect()
     }
+}
+
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "times in seconds stay far below 2^53"
+)]
+fn seconds(value: i64) -> f64 {
+    value as f64
+}
+
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "callers pass whole numbers of seconds from a chart window"
+)]
+fn whole_seconds(value: f64) -> i64 {
+    value.round() as i64
+}
+
+fn whole_column(value: f64) -> Option<u16> {
+    (0.0..=f64::from(u16::MAX))
+        .contains(&value)
+        .then(|| u16::try_from(whole_seconds(value)).expect("checked range"))
 }
 
 fn evenly_spaced(last: u16, intervals: u16) -> Vec<u16> {
@@ -215,16 +286,18 @@ impl ChartView {
         let inner = block.inner(area);
         frame.render_widget(block, area);
 
-        let series = build_series(app, SystemTime::now());
+        let now = SystemTime::now();
+        let series = build_series(app, now);
         let Some(y) = y_bounds(&series, app.metric) else {
             let waiting = Paragraph::new("\n  Waiting for measurements…").dark_gray();
             frame.render_widget(waiting, inner);
             return;
         };
         let x = (-window.as_secs_f64(), 0.0);
+        let origin = localtime::local_seconds(now);
         match &mut self.graphics {
-            Some(graphics) => graphics.render(frame, inner, app, series, (x, y)),
-            None => render_braille(frame, inner, &series, (x, y)),
+            Some(graphics) => graphics.render(frame, inner, app, series, (x, y), origin),
+            None => render_braille(frame, inner, &series, (x, y), origin),
         }
     }
 }
@@ -316,6 +389,7 @@ impl Graphics {
         app: &App,
         series: Vec<Series>,
         ranges: Ranges,
+        x_origin: i64,
     ) {
         let [top, bottom] =
             Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(area);
@@ -357,6 +431,7 @@ impl Graphics {
                     y,
                     (image_area.width, image_area.height),
                     app.metric.min_grid_step(),
+                    x_origin,
                 ),
                 requested_at: Instant::now(),
                 series,
@@ -397,8 +472,8 @@ fn render_y_labels(frame: &mut Frame, area: Rect, axes: &Axes) {
 }
 
 fn render_x_labels(frame: &mut Frame, area: Rect, axes: &Axes) {
-    for col in axes.grid_cols() {
-        let label = format_ago(-axes.value_at_col(col));
+    for (col, time) in axes.grid_times() {
+        let label = localtime::label(time);
         let len = u16::try_from(label.chars().count()).unwrap_or(u16::MAX);
         let Some(max_x) = area.width.checked_sub(len) else {
             continue;
@@ -413,7 +488,7 @@ fn render_x_labels(frame: &mut Frame, area: Rect, axes: &Axes) {
     }
 }
 
-fn render_braille(frame: &mut Frame, area: Rect, series: &[Series], (x, y): Ranges) {
+fn render_braille(frame: &mut Frame, area: Rect, series: &[Series], (x, y): Ranges, x_origin: i64) {
     let coordinates: Vec<Vec<(f64, f64)>> = series
         .iter()
         .map(|s| s.points.iter().map(|p| (p.x, p.y)).collect())
@@ -437,7 +512,7 @@ fn render_braille(frame: &mut Frame, area: Rect, series: &[Series], (x, y): Rang
         .collect();
     let x_labels: Vec<Line> = [x.0, x.0 / 2.0, 0.0]
         .into_iter()
-        .map(|v| Line::from(format_ago(-v)))
+        .map(|v| Line::from(localtime::label(x_origin + whole_seconds(v))))
         .collect();
     let y_labels: Vec<Line> = [y.0, f64::midpoint(y.0, y.1), y.1]
         .into_iter()
@@ -527,15 +602,6 @@ fn y_bounds(series: &[Series], metric: Metric) -> Option<(f64, f64)> {
     Some((center - span * 0.55, center + span * 0.55))
 }
 
-/// `"now"` for zero, otherwise e.g. `"-15m"` or `"-1.5h"`.
-fn format_ago(secs: f64) -> String {
-    if secs.abs() < 0.5 {
-        "now".to_owned()
-    } else {
-        format!("-{}", format_span(secs))
-    }
-}
-
 /// `"10m"`, `"7.5m"`, `"6h"`, `"4.5h"`.
 fn format_span(secs: f64) -> String {
     let (value, unit) = if secs < 2.0 * 3600.0 {
@@ -563,6 +629,8 @@ mod tests {
             cols: 81,
             rows: 13,
             y_step: None,
+            x_origin: 0,
+            x_step: None,
         };
         let rows = axes.grid_rows();
         assert_eq!(rows.first(), Some(&0));
@@ -575,7 +643,7 @@ mod tests {
 
     /// Fits `y` into `rows` and returns the step and the gridline values, top first.
     fn gridlines(y: (f64, f64), rows: u16, min_step: f64) -> (Option<f64>, Vec<f64>) {
-        let axes = Axes::fit((-3600.0, 0.0), y, (80, rows), min_step);
+        let axes = Axes::fit((-3600.0, 0.0), y, (80, rows), min_step, 0);
         assert!(
             axes.y.0 <= y.0 && axes.y.1 >= y.1,
             "{:?} misses {y:?}",
@@ -620,7 +688,7 @@ mod tests {
             values.contains(&21.94) && values.contains(&22.04),
             "{values:?}"
         );
-        let axes = Axes::fit((-3600.0, 0.0), (21.93, 22.05), (80, 30), 0.02);
+        let axes = Axes::fit((-3600.0, 0.0), (21.93, 22.05), (80, 30), 0.02, 0);
         assert_eq!(axes.y_decimals(), 2);
         // Humidity stops at tenths.
         assert_eq!(gridlines((55.43, 55.55), 30, 0.1).0, Some(0.1));
@@ -628,7 +696,7 @@ mod tests {
 
     #[test]
     fn gridlines_are_evenly_spaced_and_centered() {
-        let axes = Axes::fit((-3600.0, 0.0), (20.85, 21.95), (80, 30), 0.1);
+        let axes = Axes::fit((-3600.0, 0.0), (20.85, 21.95), (80, 30), 0.1, 0);
         let rows = axes.grid_rows();
         let gaps: Vec<u16> = rows.windows(2).map(|w| w[1] - w[0]).collect();
         assert!(gaps.iter().all(|&g| g == gaps[0] && g >= 2), "{rows:?}");
@@ -651,12 +719,33 @@ mod tests {
     }
 
     #[test]
+    fn time_gridlines_fall_on_round_local_times() {
+        // Now is 14:07:30 local; one hour across 151 columns.
+        let origin = 20_754 * 86_400 + 14 * 3600 + 7 * 60 + 30;
+        let axes = Axes::fit((-3600.0, 0.0), (20.0, 22.0), (151, 20), 0.1, origin);
+        assert_eq!(axes.x_step, Some(600));
+        let labels: Vec<String> = axes
+            .grid_times()
+            .into_iter()
+            .map(|(_, time)| localtime::label(time))
+            .collect();
+        assert_eq!(
+            labels,
+            ["13:10", "13:20", "13:30", "13:40", "13:50", "14:00"]
+        );
+        // 13:10 is 57.5 minutes back: column 150 · 2.5 / 60 ≈ 6.
+        assert_eq!(axes.grid_times()[0].0, 6);
+        // A day across a narrow chart steps by hours.
+        let day = Axes::fit((-86_400.0, 0.0), (20.0, 22.0), (80, 20), 0.1, origin);
+        assert_eq!(day.x_step, Some(6 * 3600));
+    }
+
+    #[test]
     fn span_labels() {
-        assert_eq!(format_ago(0.0), "now");
-        assert_eq!(format_ago(900.0), "-15m");
-        assert_eq!(format_ago(450.0), "-7.5m");
-        assert_eq!(format_ago(5.0 * 3600.0), "-5h");
-        assert_eq!(format_ago(4.5 * 3600.0), "-4.5h");
+        assert_eq!(format_span(900.0), "15m");
+        assert_eq!(format_span(450.0), "7.5m");
+        assert_eq!(format_span(5.0 * 3600.0), "5h");
+        assert_eq!(format_span(4.5 * 3600.0), "4.5h");
     }
 
     #[test]

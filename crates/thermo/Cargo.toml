@@ -13,6 +13,7 @@ bthome.workspace = true
 calibration.workspace = true
 crossterm = { version = "0.29.0", features = ["event-stream"] }
 futures.workspace = true
+jiff = "0.2.38"
 ratatui = "0.30.2"
 ratatui-image = { version = "11.1.0", default-features = false, features = ["crossterm"] }
 tiny-skia = "0.12.0"

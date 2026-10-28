@@ -129,7 +129,7 @@ fn key_help(app: &App) -> Line<'static> {
         Mode::Rename { .. } => " type a name · Enter save (empty = default) · Esc cancel",
         Mode::Settings(_) => " ↑↓ field · ←→ value · Enter apply · Esc cancel",
         Mode::Calibration(_) => {
-            " ←→ window · Enter apply · s sync clocks · x factory reset · space/a mark devices first to pick a subset · Esc back"
+            " Tab start/end · ←→ move 15 min (Shift: 1 h) · Enter apply · s sync clocks · x factory reset · mark devices (space/a) first to pick a subset · Esc back"
         }
     };
     Line::from(help).style(Style::new().dark_gray())

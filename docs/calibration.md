@@ -95,8 +95,10 @@ range (watch `Seen` and the signal chart, `r`).
    ignored while the cases catch up, and readings above 95 %RH are dropped, so
    avoid fog and rain.
 3. **Calibrate** (`c`) while still there, or after another ≥ 2 h back inside.
-   Pick a window (`←` `→`) covering both places but starting after any
-   disturbance; it never reaches back past the last calibration. Check that
+   Set the window to cover both places but none of the moves or handling:
+   `Tab` switches between its start and end, `←` `→` move the edge by 15 min
+   (Shift: 1 h), snapped to round times you can read off the chart. The start
+   never reaches back past the last calibration of the devices taking part. Check that
    `Phases` is 2, the steady range spans both temperatures, and `T gain` /
    `H gain` show numbers (`–` means the span was too small or the gain is
    indistinguishable from 1, so only the offset is written). `Enter`, `y` writes.

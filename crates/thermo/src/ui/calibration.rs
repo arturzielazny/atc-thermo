@@ -8,14 +8,13 @@ use ratatui::style::{Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Cell, Paragraph, Row, Table, Wrap};
 
-use crate::app::{App, CalibrationScreen, Confirm};
-use crate::calibrate;
+use crate::app::{App, CalibrationScreen, Confirm, WindowEdge};
+use crate::{calibrate, localtime};
 
 pub fn render(frame: &mut Frame, area: Rect, app: &App, screen: &CalibrationScreen) {
     let devices = app.calibration_devices();
     let title = format!(
-        " Calibration · last {} h · {} devices{} ",
-        screen.hours(),
+        " Calibration · {} devices{} ",
         devices.len(),
         if devices.len() < app.devices.len() {
             " (marked)"
@@ -26,6 +25,13 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App, screen: &CalibrationScre
     let block = Block::bordered().title(title);
     let inner = block.inner(area);
     frame.render_widget(block, area);
+    let [window_area, _, inner] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Min(1),
+    ])
+    .areas(inner);
+    frame.render_widget(window_line(app, screen), window_area);
 
     let run = match &screen.result {
         None => {
@@ -64,16 +70,53 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App, screen: &CalibrationScre
     frame.render_widget(footer(run, screen), footer_area);
 }
 
-fn summary(run: &calibrate::Run) -> Vec<Line<'static>> {
-    let r = &run.report;
-    let since = SystemTime::now()
-        .duration_since(run.since)
+/// `Window  [13:15] → [now]  5.8 h`, with the edge that `←`/`→` move highlighted.
+fn window_line(app: &App, screen: &CalibrationScreen) -> Line<'static> {
+    let now = SystemTime::now();
+    let edge = |text: String, edge: WindowEdge| {
+        let span = Span::from(format!(" {text} "));
+        if screen.editing == edge {
+            span.reversed()
+        } else {
+            span.bold()
+        }
+    };
+    let end = screen.end.unwrap_or(now);
+    let hours = end
+        .duration_since(screen.start)
         .unwrap_or_default()
         .as_secs_f64()
         / 3600.0;
+    let mut spans = vec![
+        Span::from("Window "),
+        edge(
+            localtime::format_moment(screen.start, now),
+            WindowEdge::Start,
+        ),
+        Span::from(" → "),
+        edge(
+            screen.end.map_or_else(
+                || "now".to_owned(),
+                |end| localtime::format_moment(end, now),
+            ),
+            WindowEdge::End,
+        ),
+        Span::from(format!("  {hours:.1} h")),
+    ];
+    let earliest = app.earliest_calibration_start();
+    if earliest > SystemTime::UNIX_EPOCH && screen.start <= earliest {
+        spans.push(
+            Span::from("  · starts at the last calibration, the earliest usable data").dark_gray(),
+        );
+    }
+    Line::from(spans)
+}
+
+fn summary(run: &calibrate::Run) -> Vec<Line<'static>> {
+    let r = &run.report;
     vec![
         Line::from(format!(
-            "Data from the last {since:.1} h · steady: {} min temperature, {} min humidity · {} phase(s)",
+            "Steady data: {} min temperature, {} min humidity · {} phase(s)",
             r.temperature.steady.as_secs() / 60,
             r.humidity.steady.as_secs() / 60,
             r.phases.len()

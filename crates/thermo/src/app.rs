@@ -33,11 +33,11 @@ const MAX_HISTORY_GAP: Duration = Duration::from_secs(15 * 60);
 /// Discovery restarts this long after the last device job, unless another one starts.
 const SCAN_RESTART_DELAY: Duration = Duration::from_secs(5);
 
-/// Calibration windows, in hours, that `←`/`→` choose from; a fit needs at least
-/// 1.5 h (see [`calibration::Options::shortest_span`]).
-pub const CALIBRATION_HOURS: [u32; 6] = [2, 3, 6, 12, 24, 48];
-/// 6 h.
-const DEFAULT_CALIBRATION_HOURS: usize = 2;
+/// Calibration window when the screen opens: the last 6 h.
+const DEFAULT_CALIBRATION_SPAN: Duration = Duration::from_secs(6 * 3600);
+/// How far `←`/`→` move a calibration window edge, and with Shift.
+const WINDOW_NUDGE: Duration = Duration::from_secs(15 * 60);
+const WINDOW_JUMP: Duration = Duration::from_secs(3600);
 /// How often the calibration screen refits as new data arrives.
 const CALIBRATION_REFRESH: Duration = Duration::from_secs(60);
 
@@ -142,16 +142,22 @@ pub enum Confirm {
 
 #[derive(Debug)]
 pub struct CalibrationScreen {
-    pub hours_index: usize,
+    /// First moment of data to fit; never before the participating devices' last
+    /// calibration, since older data was recorded with other coefficients.
+    pub start: SystemTime,
+    /// Last moment of data to fit; `None` follows the current time.
+    pub end: Option<SystemTime>,
+    /// Which edge `←`/`→` move.
+    pub editing: WindowEdge,
     pub result: Option<Result<calibrate::Run, String>>,
     pub confirm: Option<Confirm>,
     computed_at: Option<Instant>,
 }
 
-impl CalibrationScreen {
-    pub fn hours(&self) -> u32 {
-        CALIBRATION_HOURS[self.hours_index]
-    }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowEdge {
+    Start,
+    End,
 }
 
 #[derive(Debug)]
@@ -512,9 +518,12 @@ impl App {
             return;
         };
         let now = SystemTime::now();
-        let since = calibrate::window_start(screen.hours(), now, &devices, &self.last_calibrations);
-        screen.result =
-            Some(calibrate::run(&self.devices, &devices, since, now).map_err(|e| e.to_string()));
+        // A calibration since the screen opened moves the earliest usable data.
+        screen.start = calibrate::window_start(screen.start, &devices, &self.last_calibrations);
+        let until = screen.end.unwrap_or(now);
+        screen.result = Some(
+            calibrate::run(&self.devices, &devices, screen.start, until).map_err(|e| e.to_string()),
+        );
         screen.computed_at = Some(Instant::now());
     }
 
@@ -530,7 +539,7 @@ impl App {
             Mode::Normal => self.on_normal_key(key.code),
             Mode::Rename { address, input } => self.on_rename_key(key.code, address, input),
             Mode::Settings(form) => self.on_settings_key(key.code, form),
-            Mode::Calibration(screen) => self.on_calibration_key(key.code, screen),
+            Mode::Calibration(screen) => self.on_calibration_key(key, screen),
         }
     }
 
@@ -612,8 +621,12 @@ impl App {
                 }
             }
             KeyCode::Char('c') => {
+                let requested = SystemTime::now() - DEFAULT_CALIBRATION_SPAN;
+                let devices = self.calibration_devices();
                 self.mode = Mode::Calibration(CalibrationScreen {
-                    hours_index: DEFAULT_CALIBRATION_HOURS,
+                    start: calibrate::window_start(requested, &devices, &self.last_calibrations),
+                    end: None,
+                    editing: WindowEdge::Start,
                     result: None,
                     confirm: None,
                     computed_at: None,
@@ -710,7 +723,8 @@ impl App {
         self.mode = Mode::Settings(form);
     }
 
-    fn on_calibration_key(&mut self, code: KeyCode, mut screen: CalibrationScreen) {
+    fn on_calibration_key(&mut self, key: KeyEvent, mut screen: CalibrationScreen) {
+        let code = key.code;
         if let Some(confirm) = screen.confirm.take() {
             if code == KeyCode::Char('y') {
                 match confirm {
@@ -727,12 +741,21 @@ impl App {
         }
         match code {
             KeyCode::Esc | KeyCode::Char('q') => return,
-            KeyCode::Left | KeyCode::Char('h') => {
-                screen.hours_index = screen.hours_index.saturating_sub(1);
-                screen.computed_at = None;
+            KeyCode::Tab | KeyCode::BackTab => {
+                screen.editing = match screen.editing {
+                    WindowEdge::Start => WindowEdge::End,
+                    WindowEdge::End => WindowEdge::Start,
+                };
             }
-            KeyCode::Right | KeyCode::Char('l') => {
-                screen.hours_index = (screen.hours_index + 1).min(CALIBRATION_HOURS.len() - 1);
+            KeyCode::Left | KeyCode::Right | KeyCode::Char('h' | 'l') => {
+                let step = if key.modifiers.contains(KeyModifiers::SHIFT) {
+                    WINDOW_JUMP
+                } else {
+                    WINDOW_NUDGE
+                };
+                let later = matches!(code, KeyCode::Right | KeyCode::Char('l'));
+                let earliest = self.earliest_calibration_start();
+                move_window_edge(&mut screen, step, later, earliest, SystemTime::now());
                 screen.computed_at = None;
             }
             KeyCode::Enter => {
@@ -749,6 +772,15 @@ impl App {
         }
         self.mode = Mode::Calibration(screen);
         self.on_tick();
+    }
+
+    /// Where the calibration window would start if moved as far back as allowed.
+    pub fn earliest_calibration_start(&self) -> SystemTime {
+        calibrate::window_start(
+            SystemTime::UNIX_EPOCH,
+            &self.calibration_devices(),
+            &self.last_calibrations,
+        )
     }
 
     fn apply_calibration(&mut self, result: Option<&Result<calibrate::Run, String>>) {
@@ -805,6 +837,47 @@ fn describe_rate(rate: RateTrim) -> String {
     }
 }
 
+/// Moves the edge being edited by `step`, snapped to round local times (14:15, 14:30,
+/// ...), keeping the start at or after `earliest` and before the end. An end at or
+/// past `now` follows the current time again.
+fn move_window_edge(
+    screen: &mut CalibrationScreen,
+    step: Duration,
+    later: bool,
+    earliest: SystemTime,
+    now: SystemTime,
+) {
+    let end = screen.end.unwrap_or(now);
+    match screen.editing {
+        WindowEdge::Start => {
+            let moved = snap(screen.start, step, later).max(earliest);
+            screen.start = moved.min(end - WINDOW_NUDGE).max(earliest);
+        }
+        WindowEdge::End => {
+            let moved = snap(end, step, later).max(screen.start + WINDOW_NUDGE);
+            screen.end = (moved < now).then_some(moved);
+        }
+    }
+}
+
+/// The next multiple of `step` on the local clock after `time`, or before it.
+fn snap(time: SystemTime, step: Duration, later: bool) -> SystemTime {
+    let step = i64::try_from(step.as_secs()).expect("window steps are small");
+    let local = crate::localtime::local_seconds(time);
+    let offset = local - unix_seconds(time);
+    let snapped = if later {
+        local.div_euclid(step) * step + step
+    } else {
+        (local - 1).div_euclid(step) * step
+    };
+    SystemTime::UNIX_EPOCH + Duration::from_secs(u64::try_from(snapped - offset).unwrap_or(0))
+}
+
+fn unix_seconds(time: SystemTime) -> i64 {
+    time.duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
+}
+
 pub fn format_offset(secs: f64) -> String {
     match secs.abs() {
         a if a < 1.5 => "ok".to_owned(),
@@ -818,6 +891,45 @@ pub fn format_offset(secs: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn calibration_window_edges_snap_and_stay_ordered() {
+        let local = |time| crate::localtime::local_seconds(time);
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_793_200_000);
+        let earliest = now - Duration::from_secs(5 * 3600);
+        let mut screen = CalibrationScreen {
+            start: now - Duration::from_secs(3 * 3600),
+            end: None,
+            editing: WindowEdge::Start,
+            result: None,
+            confirm: None,
+            computed_at: None,
+        };
+        // Earlier by 15 min lands on a quarter hour of the local clock.
+        move_window_edge(&mut screen, WINDOW_NUDGE, false, earliest, now);
+        assert_eq!(local(screen.start) % 900, 0);
+        assert!(screen.start < now - Duration::from_secs(3 * 3600));
+        // Never before the last calibration.
+        for _ in 0..30 {
+            move_window_edge(&mut screen, WINDOW_JUMP, false, earliest, now);
+        }
+        assert_eq!(screen.start, earliest);
+
+        // The end leaves "now", snaps, and cannot pass the start.
+        screen.editing = WindowEdge::End;
+        move_window_edge(&mut screen, WINDOW_JUMP, false, earliest, now);
+        let end = screen.end.expect("moved off now");
+        assert_eq!(local(end) % 3600, 0);
+        for _ in 0..30 {
+            move_window_edge(&mut screen, WINDOW_JUMP, false, earliest, now);
+        }
+        assert_eq!(screen.end, Some(screen.start + WINDOW_NUDGE));
+        // Moving it past the present follows the clock again.
+        for _ in 0..30 {
+            move_window_edge(&mut screen, WINDOW_JUMP, true, earliest, now);
+        }
+        assert_eq!(screen.end, None);
+    }
 
     #[test]
     fn offsets() {

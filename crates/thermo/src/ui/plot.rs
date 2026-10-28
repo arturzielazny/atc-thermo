@@ -284,6 +284,8 @@ mod tests {
         cols: 11,
         rows: 6,
         y_step: None,
+        x_origin: 0,
+        x_step: None,
     };
 
     /// Points joined into one line.

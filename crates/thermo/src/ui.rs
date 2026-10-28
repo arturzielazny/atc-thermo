@@ -64,22 +64,46 @@ impl Ui {
     }
 }
 
+/// Rows the chart needs under the calibration panel before the device table may
+/// take space from it: borders, time labels and a readable plot.
+const MIN_CALIBRATION_CHART: u16 = 12;
+
 pub fn draw(frame: &mut Frame, app: &App, ui: &mut Ui) {
     let table_height = u16::try_from(app.devices.len().max(1))
         .unwrap_or(u16::MAX)
         .saturating_add(3);
-    let [top_area, table_area, status_area] = Layout::vertical([
-        Constraint::Min(8),
-        Constraint::Length(table_height),
-        Constraint::Length(2),
-    ])
-    .areas(frame.area());
+    let [main_area, status_area] =
+        Layout::vertical([Constraint::Min(1), Constraint::Length(2)]).areas(frame.area());
 
-    match &app.mode {
-        Mode::Calibration(screen) => calibration::render(frame, top_area, app, screen),
-        _ => ui.chart.render(frame, top_area, app),
+    if let Mode::Calibration(screen) = &app.mode {
+        // Panel, then the chart with the window marked; the device table only if
+        // the chart still gets enough rows.
+        let panel_height = calibration::height(screen).min(main_area.height);
+        let show_table = main_area.height >= panel_height + MIN_CALIBRATION_CHART + table_height;
+        let [panel_area, chart_area, table_area] = Layout::vertical([
+            Constraint::Length(panel_height),
+            Constraint::Min(0),
+            Constraint::Length(if show_table { table_height } else { 0 }),
+        ])
+        .areas(main_area);
+        calibration::render(frame, panel_area, app, screen);
+        if chart_area.height >= MIN_CALIBRATION_CHART / 2 {
+            let cut = chart::Cut {
+                start: screen.start,
+                end: screen.end,
+            };
+            ui.chart.render(frame, chart_area, app, Some(cut));
+        }
+        if show_table {
+            table::render(frame, table_area, app);
+        }
+    } else {
+        let [top_area, table_area] =
+            Layout::vertical([Constraint::Min(8), Constraint::Length(table_height)])
+                .areas(main_area);
+        ui.chart.render(frame, top_area, app, None);
+        table::render(frame, table_area, app);
     }
-    table::render(frame, table_area, app);
     let [status, keys] =
         Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).areas(status_area);
     frame.render_widget(status_line(app), status);

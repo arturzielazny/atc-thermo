@@ -41,6 +41,49 @@ const LIVE_GAP: Duration = Duration::from_secs(5 * 60);
 /// log period; the longest period the settings offer is an hour.
 const LOG_GAP: Duration = Duration::from_secs(65 * 60);
 
+/// Chart spans offered while showing a calibration window: the shortest that
+/// covers it with a little room before its start is used.
+const CUT_SPANS: [Duration; 11] = [
+    Duration::from_secs(3600),
+    Duration::from_secs(2 * 3600),
+    Duration::from_secs(3 * 3600),
+    Duration::from_secs(4 * 3600),
+    Duration::from_secs(6 * 3600),
+    Duration::from_secs(8 * 3600),
+    Duration::from_secs(12 * 3600),
+    Duration::from_secs(18 * 3600),
+    Duration::from_secs(24 * 3600),
+    Duration::from_secs(36 * 3600),
+    Duration::from_secs(48 * 3600),
+];
+
+/// The data a calibration uses, drawn over the chart; `end: None` is now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Cut {
+    pub start: SystemTime,
+    pub end: Option<SystemTime>,
+}
+
+impl Cut {
+    /// The chart span that shows the whole cut with some time before it.
+    fn span(self, now: SystemTime) -> Duration {
+        let needed = now
+            .duration_since(self.start)
+            .unwrap_or_default()
+            .mul_f64(1.1);
+        CUT_SPANS
+            .into_iter()
+            .find(|&span| span >= needed)
+            .unwrap_or(CUT_SPANS[CUT_SPANS.len() - 1])
+    }
+
+    /// The kept range in chart x values (seconds relative to `now`).
+    fn x_range(self, now: SystemTime) -> (f64, f64) {
+        let ago = |time: SystemTime| -now.duration_since(time).unwrap_or_default().as_secs_f64();
+        (ago(self.start), self.end.map_or(0.0, ago))
+    }
+}
+
 /// One device's line on the chart.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Series {
@@ -274,20 +317,26 @@ impl ChartView {
             .map(|_| kitty::delete(CHART_IMAGE_ID))
     }
 
-    pub fn render(&mut self, frame: &mut Frame, area: Rect, app: &App) {
-        let window = app.window();
+    /// `cut` marks a calibration window on the chart and stretches its span to fit.
+    pub fn render(&mut self, frame: &mut Frame, area: Rect, app: &App, cut: Option<Cut>) {
+        let now = SystemTime::now();
+        let window = cut.map_or_else(|| app.window(), |cut| cut.span(now));
         let title = format!(
-            " {} ({}) · last {} ",
+            " {} ({}) · last {}{} ",
             app.metric.label(),
             app.metric.unit(),
-            format_span(window.as_secs_f64())
+            format_span(window.as_secs_f64()),
+            if cut.is_some() {
+                " · shaded: left out of the calibration"
+            } else {
+                ""
+            }
         );
         let block = Block::bordered().title(title);
         let inner = block.inner(area);
         frame.render_widget(block, area);
 
-        let now = SystemTime::now();
-        let series = build_series(app, now);
+        let series = build_series(app, now, window);
         let Some(y) = y_bounds(&series, app.metric) else {
             let waiting = Paragraph::new("\n  Waiting for measurements…").dark_gray();
             frame.render_widget(waiting, inner);
@@ -296,7 +345,16 @@ impl ChartView {
         let x = (-window.as_secs_f64(), 0.0);
         let origin = localtime::local_seconds(now);
         match &mut self.graphics {
-            Some(graphics) => graphics.render(frame, inner, app, series, (x, y), origin),
+            Some(graphics) => {
+                let shape = Shape {
+                    ranges: (x, y),
+                    x_origin: origin,
+                    window,
+                    cut,
+                    cut_x: cut.map(|cut| cut.x_range(now)),
+                };
+                graphics.render(frame, inner, app, series, shape);
+            }
             None => render_braille(frame, inner, &series, (x, y), origin),
         }
     }
@@ -315,6 +373,19 @@ struct Request {
     axes: Axes,
     requested_at: Instant,
     series: Vec<Series>,
+    /// Kept x range of [`View::cut`] at the time of the request.
+    cut_x: Option<(f64, f64)>,
+}
+
+/// Value ranges, time span and calibration overlay of one chart image.
+#[derive(Debug, Clone, Copy)]
+struct Shape {
+    ranges: Ranges,
+    /// Local clock time at x = 0, see [`Axes::x_origin`].
+    x_origin: i64,
+    window: Duration,
+    cut: Option<Cut>,
+    cut_x: Option<(f64, f64)>,
 }
 
 /// Rasterizes on its own thread so a slow frame never delays a keypress.
@@ -331,6 +402,7 @@ fn spawn_renderer(
                 (cell_width, cell_height),
                 request.view.style,
                 &request.series,
+                request.cut_x,
             )
             .ok_or_else(|| "chart area too large".to_owned())
             .and_then(|pixels| {
@@ -377,6 +449,7 @@ struct View {
     window: Duration,
     selected: Option<usize>,
     devices: usize,
+    cut: Option<Cut>,
 }
 
 type Ranges = ((f64, f64), (f64, f64));
@@ -388,8 +461,7 @@ impl Graphics {
         area: Rect,
         app: &App,
         series: Vec<Series>,
-        ranges: Ranges,
-        x_origin: i64,
+        shape: Shape,
     ) {
         let [top, bottom] =
             Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(area);
@@ -410,9 +482,10 @@ impl Graphics {
             area: image_area,
             metric: app.metric,
             style: app.style,
-            window: app.window(),
+            window: shape.window,
             selected: app.selected_index(),
             devices: app.devices.len(),
+            cut: shape.cut,
         };
         let stale = self
             .shown
@@ -423,7 +496,7 @@ impl Graphics {
             .as_ref()
             .is_none_or(|(_, at)| at.elapsed() >= REFRESH);
         if stale && retry && !self.in_flight {
-            let (x, y) = ranges;
+            let (x, y) = shape.ranges;
             let request = Request {
                 view,
                 axes: Axes::fit(
@@ -431,10 +504,11 @@ impl Graphics {
                     y,
                     (image_area.width, image_area.height),
                     app.metric.min_grid_step(),
-                    x_origin,
+                    shape.x_origin,
                 ),
                 requested_at: Instant::now(),
                 series,
+                cut_x: shape.cut_x,
             };
             match self.requests.send(request) {
                 Ok(()) => self.in_flight = true,
@@ -534,8 +608,7 @@ fn render_braille(frame: &mut Frame, area: Rect, series: &[Series], (x, y): Rang
     frame.render_widget(chart, area);
 }
 
-fn build_series(app: &App, now: SystemTime) -> Vec<Series> {
-    let window = app.window();
+fn build_series(app: &App, now: SystemTime, window: Duration) -> Vec<Series> {
     let selected = app.selected_index();
     app.devices
         .iter()

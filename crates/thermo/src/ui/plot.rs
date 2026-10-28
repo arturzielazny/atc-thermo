@@ -9,9 +9,13 @@ use super::kitty::Rgba;
 use crate::app::ChartStyle;
 
 const GRID_RGBA: (u8, u8, u8, u8) = (128, 128, 128, 60);
+/// Shading over time left out of the calibration window, and its edges.
+const CUT_SHADE_RGBA: (u8, u8, u8, u8) = (128, 128, 128, 45);
+const CUT_EDGE_RGBA: (u8, u8, u8, u8) = (240, 180, 60, 230);
 const DIMMED_ALPHA: u8 = 80;
 
 /// Draws gridlines and series; `None` if the image would be empty or too large.
+/// `cut` is a kept x range: everything outside it is shaded and its edges marked.
 ///
 /// The background stays transparent so the terminal's own background shows through.
 pub fn rasterize(
@@ -19,6 +23,7 @@ pub fn rasterize(
     (cell_width, cell_height): (u32, u32),
     style: ChartStyle,
     series: &[Series],
+    cut: Option<(f64, f64)>,
 ) -> Option<Rgba> {
     let mut pixmap = Pixmap::new(
         u32::from(axes.cols) * cell_width,
@@ -29,6 +34,9 @@ pub fn rasterize(
         cell_width: cell_width as f32,
         cell_height: cell_height as f32,
     };
+    if let Some(cut) = cut {
+        draw_cut_shade(&mut pixmap, &mapping, cut);
+    }
     draw_grid(&mut pixmap, &mapping);
 
     let line_width = (cell_height as f32 / 9.0).max(1.5);
@@ -37,6 +45,9 @@ pub fn rasterize(
     ordered.sort_by_key(|s| s.emphasis);
     for s in ordered {
         draw_series(&mut pixmap, &mapping, s, line_width, style);
+    }
+    if let Some(cut) = cut {
+        draw_cut_edges(&mut pixmap, &mapping, cut, line_width);
     }
 
     // Most pixels are transparent and stay zero; only the rest need un-premultiplying.
@@ -95,10 +106,44 @@ fn pixel(value: f64) -> f32 {
     value as f32
 }
 
-fn draw_grid(pixmap: &mut Pixmap, mapping: &Mapping) {
-    let (r, g, b, a) = GRID_RGBA;
+/// A paint of one color, given as RGBA.
+fn solid((red, green, blue, alpha): (u8, u8, u8, u8)) -> Paint<'static> {
     let mut paint = Paint::default();
-    paint.set_color_rgba8(r, g, b, a);
+    paint.set_color_rgba8(red, green, blue, alpha);
+    paint
+}
+
+fn draw_cut_shade(pixmap: &mut Pixmap, mapping: &Mapping, (start, end): (f64, f64)) {
+    let paint = solid(CUT_SHADE_RGBA);
+    let (width, height) = (pixmap.width() as f32, pixmap.height() as f32);
+    let (left, right) = (
+        mapping.x(start).clamp(0.0, width),
+        mapping.x(end).clamp(0.0, width),
+    );
+    let shaded = [
+        Rect::from_xywh(0.0, 0.0, left, height),
+        Rect::from_xywh(right, 0.0, width - right, height),
+    ];
+    for rect in shaded.into_iter().flatten() {
+        pixmap.fill_rect(rect, &paint, Transform::identity(), None);
+    }
+}
+
+/// Lines at the cut points; an edge at the right end (the present) gets none.
+fn draw_cut_edges(pixmap: &mut Pixmap, mapping: &Mapping, (start, end): (f64, f64), width: f32) {
+    let paint = solid(CUT_EDGE_RGBA);
+    let height = pixmap.height() as f32;
+    let edges = [Some(start), (end < mapping.axes.x.1).then_some(end)];
+    for x in edges.into_iter().flatten() {
+        let x = mapping.x(x);
+        if let Some(rect) = Rect::from_xywh(x - width / 2.0, 0.0, width, height) {
+            pixmap.fill_rect(rect, &paint, Transform::identity(), None);
+        }
+    }
+}
+
+fn draw_grid(pixmap: &mut Pixmap, mapping: &Mapping) {
+    let paint = solid(GRID_RGBA);
     let (width, height) = (pixmap.width() as f32, pixmap.height() as f32);
     let lines =
         mapping
@@ -312,7 +357,7 @@ mod tests {
 
     #[test]
     fn image_covers_whole_cells() {
-        let image = rasterize(&AXES, (8, 16), ChartStyle::Lines, &[]).expect("small image");
+        let image = rasterize(&AXES, (8, 16), ChartStyle::Lines, &[], None).expect("small image");
         assert_eq!((image.width, image.height), (88, 96));
         assert_eq!(image.data.len(), 88 * 96 * 4);
     }
@@ -337,7 +382,8 @@ mod tests {
             points: line([(-100.0, 5.0), (-50.0, 5.0), (0.0, 5.0)]),
             emphasis: Emphasis::Normal,
         };
-        let image = rasterize(&AXES, (8, 16), ChartStyle::Lines, &[series]).expect("small image");
+        let image =
+            rasterize(&AXES, (8, 16), ChartStyle::Lines, &[series], None).expect("small image");
         // Value 5.0 sits halfway between the first and last row centers: y = 48.
         assert_eq!(alpha_at(&image, 30, 48), 255);
         assert_eq!(pixel(&image, 30, 48), [255, 0, 0, 255]);
@@ -358,7 +404,8 @@ mod tests {
             })),
             emphasis: Emphasis::Normal,
         };
-        let image = rasterize(&AXES, (8, 16), ChartStyle::Lines, &[series]).expect("small image");
+        let image =
+            rasterize(&AXES, (8, 16), ChartStyle::Lines, &[series], None).expect("small image");
         // All samples land in pixel column 83 (x from 83.2 to 84), which must still
         // show the full 2..8 swing.
         // Values 7.5, 5 and 2.5 sit at y = 8 + (10 - value) · 8.
@@ -381,7 +428,8 @@ mod tests {
             ],
             emphasis: Emphasis::Normal,
         };
-        let image = rasterize(&AXES, (8, 16), ChartStyle::Lines, &[series]).expect("small image");
+        let image =
+            rasterize(&AXES, (8, 16), ChartStyle::Lines, &[series], None).expect("small image");
         // x = 4 + (value + 100) · 0.8; y = 48 for 5.0.
         // The dot is as wide as the line, centered on a pixel corner here.
         assert!(alpha_at(&image, 20, 48) > 100, "lone point at -80");
@@ -391,13 +439,29 @@ mod tests {
     }
 
     #[test]
+    fn cut_shades_outside_and_marks_edges() {
+        // Keep x from -60 to -20 of -100..0: columns 4 to 8 of 11, 8 px wide.
+        let image =
+            rasterize(&AXES, (8, 16), ChartStyle::Lines, &[], Some((-60.0, -20.0))).expect("image");
+        let row = 5;
+        // Shaded before the start and after the end, clear in between.
+        assert!(alpha_at(&image, 10, row) > 0);
+        assert!(alpha_at(&image, 80, row) > 0);
+        assert_eq!(alpha_at(&image, 50, row), 0);
+        // Amber edge lines at both cut points (pixel x 36 and 68).
+        assert!(pixel(&image, 36, row)[0] > 200);
+        assert!(pixel(&image, 68, row)[0] > 200);
+    }
+
+    #[test]
     fn points_style_leaves_gaps_between_samples() {
         let series = Series {
             color: (255, 0, 0),
             points: line([(-80.0, 5.0), (-50.0, 5.0), (0.0, 5.0)]),
             emphasis: Emphasis::Normal,
         };
-        let image = rasterize(&AXES, (8, 16), ChartStyle::Points, &[series]).expect("small image");
+        let image =
+            rasterize(&AXES, (8, 16), ChartStyle::Points, &[series], None).expect("small image");
         // x = 4 + (value + 100) · 0.8: samples at x 20 and 44, nothing between.
         assert!(alpha_at(&image, 20, 48) > 100, "sample at -80");
         assert!(alpha_at(&image, 44, 48) > 100, "sample at -50");

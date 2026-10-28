@@ -97,7 +97,9 @@ range (watch `Seen` and the signal chart, `r`).
 3. **Calibrate** (`c`) while still there, or after another ≥ 2 h back inside.
    Set the window to cover both places but none of the moves or handling:
    `Tab` switches between its start and end, `←` `→` move the edge by 15 min
-   (Shift: 1 h), snapped to round times you can read off the chart. The start
+   (Shift: 1 h), snapped to round times. The chart below the panel shades
+   what is left out and marks both edges; the device list makes room for it
+   on small terminals. The start
    never reaches back past the last calibration of the devices taking part. Check that
    `Phases` is 2, the steady range spans both temperatures, and `T gain` /
    `H gain` show numbers (`–` means the span was too small or the gain is

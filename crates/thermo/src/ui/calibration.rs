@@ -11,6 +11,26 @@ use ratatui::widgets::{Block, Cell, Paragraph, Row, Table, Wrap};
 use crate::app::{App, CalibrationScreen, Confirm, WindowEdge};
 use crate::{calibrate, localtime};
 
+/// Explanation shown while there is no result.
+const NO_RESULT_HINT: [&str; 4] = [
+    "Put the thermometers side by side, a few cm apart, away from heaters, sun and people.",
+    "Offsets need a few undisturbed hours; gains also need a second, different condition",
+    "(e.g. a few hours outside) to cover at least 5 °C and 15 %RH.",
+    "Live data is used only after the last calibration change of these devices.",
+];
+
+/// Rows the panel needs: borders, window line and a gap, then the result.
+pub fn height(screen: &CalibrationScreen) -> u16 {
+    let body = match &screen.result {
+        None => 1,
+        // The error, a gap and the hint, plus a row in case a line wraps.
+        Some(Err(_)) => 2 + NO_RESULT_HINT.len() + 1,
+        // Summary, table header and rows, footer.
+        Some(Ok(run)) => 3 + 1 + run.devices.len() + 1,
+    };
+    u16::try_from(4 + body).unwrap_or(u16::MAX)
+}
+
 pub fn render(frame: &mut Frame, area: Rect, app: &App, screen: &CalibrationScreen) {
     let devices = app.calibration_devices();
     let title = format!(
@@ -39,20 +59,11 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App, screen: &CalibrationScre
             return;
         }
         Some(Err(err)) => {
-            let text = vec![
+            let mut text = vec![
                 Line::from(format!("No result: {err}")).yellow(),
                 Line::from(""),
-                Line::from(
-                    "Put the thermometers side by side, a few cm apart, away from heaters, sun and people.",
-                ),
-                Line::from(
-                    "Offsets need a few undisturbed hours; gains also need a second, different condition",
-                ),
-                Line::from("(e.g. a few hours outside) to cover at least 5 °C and 15 %RH."),
-                Line::from(
-                    "Live data is used only after the last calibration change of these devices.",
-                ),
             ];
+            text.extend(NO_RESULT_HINT.into_iter().map(Line::from));
             frame.render_widget(Paragraph::new(text).wrap(Wrap { trim: true }), inner);
             return;
         }

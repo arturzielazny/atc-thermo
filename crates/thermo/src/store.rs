@@ -21,6 +21,8 @@ const HEADER: &str =
 const CALIBRATION_FILE: &str = "calibrations.csv";
 const DOWNLOAD_FILE: &str = "downloads.csv";
 const DOWNLOAD_HEADER: &str = "time_ms,address";
+const CLOCK_FILE: &str = "clocks.csv";
+const CLOCK_HEADER: &str = "time_ms,address,offset_s";
 const CALIBRATION_HEADER: &str = "time_ms,address,name,action,temperature_gain,temperature_offset,humidity_gain,humidity_offset,coefficients_before,coefficients_after";
 const SECS_PER_DAY: u64 = 24 * 60 * 60;
 
@@ -175,19 +177,52 @@ impl Store {
     pub fn last_downloads(&self) -> Result<HashMap<Address, SystemTime>> {
         latest_per_address(&self.dir.join(DOWNLOAD_FILE))
     }
+
+    /// Notes a device's clock offset (device minus host, seconds) measured at `at`.
+    ///
+    /// # Errors
+    ///
+    /// Fails if `clocks.csv` cannot be opened or written.
+    pub fn record_clock_offset(&self, address: Address, at: SystemTime, offset: f64) -> Result<()> {
+        let path = self.dir.join(CLOCK_FILE);
+        let mut file = open_for_append(&path, CLOCK_HEADER)?;
+        file.write_all(format!("{},{address},{offset:.1}\n", millis(at)).as_bytes())
+            .with_context(|| format!("writing {}", path.display()))
+    }
+
+    /// The most recently measured clock offset per device.
+    ///
+    /// # Errors
+    ///
+    /// Fails if `clocks.csv` exists but cannot be read.
+    pub fn last_clock_offsets(&self) -> Result<HashMap<Address, f64>> {
+        Ok(latest_rows(&self.dir.join(CLOCK_FILE))?
+            .into_iter()
+            .filter_map(|(address, (_, rest))| Some((address, rest.parse().ok()?)))
+            .collect())
+    }
 }
 
 /// Reads a CSV whose first two columns are `time_ms,address`; returns the newest time per address.
 fn latest_per_address(path: &Path) -> Result<HashMap<Address, SystemTime>> {
+    Ok(latest_rows(path)?
+        .into_iter()
+        .map(|(address, (at, _))| (address, at))
+        .collect())
+}
+
+/// Reads a CSV whose first two columns are `time_ms,address`; returns the newest line
+/// per address as its time and the columns after the address.
+fn latest_rows(path: &Path) -> Result<HashMap<Address, (SystemTime, String)>> {
     let file = match File::open(path) {
         Ok(file) => file,
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(HashMap::new()),
         Err(err) => return Err(err).with_context(|| format!("opening {}", path.display())),
     };
-    let mut latest = HashMap::new();
+    let mut latest: HashMap<Address, (SystemTime, String)> = HashMap::new();
     for line in BufReader::new(file).lines() {
         let line = line.with_context(|| format!("reading {}", path.display()))?;
-        let mut fields = line.split(',');
+        let mut fields = line.splitn(3, ',');
         let (Some(Ok(ms)), Some(Ok(address))) = (
             fields.next().map(str::parse::<u64>),
             fields.next().map(str::parse::<Address>),
@@ -195,10 +230,10 @@ fn latest_per_address(path: &Path) -> Result<HashMap<Address, SystemTime>> {
             continue;
         };
         let at = UNIX_EPOCH + Duration::from_millis(ms);
-        latest
-            .entry(address)
-            .and_modify(|t: &mut SystemTime| *t = (*t).max(at))
-            .or_insert(at);
+        let rest = fields.next().unwrap_or_default();
+        if latest.get(&address).is_none_or(|(newest, _)| at >= *newest) {
+            latest.insert(address, (at, rest.to_owned()));
+        }
     }
     Ok(latest)
 }
@@ -508,5 +543,23 @@ mod tests {
         let latest = store.last_calibrations().expect("read");
         fs::remove_dir_all(&dir).expect("cleanup");
         assert_eq!(latest.get(&address), Some(&late));
+    }
+
+    #[test]
+    fn clock_offsets_keep_the_newest() {
+        let dir = env::temp_dir().join(format!("thermo-clock-test-{}", std::process::id()));
+        let store = Store::open(dir.clone()).expect("temp dir");
+        let address = Address([0xa4, 0xc1, 0x38, 0x84, 0x7e, 0xfc]);
+        let early = UNIX_EPOCH + Duration::from_secs(1_793_000_000);
+        let late = early + Duration::from_secs(3600);
+        store
+            .record_clock_offset(address, late, 31.0)
+            .expect("write");
+        store
+            .record_clock_offset(address, early, -2.5)
+            .expect("write");
+        let offsets = store.last_clock_offsets().expect("read");
+        fs::remove_dir_all(&dir).expect("cleanup");
+        assert_eq!(offsets.get(&address), Some(&31.0));
     }
 }

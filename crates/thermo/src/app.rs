@@ -231,6 +231,14 @@ impl App {
             Ok(downloads) => self.last_downloads = downloads,
             Err(err) => self.warning = Some(format!("reading download log failed: {err:#}")),
         }
+        match store.last_clock_offsets() {
+            Ok(offsets) => {
+                for (address, offset) in offsets {
+                    self.states.entry(address).or_default().clock_offset = Some(offset);
+                }
+            }
+            Err(err) => self.warning = Some(format!("reading clock log failed: {err:#}")),
+        }
         self.store = Some(store);
     }
 
@@ -334,13 +342,12 @@ impl App {
 
     /// Updates the model with a job's result; returns a short message for the table.
     fn apply_outcome(&mut self, address: Address, outcome: Outcome) -> String {
-        let state = self.states.entry(address).or_default();
         match outcome {
             Outcome::Downloaded {
                 samples,
                 clock_offset,
             } => {
-                state.clock_offset = Some(clock_offset);
+                self.note_clock_offset(address, clock_offset);
                 let added = self.merge_downloaded(address, &samples);
                 format!("{added} of {} log records added", samples.len())
             }
@@ -349,7 +356,7 @@ impl App {
                 rate,
                 samples,
             } => {
-                state.clock_offset = Some(0.0);
+                self.note_clock_offset(address, 0.0);
                 let added = self.merge_downloaded(address, &samples);
                 format!(
                     "clock synced, was {}{}; {added} log records added",
@@ -383,6 +390,16 @@ impl App {
                 self.record_calibration(address, None, before, after);
                 "factory calibration restored".to_owned()
             }
+        }
+    }
+
+    /// Shows a freshly measured clock offset and keeps it for the next start.
+    fn note_clock_offset(&mut self, address: Address, offset: f64) {
+        self.states.entry(address).or_default().clock_offset = Some(offset);
+        if let Some(store) = &self.store
+            && let Err(err) = store.record_clock_offset(address, SystemTime::now(), offset)
+        {
+            self.warning = Some(format!("saving clock log failed: {err:#}"));
         }
     }
 

@@ -283,6 +283,7 @@ mod tests {
         y: (0.0, 10.0),
         cols: 11,
         rows: 6,
+        y_step: None,
     };
 
     /// Points joined into one line.

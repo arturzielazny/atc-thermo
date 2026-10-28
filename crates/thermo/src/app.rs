@@ -91,6 +91,14 @@ impl Metric {
             Self::Rssi => 10.0,
         }
     }
+
+    /// Finest spacing of horizontal gridlines; signal strength comes in whole dBm.
+    pub fn min_grid_step(self) -> f64 {
+        match self {
+            Self::Temperature | Self::Humidity => 0.1,
+            Self::Rssi => 1.0,
+        }
+    }
 }
 
 /// State of the background scan.

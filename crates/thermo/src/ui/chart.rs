@@ -22,6 +22,11 @@ const CHART_IMAGE_ID: u32 = 0x3a_51c4;
 const REFRESH: Duration = Duration::from_secs(5);
 /// Columns reserved left of the plot for y-axis labels.
 const Y_LABEL_WIDTH: u16 = 7;
+/// Values between horizontal gridlines, finest first: tenths, halves and whole units,
+/// then coarser ones for wide ranges such as humidity outdoors.
+const Y_STEPS: [f64; 8] = [0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0];
+/// Fewest rows from one horizontal gridline to the next, so their labels don't touch.
+const MIN_GRID_ROWS: f64 = 2.0;
 
 /// Live samples further apart than this are not joined by a line.
 const LIVE_GAP: Duration = Duration::from_secs(5 * 60);
@@ -64,9 +69,41 @@ pub struct Axes {
     pub y: (f64, f64),
     pub cols: u16,
     pub rows: u16,
+    /// Value between horizontal gridlines; `None` spreads them evenly instead.
+    pub y_step: Option<f64>,
 }
 
 impl Axes {
+    /// Widens `y` so horizontal gridlines sit on rows at multiples of a round step,
+    /// the finest from [`Y_STEPS`] (not below `min_step`) the rows have room for.
+    pub fn fit(x: (f64, f64), y: (f64, f64), (cols, rows): (u16, u16), min_step: f64) -> Self {
+        let intervals = f64::from(rows.saturating_sub(1));
+        let fitted = [MIN_GRID_ROWS, 1.0].into_iter().find_map(|min_rows| {
+            Y_STEPS
+                .into_iter()
+                .filter(|&s| s >= min_step)
+                .find_map(|step| {
+                    let lo = (y.0 / step).floor();
+                    let steps = ((y.1 / step).ceil() - lo).max(1.0);
+                    let rows_per_step = (intervals / steps).floor();
+                    (rows_per_step >= min_rows).then(|| {
+                        // Center the data using whole steps, so gridlines stay on rows.
+                        let spare = (intervals / rows_per_step).floor() - steps;
+                        let lo = (lo - (spare / 2.0).floor()) * step;
+                        ((lo, lo + intervals / rows_per_step * step), step)
+                    })
+                })
+        });
+        let (y, y_step) = fitted.map_or((y, None), |(y, step)| (y, Some(step)));
+        Self {
+            x,
+            y,
+            cols,
+            rows,
+            y_step,
+        }
+    }
+
     pub fn value_at_row(&self, row: u16) -> f64 {
         let (lo, hi) = self.y;
         hi - (hi - lo) * f64::from(row) / f64::from(self.rows.saturating_sub(1).max(1))
@@ -77,10 +114,26 @@ impl Axes {
         lo + (hi - lo) * f64::from(col) / f64::from(self.cols.saturating_sub(1).max(1))
     }
 
-    /// Rows that get a gridline and a label, roughly every third row.
+    /// Rows that get a gridline and a label.
     pub fn grid_rows(&self) -> Vec<u16> {
-        let last = self.rows.saturating_sub(1);
-        evenly_spaced(last, (last / 3).clamp(1, 8))
+        let Some(step) = self.y_step else {
+            let last = self.rows.saturating_sub(1);
+            return evenly_spaced(last, (last / 3).clamp(1, 8));
+        };
+        (0..self.rows)
+            .filter(|&row| {
+                let steps = self.value_at_row(row) / step;
+                (steps - steps.round()).abs() < 1e-6
+            })
+            .collect()
+    }
+
+    /// Decimals that y labels need to tell gridlines apart.
+    pub fn y_decimals(&self) -> usize {
+        match self.y_step {
+            Some(step) if step >= 1.0 => 0,
+            _ => 1,
+        }
     }
 
     /// Columns that get a gridline and a time label.
@@ -297,12 +350,12 @@ impl Graphics {
             let (x, y) = ranges;
             let request = Request {
                 view,
-                axes: Axes {
+                axes: Axes::fit(
                     x,
                     y,
-                    cols: image_area.width,
-                    rows: image_area.height,
-                },
+                    (image_area.width, image_area.height),
+                    app.metric.min_grid_step(),
+                ),
                 requested_at: Instant::now(),
                 series,
             };
@@ -326,11 +379,12 @@ impl Graphics {
 
 fn render_y_labels(frame: &mut Frame, area: Rect, axes: &Axes) {
     let width = usize::from(Y_LABEL_WIDTH - 1);
+    let decimals = axes.y_decimals();
     for row in axes.grid_rows() {
         if row >= area.height {
             continue;
         }
-        let label = format!("{:>width$.1}", axes.value_at_row(row));
+        let label = format!("{:>width$.decimals$}", axes.value_at_row(row));
         let cell = Rect {
             y: area.y + row,
             height: 1,
@@ -506,6 +560,7 @@ mod tests {
             y: (20.0, 22.0),
             cols: 81,
             rows: 13,
+            y_step: None,
         };
         let rows = axes.grid_rows();
         assert_eq!(rows.first(), Some(&0));
@@ -514,6 +569,69 @@ mod tests {
         assert!((axes.value_at_row(12) - 20.0).abs() < 1e-9);
         assert_eq!(axes.grid_cols(), [0, 20, 40, 60, 80]);
         assert!((axes.value_at_col(40) + 1800.0).abs() < 1e-9);
+    }
+
+    /// Fits `y` into `rows` and returns the step and the gridline values, top first.
+    fn gridlines(y: (f64, f64), rows: u16, min_step: f64) -> (Option<f64>, Vec<f64>) {
+        let axes = Axes::fit((-3600.0, 0.0), y, (80, rows), min_step);
+        assert!(
+            axes.y.0 <= y.0 && axes.y.1 >= y.1,
+            "{:?} misses {y:?}",
+            axes.y
+        );
+        let values = axes
+            .grid_rows()
+            .into_iter()
+            .map(|row| (axes.value_at_row(row) * 100.0).round() / 100.0)
+            .collect();
+        (axes.y_step, values)
+    }
+
+    #[test]
+    fn gridlines_get_finer_with_more_rows() {
+        let y = (20.85, 21.95);
+        let (step, values) = gridlines(y, 40, 0.1);
+        assert_eq!(step, Some(0.1));
+        assert_eq!(values.len(), 14, "{values:?}");
+        assert!(
+            values.contains(&21.0) && values.contains(&21.9),
+            "{values:?}"
+        );
+
+        let (step, values) = gridlines(y, 12, 0.1);
+        assert_eq!(step, Some(0.5));
+        assert!(
+            values.contains(&21.0) && values.contains(&21.5),
+            "{values:?}"
+        );
+
+        let (step, values) = gridlines(y, 6, 0.1);
+        assert_eq!(step, Some(1.0));
+        assert_eq!(values, [22.0, 21.0, 20.0]);
+    }
+
+    #[test]
+    fn gridlines_are_evenly_spaced_and_centered() {
+        let axes = Axes::fit((-3600.0, 0.0), (20.85, 21.95), (80, 30), 0.1);
+        let rows = axes.grid_rows();
+        let gaps: Vec<u16> = rows.windows(2).map(|w| w[1] - w[0]).collect();
+        assert!(gaps.iter().all(|&g| g == gaps[0] && g >= 2), "{rows:?}");
+        let (above, below) = (rows[0], axes.rows - 1 - rows[rows.len() - 1]);
+        assert!(above.abs_diff(below) <= gaps[0], "{rows:?}");
+    }
+
+    #[test]
+    fn gridlines_respect_metric_step_and_wide_ranges() {
+        let (step, _) = gridlines((-80.5, -69.5), 60, 1.0);
+        assert_eq!(step, Some(1.0));
+        let (step, values) = gridlines((38.0, 92.0), 20, 0.1);
+        assert_eq!(step, Some(10.0));
+        assert!(
+            values.contains(&40.0) && values.contains(&90.0),
+            "{values:?}"
+        );
+        let (step, _) = gridlines((0.0, 200.0), 3, 0.1);
+        assert_eq!(step, None);
     }
 
     #[test]

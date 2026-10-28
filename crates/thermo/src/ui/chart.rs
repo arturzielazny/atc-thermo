@@ -22,9 +22,10 @@ const CHART_IMAGE_ID: u32 = 0x3a_51c4;
 const REFRESH: Duration = Duration::from_secs(5);
 /// Columns reserved left of the plot for y-axis labels.
 const Y_LABEL_WIDTH: u16 = 7;
-/// Values between horizontal gridlines, finest first: tenths, halves and whole units,
-/// then coarser ones for wide ranges such as humidity outdoors.
-const Y_STEPS: [f64; 8] = [0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0];
+/// Values between horizontal gridlines, finest first: hundredths for sensors that
+/// agree closely, tenths, halves and whole units, then coarser ones for wide ranges
+/// such as humidity outdoors.
+const Y_STEPS: [f64; 10] = [0.02, 0.05, 0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0];
 /// Fewest rows from one horizontal gridline to the next, so their labels don't touch.
 const MIN_GRID_ROWS: f64 = 2.0;
 
@@ -132,6 +133,7 @@ impl Axes {
     pub fn y_decimals(&self) -> usize {
         match self.y_step {
             Some(step) if step >= 1.0 => 0,
+            Some(step) if step < 0.1 => 2,
             _ => 1,
         }
     }
@@ -608,6 +610,20 @@ mod tests {
         let (step, values) = gridlines(y, 6, 0.1);
         assert_eq!(step, Some(1.0));
         assert_eq!(values, [22.0, 21.0, 20.0]);
+    }
+
+    #[test]
+    fn close_readings_get_hundredths() {
+        let (step, values) = gridlines((21.93, 22.05), 30, 0.02);
+        assert_eq!(step, Some(0.02));
+        assert!(
+            values.contains(&21.94) && values.contains(&22.04),
+            "{values:?}"
+        );
+        let axes = Axes::fit((-3600.0, 0.0), (21.93, 22.05), (80, 30), 0.02);
+        assert_eq!(axes.y_decimals(), 2);
+        // Humidity stops at tenths.
+        assert_eq!(gridlines((55.43, 55.55), 30, 0.1).0, Some(0.1));
     }
 
     #[test]

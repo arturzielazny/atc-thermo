@@ -86,16 +86,18 @@ impl Metric {
     /// Smallest y-axis span, so sensor noise doesn't fill the whole chart.
     pub fn min_span(self) -> f64 {
         match self {
-            Self::Temperature => 1.0,
-            Self::Humidity => 4.0,
+            Self::Temperature => 0.1,
+            Self::Humidity => 1.0,
             Self::Rssi => 10.0,
         }
     }
 
-    /// Finest spacing of horizontal gridlines; signal strength comes in whole dBm.
+    /// Finest spacing of horizontal gridlines, near each sensor's noise: about 0.01 °C
+    /// for temperature, 0.1 % for humidity; signal strength comes in whole dBm.
     pub fn min_grid_step(self) -> f64 {
         match self {
-            Self::Temperature | Self::Humidity => 0.1,
+            Self::Temperature => 0.02,
+            Self::Humidity => 0.1,
             Self::Rssi => 1.0,
         }
     }

@@ -127,7 +127,9 @@ Temperature and humidity are handled independently.
    15 %RH and differs from 1 by more than two standard errors.
 6. **Outliers.** With four or more devices, a device whose correction at the typical
    operating point has a robust z-score above 3.5 is excluded from the consensus
-   and the anchor (its own fit still pulls it to the group).
+   and the anchor (its own fit still pulls it to the group). Its corrections are not
+   written, neither temperature nor humidity: both are measured in the same spot,
+   so whatever set the device apart skews both fits.
 7. **Anchor** so that gains average 1 and offsets 0 over devices that are not
    outliers and have at least an hour of usable data.
 8. **Apply** after confirmation: compose onto the device's current coefficients

@@ -117,7 +117,7 @@ fn table(run: &calibrate::Run) -> Table<'static> {
                     "–".to_owned()
                 }
             };
-            let applies = match (calibrate::correction(&t), calibrate::correction(&h)) {
+            let applies = match calibrate::corrections(sensor) {
                 (Some(_), Some(_)) => Cell::from("✓").green(),
                 (None, None) => Cell::from(calibrate::notes(&t, &h)).yellow(),
                 _ => Cell::from(format!("partly: {}", calibrate::notes(&t, &h))).yellow(),
@@ -159,8 +159,8 @@ fn footer(run: &calibrate::Run, screen: &CalibrationScreen) -> Line<'static> {
         .sensors
         .iter()
         .filter(|s| {
-            calibrate::correction(&s.temperature).is_some()
-                || calibrate::correction(&s.humidity).is_some()
+            let (t, h) = calibrate::corrections(s);
+            t.is_some() || h.is_some()
         })
         .count();
     match screen.confirm {

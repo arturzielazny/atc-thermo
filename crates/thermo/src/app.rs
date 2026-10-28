@@ -731,8 +731,7 @@ impl App {
             .iter()
             .zip(&run.report.sensors)
             .filter_map(|(&(address, _), sensor)| {
-                let t = calibrate::correction(&sensor.temperature);
-                let h = calibrate::correction(&sensor.humidity);
+                let (t, h) = calibrate::corrections(sensor);
                 (t.is_some() || h.is_some()).then(|| {
                     (
                         address,

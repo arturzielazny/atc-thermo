@@ -6,7 +6,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use atc::Correction;
 use bluer::Address;
-use calibration::{Fit, Options, Reading, Report};
+use calibration::{Fit, Options, Reading, Report, SensorReport};
 
 use crate::devices::{Devices, Source};
 
@@ -79,11 +79,23 @@ pub fn run(
     })
 }
 
-/// The correction to write for a fit, or `None` if it should not be applied
-/// (outlier or too little data for this device).
-pub fn correction(fit: &Fit) -> Option<Correction> {
-    let enough = fit.steady >= Options::default().min_steady;
-    (enough && !fit.outlier).then_some(Correction {
+/// The temperature and humidity corrections to write for a device; `None` for one
+/// that should not be applied.
+///
+/// An outlier in either quantity skips both: the sensor reads temperature and
+/// humidity in the same spot, so whatever set it apart (a warmer, moister place, a
+/// hand) skews the other fit too.
+pub fn corrections(sensor: &SensorReport) -> (Option<Correction>, Option<Correction>) {
+    let (t, h) = (&sensor.temperature, &sensor.humidity);
+    if t.outlier || h.outlier {
+        return (None, None);
+    }
+    (correction(t), correction(h))
+}
+
+/// The correction for one fit, or `None` with too little data for this device.
+fn correction(fit: &Fit) -> Option<Correction> {
+    (fit.steady >= Options::default().min_steady).then_some(Correction {
         gain: fit.gain,
         offset: fit.offset,
     })
@@ -179,6 +191,39 @@ pub fn notes(t: &Fit, h: &Fit) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_outlier_in_one_quantity_skips_both() {
+        let fit = Fit {
+            gain: 1.0,
+            offset: 0.1,
+            gain_fitted: false,
+            gain_stderr: 0.0,
+            residual_rms: 0.05,
+            lag: None,
+            outlier: false,
+            steady: Duration::from_secs(2 * 3600),
+        };
+        let outlier = Fit {
+            outlier: true,
+            ..fit
+        };
+        let both = |temperature, humidity| {
+            let (t, h) = corrections(&SensorReport {
+                temperature,
+                humidity,
+            });
+            (t.is_some(), h.is_some())
+        };
+        assert_eq!(both(fit, fit), (true, true));
+        assert_eq!(both(outlier, fit), (false, false));
+        assert_eq!(both(fit, outlier), (false, false));
+        let short = Fit {
+            steady: Duration::from_secs(600),
+            ..fit
+        };
+        assert_eq!(both(fit, short), (true, false));
+    }
 
     #[test]
     fn window_starts_after_last_calibration() {

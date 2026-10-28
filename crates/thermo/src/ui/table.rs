@@ -31,8 +31,8 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         .map(|(i, device)| row(app, i + 1, device, device_color(i), now))
         .collect();
     let header = Row::new([
-        "", "#", "Device", "Address", "Temp", "Humidity", "Battery", "Voltage", "RSSI 5m", "Seen",
-        "Clock", "Status",
+        "", "#", "Device", "Address", "Temp", "Humidity", "Battery", "Voltage", "RSSI", "RSSI 5m",
+        "Seen", "Clock", "Status",
     ])
     .style(Style::new().bold());
     let name_width = app
@@ -51,6 +51,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         Constraint::Length(8),
         Constraint::Length(7),
         Constraint::Length(7),
+        Constraint::Length(8),
         Constraint::Length(8),
         Constraint::Length(5),
         Constraint::Length(7),
@@ -121,6 +122,12 @@ fn row(
         Some(level) if !is_stale => Cell::from(text).style(level.style()),
         _ => Cell::from(text),
     };
+    let rssi_cell = |rssi: Option<i16>| {
+        level_cell(
+            rssi.map_or_else(|| "–".to_owned(), |r| format!("{r} dBm")),
+            rssi.map(rssi_level),
+        )
+    };
     let state = app.state(device.address);
     let clock = state
         .and_then(|s| s.clock_offset)
@@ -142,12 +149,8 @@ fn row(
             device.battery.map(battery_level),
         ),
         Cell::from(fmt(device.voltage, " V", 2)),
-        level_cell(
-            device
-                .typical_rssi()
-                .map_or_else(|| "–".to_owned(), |r| format!("{r} dBm")),
-            device.typical_rssi().map(rssi_level),
-        ),
+        rssi_cell(device.rssi),
+        rssi_cell(device.typical_rssi()),
         Cell::from(format_age(age)),
         Cell::from(clock),
         status_cell(state),

@@ -33,9 +33,11 @@ const MAX_HISTORY_GAP: Duration = Duration::from_secs(15 * 60);
 /// Discovery restarts this long after the last device job, unless another one starts.
 const SCAN_RESTART_DELAY: Duration = Duration::from_secs(5);
 
-/// Calibration windows, in hours, that `←`/`→` choose from.
-pub const CALIBRATION_HOURS: [u32; 7] = [1, 2, 3, 6, 12, 24, 48];
-const DEFAULT_CALIBRATION_HOURS: usize = 3;
+/// Calibration windows, in hours, that `←`/`→` choose from; a fit needs at least
+/// 1.5 h (see [`calibration::Options::shortest_span`]).
+pub const CALIBRATION_HOURS: [u32; 6] = [2, 3, 6, 12, 24, 48];
+/// 6 h.
+const DEFAULT_CALIBRATION_HOURS: usize = 2;
 /// How often the calibration screen refits as new data arrives.
 const CALIBRATION_REFRESH: Duration = Duration::from_secs(60);
 

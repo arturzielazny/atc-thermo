@@ -315,7 +315,18 @@ fn lag_during_drift_does_not_bias_offsets() {
 #[test]
 fn errors() {
     let data = simulate(&sensors(), 0.3, None, 1);
-    assert!(matches!(run(&data), Err(Error::NotEnoughSteadyData { .. })));
+    assert!(
+        matches!(run(&data), Err(Error::TooShort { .. })),
+        "{:?}",
+        run(&data)
+    );
+    // Long enough, but warming 3 °C/h is never steady.
+    let warming = simulate_air(&sensors(), 3.0, |t| (20.0 + t / 1200.0, 50.0), 1);
+    assert!(
+        matches!(run(&warming), Err(Error::NotEnoughSteadyData { .. })),
+        "{:?}",
+        run(&warming)
+    );
     let one = simulate(&sensors()[..1], 6.0, None, 1);
     assert_eq!(run(&one), Err(Error::TooFewSensors(1)));
 }

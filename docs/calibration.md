@@ -114,7 +114,10 @@ Temperature and humidity are handled independently.
    window, both the group median and the device itself changed by at most
    0.75 °C / 3.5 %RH, and the group median did not change by 2 °C / 10 %RH or more
    in the preceding hour. That allows ordinary drifts (a room cooling in the
-   evening) but drops the settling hour after a move.
+   evening) but drops the settling hour after a move. The 30-minute window is centered on
+   the bin and must lie within the data, so the first and last 15 minutes never
+   count: with at least an hour of usable data required, the shortest possible
+   window is 1.5 h (the calibration screen offers 2 h and up).
 4. **Fit** each device against the median of the others (robust Huber regression,
    iterated four times):
    `reference ≈ gain · reading + offset + k · rate`, where `rate` is the device's own

@@ -79,6 +79,15 @@ pub struct Options {
     pub min_steady: Duration,
 }
 
+impl Options {
+    /// Least time readings must span: a bin counts as steady only with half the
+    /// steady window on both sides, so the window's ends never count.
+    #[must_use]
+    pub fn shortest_span(&self) -> Duration {
+        self.min_steady + self.steady_window
+    }
+}
+
 impl Default for Options {
     fn default() -> Self {
         Self {
@@ -195,6 +204,9 @@ pub struct Report {
 pub enum Error {
     /// Consensus needs at least two sensors with data.
     TooFewSensors(usize),
+    /// The readings span less time than [`Options::shortest_span`], so they cannot hold
+    /// enough steady data however calm they are.
+    TooShort { span: Duration, needed: Duration },
     /// Not enough steady, co-observed data yet.
     NotEnoughSteadyData { steady: Duration, needed: Duration },
 }
@@ -203,6 +215,12 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::TooFewSensors(n) => write!(f, "need at least 2 sensors with data, have {n}"),
+            Self::TooShort { span, needed } => write!(
+                f,
+                "data covers only {} minutes, a fit needs at least {}",
+                span.as_secs() / 60,
+                needed.as_secs() / 60
+            ),
             Self::NotEnoughSteadyData { steady, needed } => write!(
                 f,
                 "only {} steady minutes, need {}; keep the sensors together and undisturbed longer",
@@ -272,18 +290,28 @@ type Grid = Vec<Vec<Option<f64>>>;
 ///
 /// # Errors
 ///
-/// Fails with fewer than two sensors with readings, or without
-/// [`Options::min_steady`] of steady temperature data.
+/// Fails with fewer than two sensors with readings, readings spanning less than
+/// [`Options::shortest_span`], or without [`Options::min_steady`] of steady
+/// temperature data.
 pub fn calibrate(sensors: &[&[Reading]], options: &Options) -> Result<Report, Error> {
     let with_data = sensors.iter().filter(|s| !s.is_empty()).count();
     if with_data < 2 {
         return Err(Error::TooFewSensors(with_data));
     }
     let bin = options.bin.as_secs_f64();
-    let t0 = sensors
+    let (t0, t1) = sensors
         .iter()
         .flat_map(|s| s.iter().map(|r| r.at))
-        .fold(f64::INFINITY, f64::min);
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), at| {
+            (lo.min(at), hi.max(at))
+        });
+    let span = Duration::from_secs_f64(t1 - t0);
+    if span < options.shortest_span() {
+        return Err(Error::TooShort {
+            span,
+            needed: options.shortest_span(),
+        });
+    }
 
     let raw_t = resample(sensors, t0, bin, Quantity::Temperature);
     let temperature = settled(&raw_t, Quantity::Temperature, options);

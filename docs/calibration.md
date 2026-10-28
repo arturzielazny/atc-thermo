@@ -83,22 +83,23 @@ be pinned by one of:
 
 ## 3. Procedure for the user
 
-1. Start a calibration session in the app. It records the start time and the
-   coefficients on each device, and optionally sets each device clock and its
-   logger averaging to 1 minute.
-2. **Phase A, inside, ≥ 6 h (overnight is ideal).** Put the devices side by
-   side, a few cm apart, same orientation, not touching. Keep them away from
-   radiators, sun, laptop exhaust and people.
-3. **Phase B, outside, ≥ 3 h.** Shaded and sheltered from rain, still a few cm
-   apart, with free airflow: an open box or under a roof is fine. Move them all
-   at once. Simultaneity is nice but not required, because transients get
-   excluded anyway.
-4. **Phase C, inside, ≥ 3 h.** Same spot as phase A.
-5. Stop the session. The app shows proposed coefficients, before/after
-   charts and validation numbers; the user confirms before anything is written.
+Offsets need only one place; gains need steady data at two temperatures at least
+5 °C apart (15 %RH for humidity). Only live adverts are used, so the TUI must run
+the whole time, the laptop must not sleep, and the devices must stay in radio
+range (watch `Seen` and the signal chart, `r`).
 
-If the laptop can't hear the devices outside, the app downloads the gap from
-each device's logger after the session.
+1. **Inside, ≥ 2 h steady.** Devices side by side, a few cm apart, not touching,
+   away from radiators, sun, laptop exhaust and people.
+2. **Move all at once to the other place, ≥ 3 h.** E.g. outside: shaded, sheltered
+   from rain, free airflow, still in range. The first hour after a big change is
+   ignored while the cases catch up, and readings above 95 %RH are dropped, so
+   avoid fog and rain.
+3. **Calibrate** (`c`) while still there, or after another ≥ 2 h back inside.
+   Pick a window (`←` `→`) covering both places but starting after any
+   disturbance; it never reaches back past the last calibration. Check that
+   `Phases` is 2, the steady range spans both temperatures, and `T gain` /
+   `H gain` show numbers (`–` means the span was too small or the gain is
+   indistinguishable from 1, so only the offset is written). `Enter`, `y` writes.
 
 ## 4. Algorithm (as implemented in `crates/calibration`)
 

@@ -1029,7 +1029,7 @@ mod tests {
         press(&mut app, KeyCode::Esc);
         assert_eq!(app.targets(), [A]);
         press(&mut app, KeyCode::Esc);
-        assert!(app.targets().is_empty());
+        assert_eq!(app.targets(), Vec::<Address>::new());
     }
 
     #[test]
@@ -1071,7 +1071,7 @@ mod tests {
         press(&mut app, KeyCode::Char('a'));
         press(&mut app, KeyCode::Char('n'));
         assert!(matches!(app.mode, Mode::Normal));
-        assert!(drain(&mut rx).is_empty());
+        assert_eq!(drain(&mut rx), Vec::<Job>::new());
     }
 
     #[test]

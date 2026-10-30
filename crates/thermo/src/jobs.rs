@@ -375,6 +375,6 @@ mod tests {
         assert_eq!(big(12), 12_120);
         assert_eq!(identify_message(3).small, 3);
         assert_eq!(identify_message(200).small, 99);
-        assert!(identify_message(200).duration == IDENTIFY_DURATION);
+        assert_eq!(identify_message(200).duration, IDENTIFY_DURATION);
     }
 }

@@ -5,6 +5,10 @@ members = ["crates/*"]
 [workspace.package]
 edition = "2024"
 rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+authors = ["Artur Zielazny"]
+repository = "https://github.com/arturzielazny/atc-thermo"
+homepage = "https://arturzielazny.github.io/atc-thermo/"
 
 [workspace.dependencies]
 atc = { path = "crates/atc" }

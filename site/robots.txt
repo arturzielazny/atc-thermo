@@ -1,0 +1,3 @@
+User-agent: *
+Allow: /
+Sitemap: https://arturzielazny.github.io/atc-thermo/sitemap.xml

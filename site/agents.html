@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Customize or port thermo with an AI coding agent · thermo</title>
+<meta name="description" content="Use Claude Code, Codex or another AI coding agent to adapt thermo, the LYWSD03MMC thermometer dashboard: port it to macOS or Windows, build a Raspberry Pi MQTT or InfluxDB exporter, add °F, or support another pvvx device. Ready-made prompts included.">
+<meta name="keywords" content="AI coding agent, Claude Code, port Rust app to macOS, btleplug, BTHome MQTT, LYWSD03MMC Raspberry Pi, InfluxDB thermometer, customize open source with AI">
+<link rel="canonical" href="https://arturzielazny.github.io/atc-thermo/agents.html">
+<meta name="theme-color" content="#14151e">
+<link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="assets/style.css">
+<meta property="og:type" content="article">
+<meta property="og:title" content="Make thermo yours with an AI coding agent">
+<meta property="og:description" content="Ready-made prompts for porting the LYWSD03MMC dashboard to macOS or Windows, or turning it into a headless exporter.">
+<meta property="og:url" content="https://arturzielazny.github.io/atc-thermo/agents.html">
+<meta property="og:image" content="https://arturzielazny.github.io/atc-thermo/assets/og.png">
+<meta name="twitter:card" content="summary_large_image">
+</head>
+<body>
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="./" aria-label="thermo home">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><rect x="2" y="2" width="28" height="28" rx="7" fill="#e8e8e2"/><rect x="6" y="6" width="20" height="14" rx="2" fill="#aeb39c"/><text x="16" y="17.5" text-anchor="middle" font-family="ui-monospace,monospace" font-weight="700" font-size="10" fill="#22251c">21°</text><circle cx="10" cy="24.5" r="2" fill="#f0b43c"/><rect x="15" y="23.5" width="11" height="2" rx="1" fill="#9a9db5"/></svg>
+      thermo
+    </a>
+    <nav class="links" aria-label="Main">
+      <a href="./#install">Install</a>
+      <a href="calibration.html">Calibration guide</a>
+      <a href="agents.html" aria-current="page" class="opt">AI agents</a>
+      <a href="https://github.com/arturzielazny/atc-thermo">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main class="wrap narrow prose" style="padding-top:3rem;padding-bottom:3rem">
+  <p class="eyebrow">Make it yours</p>
+  <h1>Customize or port thermo with an AI coding agent</h1>
+  <p class="lead">thermo does what one household needed, on Linux. Yours may need macOS, a headless Raspberry Pi feeding Grafana, Fahrenheit, or a different thermometer. You don't have to wait for someone to add it. A coding agent can do most of the work, and the repository is set up to help it.</p>
+
+  <h2>Why this code base is agent-friendly</h2>
+  <ul>
+    <li><strong><code>AGENTS.md</code></strong> at the root explains the layout, the build and test commands, the firmware protocol, the rules (never write to your devices unasked) and a step-by-step porting plan. Claude Code reads it through <code>CLAUDE.md</code>, and most other agents read <code>AGENTS.md</code> directly.</li>
+    <li><strong>The hard parts are pure.</strong> The BTHome decoder and the calibration maths have no dependencies and no I/O. They compile anywhere and are covered by unit tests that need no hardware.</li>
+    <li><strong>The platform-specific parts are small and named:</strong> the Bluetooth scanner, the GATT transport, and shared-memory chart images. Everything else is ordinary Rust.</li>
+    <li><strong>Strict lints and many tests</strong> (<code>cargo clippy -- -D warnings</code> with pedantic lints, <code>cargo test --workspace</code>) give the agent fast, honest feedback.</li>
+  </ul>
+
+  <figure>
+    <svg class="ill" viewBox="0 0 640 250" role="img" aria-labelledby="arch-t">
+      <title id="arch-t">Architecture: portable crates bthome and calibration, protocol encoding in atc, and the platform-specific Bluetooth transport, scanner and chart transfer that a port replaces</title>
+      <rect class="bg" width="640" height="250" rx="16"/>
+      <g font-size="13">
+        <rect x="24" y="26" width="592" height="54" rx="10" fill="none" class="mstroke" stroke-width="1.5"/>
+        <text class="text" x="40" y="50" font-weight="700">thermo</text>
+        <text class="muted" x="40" y="68" font-size="12">app state · keys · table · chart layout · CSV store</text>
+        <rect x="430" y="36" width="174" height="34" rx="8" fill="none" class="astroke" stroke-width="2" stroke-dasharray="5 4"/>
+        <text class="text" x="517" y="58" text-anchor="middle" font-size="12">scanner · kitty shm</text>
+
+        <rect x="24" y="98" width="290" height="54" rx="10" fill="none" class="mstroke" stroke-width="1.5"/>
+        <text class="text" x="40" y="122" font-weight="700">atc</text>
+        <text class="muted" x="40" y="140" font-size="12">commands as bytes</text>
+        <rect x="196" y="108" width="108" height="34" rx="8" fill="none" class="astroke" stroke-width="2" stroke-dasharray="5 4"/>
+        <text class="text" x="252" y="130" text-anchor="middle" font-size="12">transport</text>
+
+        <rect x="326" y="98" width="140" height="54" rx="10" class="accent" opacity="0.18"/>
+        <text class="text" x="342" y="122" font-weight="700">bthome</text>
+        <text class="muted" x="342" y="140" font-size="12">0 deps · pure</text>
+        <rect x="476" y="98" width="140" height="54" rx="10" class="accent" opacity="0.18"/>
+        <text class="text" x="492" y="122" font-weight="700">calibration</text>
+        <text class="muted" x="492" y="140" font-size="12">0 deps · pure</text>
+
+        <rect x="24" y="170" width="592" height="54" rx="10" class="term"/>
+        <text x="40" y="196" fill="#e3e5f0" font-weight="700">BlueZ (Linux)</text>
+        <text x="40" y="213" fill="#9a9db5" font-size="12">swap for btleplug → CoreBluetooth (macOS) · WinRT (Windows)</text>
+      </g>
+      <g font-size="11">
+        <rect x="430" y="232" width="12" height="8" fill="none" class="astroke" stroke-width="1.5" stroke-dasharray="3 2"/>
+        <text class="muted" x="448" y="240">replace when porting</text>
+      </g>
+    </svg>
+    <figcaption>Dashed boxes are what a port replaces. The filled crates come along unchanged.</figcaption>
+  </figure>
+
+  <h2>How to do it</h2>
+  <ol class="steps">
+    <li><strong>Get the code and an agent.</strong><p>Clone the repository and start your agent in it, for example <a href="https://claude.com/claude-code">Claude Code</a>:</p>
+<pre><code>git clone https://github.com/arturzielazny/atc-thermo
+cd atc-thermo
+claude</code></pre></li>
+    <li><strong>Ask for a plan first.</strong><p>For anything bigger than a tweak, ask the agent to read <code>AGENTS.md</code> and propose a plan before editing. In Claude Code, plan mode (<kbd>Shift</kbd>+<kbd>Tab</kbd>) does exactly that.</p></li>
+    <li><strong>Let it build and test in a loop.</strong><p>Tell it the finish line: "<code>cargo test --workspace</code> and <code>cargo clippy -- -D warnings</code> pass". Agents work best when they can check themselves.</p></li>
+    <li><strong>You test with hardware.</strong><p>The agent can't see your thermometers. Run the result, check the readings, then try one write action (rename is the safest) on one device before calibrating all of them.</p></li>
+  </ol>
+
+  <h2>Prompts to start from</h2>
+  <p class="muted">Copy one, then add your details: OS version, terminal, how many devices, what you want to see.</p>
+
+  <div class="prompt">
+    <h3>Port to macOS</h3>
+    <blockquote>Read AGENTS.md. Port thermo to macOS following its "Porting to another OS" section: introduce a DeviceId type instead of bluer::Address, reimplement the scanner and the atc transport with btleplug, and send chart images with direct kitty transmission instead of /dev/shm. Keep Linux working behind cfg. Plan first, then implement step by step, keeping cargo test and clippy green after each step.</blockquote>
+  </div>
+  <div class="prompt">
+    <h3>Port to Windows</h3>
+    <blockquote>Read AGENTS.md. Make thermo build and run on Windows 11 with btleplug (WinRT). Store history under %LOCALAPPDATA%. Windows Terminal has no kitty graphics, so make sure the braille chart fallback is used. Keep the Linux build unchanged. Plan first.</blockquote>
+  </div>
+  <div class="prompt">
+    <h3>Headless Raspberry Pi exporter</h3>
+    <blockquote>Read AGENTS.md. Add a new binary crate thermo-mqtt that reuses the scanner and the bthome crate, without the TUI, and publishes every reading to MQTT as JSON (topic thermo/&lt;name&gt;), with Home Assistant MQTT discovery. Add a systemd unit file and a README section for Raspberry Pi OS.</blockquote>
+  </div>
+  <div class="prompt">
+    <h3>InfluxDB / Grafana</h3>
+    <blockquote>Read AGENTS.md. Add an optional InfluxDB line-protocol writer to thermo, configured by environment variables, that sends each advert (temperature, humidity, battery, RSSI, device name). Don't block the UI on network errors.</blockquote>
+  </div>
+  <div class="prompt">
+    <h3>Fahrenheit</h3>
+    <blockquote>Read AGENTS.md. Add a °F display option (key: u) to thermo. Keep storage and calibration in °C, convert only for display in the table, chart axis and calibration panel, and remember the choice across restarts.</blockquote>
+  </div>
+  <div class="prompt">
+    <h3>Another pvvx device</h3>
+    <blockquote>Read AGENTS.md. I have &lt;model&gt; thermometers on pvvx firmware &lt;version&gt;. Compare its config layout and LCD limits in the pvvx sources with crates/atc/src/config.rs and screen.rs, and make identify, settings and calibration work for it. Don't connect to any device; I'll test.</blockquote>
+  </div>
+
+  <div class="callout"><p><strong>Keep your devices safe.</strong> Agents should never run write actions against your thermometers unasked, and <code>AGENTS.md</code> tells them so. Calibration is reversible (<kbd>x</kbd> restores factory coefficients), and a mistaken setting can be fixed again from thermo or the pvvx web flasher, but it's still your call.</p></div>
+
+  <h2>Share what you build</h2>
+  <p>A port or a feature that others could use? Open a pull request or an issue on <a href="https://github.com/arturzielazny/atc-thermo">GitHub</a>. Say which agent you used and which hardware you tested on.</p>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>thermo · MIT or Apache-2.0 · <a href="https://github.com/arturzielazny/atc-thermo">source</a></span>
+    <span>Not affiliated with Xiaomi or Anthropic.</span>
+  </div>
+</footer>
+</body>
+</html>

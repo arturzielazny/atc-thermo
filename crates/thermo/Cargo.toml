@@ -4,6 +4,13 @@ version = "0.1.0"
 description = "Live terminal dashboard for BTHome thermometers"
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords = ["lywsd03mmc","bthome","thermometer","tui","calibration"]
+categories = ["command-line-utilities","hardware-support"]
+readme = "../../README.md"
 
 [dependencies]
 anyhow = "1.0.104"

@@ -4,6 +4,13 @@ version = "0.1.0"
 description = "Decoder for unencrypted BTHome v2 BLE advertisement payloads"
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords = ["bthome","ble","bluetooth","home-assistant","sensor"]
+categories = ["parser-implementations","hardware-support"]
+readme = "../../README.md"
 
 [dependencies]
 

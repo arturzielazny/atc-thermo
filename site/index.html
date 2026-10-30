@@ -1,0 +1,376 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>thermo · Calibrate Xiaomi LYWSD03MMC thermometers on Linux</title>
+<meta name="description" content="Free, open-source Linux terminal dashboard for Xiaomi LYWSD03MMC and other pvvx ATC_MiThermometer BLE thermometers: live BTHome v2 readings, charts, log download, clock sync and automatic calibration that writes corrections into every device.">
+<meta name="keywords" content="LYWSD03MMC, LYWSD03MMC calibration, Xiaomi thermometer calibration, pvvx ATC_MiThermometer, ATC firmware, BTHome v2, Bluetooth thermometer Linux, BlueZ, Home Assistant BTHome, humidity sensor calibration, Mi Temperature and Humidity Monitor 2, Rust TUI">
+<link rel="canonical" href="https://arturzielazny.github.io/atc-thermo/">
+<meta name="theme-color" content="#14151e">
+<link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="assets/style.css">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="thermo">
+<meta property="og:title" content="thermo · make every Xiaomi thermometer in the house agree">
+<meta property="og:description" content="Linux dashboard and automatic calibration for LYWSD03MMC thermometers on pvvx firmware. Live BTHome readings, log download, clock sync, one-key calibration.">
+<meta property="og:url" content="https://arturzielazny.github.io/atc-thermo/">
+<meta property="og:image" content="https://arturzielazny.github.io/atc-thermo/assets/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "thermo",
+  "alternateName": "atc-thermo",
+  "applicationCategory": "UtilitiesApplication",
+  "operatingSystem": "Linux",
+  "description": "Terminal dashboard and consensus calibration for Xiaomi LYWSD03MMC and other BLE thermometers running the pvvx ATC_MiThermometer firmware with BTHome v2.",
+  "url": "https://arturzielazny.github.io/atc-thermo/",
+  "downloadUrl": "https://github.com/arturzielazny/atc-thermo",
+  "codeRepository": "https://github.com/arturzielazny/atc-thermo",
+  "programmingLanguage": "Rust",
+  "license": "https://opensource.org/licenses/MIT",
+  "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+  "screenshot": "https://arturzielazny.github.io/atc-thermo/assets/temperature.webp"
+}
+</script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  "mainEntity": [
+    { "@type": "Question", "name": "Can I calibrate Xiaomi LYWSD03MMC thermometers without a reference thermometer?",
+      "acceptedAnswer": { "@type": "Answer", "text": "Yes, relative to each other. Put all thermometers side by side; thermo fits a gain and offset per device so that every one agrees with the group's average, then writes the coefficients into each device's flash through the pvvx firmware. The average of several sensors is usually closer to the truth than any single one. For absolute humidity accuracy add a salt test (75 %RH over saturated table salt)." } },
+    { "@type": "Question", "name": "Do calibrated values show up in Home Assistant?",
+      "acceptedAnswer": { "@type": "Answer", "text": "Yes. The corrections are stored in the thermometer itself, so every BTHome receiver, including Home Assistant's BTHome integration and ESPHome Bluetooth proxies, receives the corrected values. thermo only listens to adverts and can run alongside Home Assistant." } },
+    { "@type": "Question", "name": "Which devices are supported?",
+      "acceptedAnswer": { "@type": "Answer", "text": "Tested with eight Xiaomi LYWSD03MMC (Mi Temperature and Humidity Monitor 2) on pvvx firmware 5.9, with both sensor variants. Other devices running the pvvx ATC_MiThermometer firmware with BTHome v2 advertising should work but are untested." } },
+    { "@type": "Question", "name": "Does it run on macOS, Windows or a Raspberry Pi?",
+      "acceptedAnswer": { "@type": "Answer", "text": "It runs on any Linux with BlueZ, including a Raspberry Pi. macOS and Windows need the Bluetooth layer swapped; the BTHome decoder and the calibration maths are plain portable Rust. The project ships instructions for doing the port with an AI coding agent." } }
+  ]
+}
+</script>
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="./" aria-label="thermo home">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><rect x="2" y="2" width="28" height="28" rx="7" fill="#e8e8e2"/><rect x="6" y="6" width="20" height="14" rx="2" fill="#aeb39c"/><text x="16" y="17.5" text-anchor="middle" font-family="ui-monospace,monospace" font-weight="700" font-size="10" fill="#22251c">21°</text><circle cx="10" cy="24.5" r="2" fill="#f0b43c"/><rect x="15" y="23.5" width="11" height="2" rx="1" fill="#9a9db5"/></svg>
+      thermo
+    </a>
+    <nav class="links" aria-label="Main">
+      <a href="#features" class="opt">Features</a>
+      <a href="#install">Install</a>
+      <a href="calibration.html">Calibration guide</a>
+      <a href="agents.html" class="opt">AI agents</a>
+      <a href="https://github.com/arturzielazny/atc-thermo">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+<section class="hero">
+  <div class="wrap grid">
+    <div>
+      <p class="eyebrow">Open source · Linux · Rust</p>
+      <h1>Make every Xiaomi thermometer in the house agree.</h1>
+      <p class="lead"><strong>thermo</strong> is a terminal dashboard for <strong>LYWSD03MMC</strong> and other thermometers running the
+        <a href="https://github.com/pvvx/ATC_MiThermometer">pvvx ATC_MiThermometer</a> firmware. It charts their live
+        <strong>BTHome v2</strong> readings and fills gaps from each device's own log. Put them side by side, press <kbd>c</kbd>,
+        and it calibrates them all at once, writing the corrections into the thermometers. Home Assistant sees the fixed values too.</p>
+      <div class="cta">
+        <a class="btn primary" href="#install">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 17l6-5-6-5M12 19h8"/></svg>
+          Install
+        </a>
+        <a class="btn" href="https://github.com/arturzielazny/atc-thermo">
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .5a11.5 11.5 0 0 0-3.6 22.4c.6.1.8-.3.8-.6v-2c-3.2.7-3.9-1.5-3.9-1.5-.5-1.3-1.3-1.7-1.3-1.7-1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1 1.8 2.8 1.3 3.5 1 .1-.8.4-1.3.7-1.6-2.6-.3-5.3-1.3-5.3-5.7 0-1.3.5-2.3 1.2-3.1-.1-.3-.5-1.5.1-3.1 0 0 1-.3 3.2 1.2a11 11 0 0 1 5.8 0c2.2-1.5 3.2-1.2 3.2-1.2.6 1.6.2 2.8.1 3.1.8.8 1.2 1.8 1.2 3.1 0 4.4-2.7 5.4-5.3 5.7.4.4.8 1.1.8 2.2v3.2c0 .3.2.7.8.6A11.5 11.5 0 0 0 12 .5z"/></svg>
+          Source on GitHub
+        </a>
+      </div>
+    </div>
+
+    <!-- Symbolic: three thermometers disagree, their adverts reach the terminal, and after the calibration mark their lines merge. -->
+    <svg class="ill" viewBox="0 0 560 420" role="img" aria-labelledby="hero-t">
+      <title id="hero-t">Three thermometers showing 21.4, 21.9 and 21.1 °C send Bluetooth adverts to a terminal chart where their lines merge after calibration</title>
+      <g>
+        <rect class="shell" x="10" y="20" width="132" height="116" rx="22" stroke-width="2"/>
+        <rect class="lcd" x="24" y="32" width="104" height="66" rx="6"/>
+        <text class="ink" x="68" y="78" text-anchor="middle" font-size="31" font-weight="700">21.4</text>
+        <text class="ink" x="110" y="58" font-size="11">°C</text>
+        <circle cx="34" cy="118" r="7" fill="none" stroke="#3d86d6" stroke-width="3"/>
+        <text class="muted" x="128" y="123" text-anchor="end" font-size="13">58%</text>
+      </g>
+      <g>
+        <rect class="shell" x="10" y="152" width="132" height="116" rx="22" stroke-width="2"/>
+        <rect class="lcd" x="24" y="164" width="104" height="66" rx="6"/>
+        <text class="ink" x="68" y="210" text-anchor="middle" font-size="31" font-weight="700">21.9</text>
+        <text class="ink" x="110" y="190" font-size="11">°C</text>
+        <circle cx="34" cy="250" r="7" fill="none" stroke="#e08a2e" stroke-width="3"/>
+        <text class="muted" x="128" y="255" text-anchor="end" font-size="13">63%</text>
+      </g>
+      <g>
+        <rect class="shell" x="10" y="284" width="132" height="116" rx="22" stroke-width="2"/>
+        <rect class="lcd" x="24" y="296" width="104" height="66" rx="6"/>
+        <text class="ink" x="68" y="342" text-anchor="middle" font-size="31" font-weight="700">21.1</text>
+        <text class="ink" x="110" y="322" font-size="11">°C</text>
+        <circle cx="34" cy="382" r="7" fill="none" stroke="#3fae4f" stroke-width="3"/>
+        <text class="muted" x="128" y="387" text-anchor="end" font-size="13">55%</text>
+      </g>
+      <g fill="none" stroke-width="3" stroke-linecap="round">
+        <path class="wave astroke" d="M156 70 q10 8 0 16"/>
+        <path class="wave d2 astroke" d="M166 62 q16 16 0 32"/>
+        <path class="wave d3 astroke" d="M176 54 q22 24 0 48"/>
+        <path class="wave astroke" d="M156 202 q10 8 0 16"/>
+        <path class="wave d2 astroke" d="M166 194 q16 16 0 32"/>
+        <path class="wave d3 astroke" d="M176 186 q22 24 0 48"/>
+        <path class="wave astroke" d="M156 334 q10 8 0 16"/>
+        <path class="wave d2 astroke" d="M166 326 q16 16 0 32"/>
+        <path class="wave d3 astroke" d="M176 318 q22 24 0 48"/>
+      </g>
+      <g>
+        <rect class="term" x="214" y="60" width="336" height="300" rx="14"/>
+        <circle cx="236" cy="80" r="5" fill="#d9474e"/><circle cx="252" cy="80" r="5" fill="#d9b02c"/><circle cx="268" cy="80" r="5" fill="#3fae4f"/>
+        <text x="296" y="84" font-size="12" fill="#9a9db5">thermo</text>
+        <g stroke-width="1" class="termline">
+          <line x1="234" y1="140" x2="530" y2="140"/><line x1="234" y1="190" x2="530" y2="190"/>
+          <line x1="234" y1="240" x2="530" y2="240"/><line x1="234" y1="290" x2="530" y2="290"/>
+        </g>
+        <rect x="234" y="104" width="160" height="210" fill="#ffffff" opacity="0.05"/>
+        <line x1="394" y1="104" x2="394" y2="314" stroke="#f0b43c" stroke-width="2.5"/>
+        <text x="400" y="118" font-size="11" fill="#f0b43c">calibrated</text>
+        <g fill="none" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M234 196 C270 186 300 204 330 194 S380 188 394 214 C420 216 470 208 530 212" stroke="#3d86d6"/>
+          <path d="M234 152 C270 146 300 162 330 152 S380 146 394 212 C420 214 470 206 530 210" stroke="#e08a2e"/>
+          <path d="M234 248 C270 240 300 256 330 246 S380 240 394 216 C420 218 470 210 530 214" stroke="#3fae4f"/>
+        </g>
+        <g font-size="11" fill="#9a9db5">
+          <text x="240" y="340">● 3 devices</text>
+          <text x="340" y="340">after: one line</text>
+        </g>
+      </g>
+    </svg>
+  </div>
+</section>
+
+<section class="alt" aria-labelledby="see">
+  <div class="wrap">
+    <h2 id="see">What it looks like</h2>
+    <p class="section-lead">Real screenshots from eight LYWSD03MMC thermometers. They sat side by side indoors overnight, went to a cooler room in the morning, and were calibrated. Afterwards some of them moved to other rooms. In Ghostty or kitty the chart is a crisp image; other terminals and SSH get braille.</p>
+    <div class="tabs" role="tablist" aria-label="Screenshots">
+      <button role="tab" aria-selected="true" data-src="assets/temperature.webp" data-cap="Temperature, last 24 h: the side-by-side group is calibrated, then three devices go to other rooms. The table shows battery, latest and 5-minute median signal strength, and each device's clock offset.">Temperature</button>
+      <button role="tab" aria-selected="false" data-src="assets/humidity.webp" data-cap="Humidity, last 24 h: before calibration the out-of-the-box readings spread over 4–5 %RH.">Humidity</button>
+      <button role="tab" aria-selected="false" data-src="assets/calibration.webp" data-cap="Calibration screen: a window covering the indoor night and the cool morning, a fitted gain and offset per device with bars showing how big each correction is, and the agreement before → after.">Calibration</button>
+    </div>
+    <figure class="shot">
+      <img id="shot" src="assets/temperature.webp" width="1600" height="1014" alt="thermo terminal dashboard showing a temperature chart of eight Xiaomi LYWSD03MMC thermometers over 24 hours above a table of live readings" loading="eager">
+      <figcaption id="shot-cap">Temperature, last 24 h: the side-by-side group is calibrated, then three devices go to other rooms. The table shows battery, latest and 5-minute median signal strength, and each device's clock offset.</figcaption>
+    </figure>
+    <div class="stats">
+      <div class="stat"><div class="num">0.078 → 0.012 <small>°C</small></div><p>Disagreement in temperature (rms against the group) over the fitted window, before and after calibrating 8 devices.</p></div>
+      <div class="stat"><div class="num">1.76 → 0.40 <small>%RH</small></div><p>The same for humidity. Out of the box, readings spread over 4–5 %RH.</p></div>
+      <div class="stat"><div class="num">~200 <small>ppm</small></div><p>Clock drift measured on the thermometers. <kbd>s</kbd> syncs them and trims each clock's rate.</p></div>
+    </div>
+  </div>
+</section>
+
+<section id="features" aria-labelledby="feat">
+  <div class="wrap">
+    <h2 id="feat">Everything for a houseful of cheap BLE thermometers</h2>
+    <p class="section-lead">Every action works on one device or on all marked devices at once, so eight thermometers are as easy as one.</p>
+    <div class="features">
+      <div class="card">
+        <svg class="icon ill" viewBox="0 0 44 44" fill="none" stroke-width="2.5" stroke-linecap="round" aria-hidden="true"><rect class="line" x="2" y="2" width="40" height="40" rx="9" stroke="currentColor" fill="none"/><path d="M8 30 L16 22 L22 26 L36 12" stroke="#3d86d6"/><path d="M8 34 L16 28 L22 30 L36 20" stroke="#e08a2e"/></svg>
+        <h3>Live dashboard</h3>
+        <p>One line per thermometer, a chart above a table: temperature, humidity, battery, voltage and signal strength, updated as BTHome v2 adverts arrive. History is saved as plain CSV.</p>
+      </div>
+      <div class="card">
+        <svg class="icon ill" viewBox="0 0 44 44" fill="none" stroke-width="2.5" stroke-linecap="round" aria-hidden="true"><circle cx="10" cy="12" r="3" fill="#3d86d6" stroke="none"/><circle cx="34" cy="10" r="3" fill="#e08a2e" stroke="none"/><circle cx="8" cy="34" r="3" fill="#3fae4f" stroke="none"/><circle cx="36" cy="34" r="3" fill="#9a68cf" stroke="none"/><path class="mstroke" d="M13 14l6 6M31 12l-6 8M11 32l8-8M33 32l-8-8" stroke-width="1.6" stroke-dasharray="2 3"/><circle class="astroke" cx="22" cy="22" r="4" stroke-width="3"/></svg>
+        <h3>Consensus calibration</h3>
+        <p>No reference instrument needed. A robust fit pulls every device onto the group average, rejects outliers, and writes a gain and offset to each thermometer's flash.</p>
+      </div>
+      <div class="card">
+        <svg class="icon ill" viewBox="0 0 44 44" fill="none" stroke-width="2.5" stroke-linecap="round" aria-hidden="true"><path class="mstroke" d="M22 4v22M14 18l8 8 8-8"/><path d="M6 32h32" stroke="#3fae4f"/><path d="M6 38h20" stroke="#3fae4f" opacity="0.5"/></svg>
+        <h3>Log download, honest timestamps</h3>
+        <p>Missed the last 24 hours? thermo downloads each device's own log and corrects for its wrong clock. Device clocks are usually off, and nothing assumes they aren't.</p>
+      </div>
+      <div class="card">
+        <svg class="icon ill" viewBox="0 0 44 44" fill="none" stroke-width="2.5" stroke-linecap="round" aria-hidden="true"><circle class="mstroke" cx="22" cy="22" r="17"/><path class="astroke" d="M22 11v11l7 5"/></svg>
+        <h3>Clock sync and drift trim</h3>
+        <p>Sets every clock to the computer's time. After a day it measures how fast each one runs and trims the oscillator, which here ran about 20 s per day fast.</p>
+      </div>
+      <div class="card">
+        <svg class="icon ill" viewBox="0 0 44 44" fill="none" stroke-width="2.5" stroke-linecap="round" aria-hidden="true"><rect class="mstroke" x="6" y="8" width="32" height="28" rx="5"/><path class="astroke" d="M12 18h20M12 26h12"/></svg>
+        <h3>Rename and settings, in bulk</h3>
+        <p>Rename devices (stored in flash, broadcast to Home Assistant), and change advertising interval, measurement interval, TX power and log interval on all of them in one go.</p>
+      </div>
+      <div class="card">
+        <svg class="icon ill" viewBox="0 0 44 44" aria-hidden="true"><rect class="shell" x="3" y="5" width="38" height="34" rx="8" stroke-width="2"/><rect class="lcd" x="8" y="9" width="28" height="17" rx="2"/><text class="ink" x="22" y="22.5" text-anchor="middle" font-size="11" font-weight="700">333</text><circle cx="13" cy="32" r="3" fill="#f0b43c"/></svg>
+        <h3>Which one is which?</h3>
+        <p><kbd>i</kbd> shows the device's row number on its own LCD for ten minutes, <code>333</code> with a smiley for #3, so you can label them.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="alt" aria-labelledby="how">
+  <div class="wrap split">
+    <div>
+      <h2 id="how">Calibrating takes an afternoon and one keypress</h2>
+      <ol class="steps">
+        <li><strong>Side by side, two hours.</strong><p>Put all thermometers a few centimetres apart, away from sun, radiators and laptop exhaust. That is enough for offsets.</p></li>
+        <li><strong>Somewhere 5 °C different, three hours.</strong><p>Move them all at once: outside in the shade, a cold room, a garage. The second temperature makes the gain measurable.</p></li>
+        <li><strong>Press <kbd>c</kbd>.</strong><p>Pick the window on the chart with <kbd>Tab</kbd> and <kbd>←</kbd> <kbd>→</kbd>, check the bars, press <kbd>Enter</kbd>. Each device gets its own correction in flash. <kbd>x</kbd> brings back the factory values.</p></li>
+      </ol>
+      <p><a href="calibration.html">Read the full calibration guide →</a> It covers what range to calibrate in, humidity, salt tests, and how the fit works.</p>
+    </div>
+    <!-- Symbolic: steady indoor plateau, a move, a cooler plateau; the shaded settling hour is ignored. -->
+    <svg class="ill" viewBox="0 0 520 330" role="img" aria-labelledby="proc-t">
+      <title id="proc-t">Temperature over time: a steady indoor phase, a move, a settling hour that is ignored, and a steady cooler phase; both steady phases feed the fit</title>
+      <rect class="bg" x="0" y="0" width="520" height="330" rx="16"/>
+      <g class="line" stroke-width="1"><line x1="40" y1="70" x2="500" y2="70"/><line x1="40" y1="150" x2="500" y2="150"/><line x1="40" y1="230" x2="500" y2="230"/></g>
+      <text class="muted" x="34" y="74" text-anchor="end" font-size="12">22°</text>
+      <text class="muted" x="34" y="234" text-anchor="end" font-size="12">16°</text>
+      <rect x="250" y="40" width="60" height="230" class="muted" opacity="0.18"/>
+      <text class="muted" x="280" y="292" text-anchor="middle" font-size="11">settling</text>
+      <text class="muted" x="280" y="306" text-anchor="middle" font-size="11">(ignored)</text>
+      <g fill="none" stroke-width="3" stroke-linecap="round">
+        <path d="M50 78 C110 74 170 82 240 80 C250 80 255 200 270 222 C290 226 360 224 490 226" stroke="#3d86d6"/>
+        <path d="M50 70 C110 66 170 74 240 72 C252 72 258 196 274 216 C294 220 360 218 490 220" stroke="#e08a2e"/>
+        <path d="M50 86 C110 82 170 90 240 88 C250 88 254 206 268 230 C290 232 360 230 490 232" stroke="#3fae4f"/>
+      </g>
+      <g class="accent">
+        <rect x="50" y="250" width="190" height="6" rx="3"/>
+        <rect x="296" y="250" width="180" height="6" rx="3"/>
+      </g>
+      <text class="text" x="145" y="280" text-anchor="middle" font-size="13">indoors ≥ 2 h</text>
+      <text class="text" x="400" y="280" text-anchor="middle" font-size="13">cooler ≥ 3 h</text>
+      <g class="ill">
+        <path d="M120 40 l20 -16 l20 16 v18 h-40z" fill="none" class="mstroke" stroke-width="2"/>
+        <circle cx="400" cy="34" r="9" fill="none" class="mstroke" stroke-width="2"/>
+        <path d="M400 18v-6M400 56v-6M384 34h-6M422 34h-6" class="mstroke" stroke-width="2" stroke-linecap="round"/>
+      </g>
+      <text class="muted" x="270" y="322" text-anchor="middle" font-size="11">both steady phases → one gain + offset per device</text>
+    </svg>
+  </div>
+</section>
+
+<section id="install" aria-labelledby="inst">
+  <div class="wrap narrow">
+    <h2 id="inst">Install</h2>
+    <p>You need Linux with BlueZ (any desktop distro, or a Raspberry Pi), <a href="https://rustup.rs">Rust</a> 1.85 or newer, and the D-Bus development headers.</p>
+<pre><code><span class="c"># Debian / Ubuntu / Raspberry Pi OS</span>
+sudo apt install libdbus-1-dev pkg-config
+<span class="c"># Fedora</span>
+sudo dnf install dbus-devel pkgconf-pkg-config
+<span class="c"># Arch</span>
+sudo pacman -S --needed dbus pkgconf
+
+cargo install --git https://github.com/arturzielazny/atc-thermo thermo
+thermo</code></pre>
+    <p>Readings are saved to <code>~/.local/share/thermo/</code> as CSV, one file per day, and reloaded on start. <code>thermo calibrate 6</code> prints a calibration proposal for the last six hours without touching any device.</p>
+
+    <h3 id="flash">First, flash the thermometers</h3>
+    <p>thermo talks to the open <a href="https://github.com/pvvx/ATC_MiThermometer">pvvx ATC_MiThermometer</a> firmware. Stock Xiaomi firmware encrypts its adverts and has no calibration interface. Flashing is wireless, from a browser, with the <a href="https://pvvx.github.io/ATC_MiThermometer/TelinkMiFlasher.html">TelinkMiFlasher</a> page:</p>
+    <ol>
+      <li>Chrome on Linux keeps Web Bluetooth behind a flag. Enable <code>chrome://flags/#enable-experimental-web-platform-features</code> and restart, or use Chrome on Android.</li>
+      <li>Connect, activate, and flash the pvvx firmware for your model (version 5.9 or newer was used here).</li>
+      <li>Set the advertising type to <strong>BTHome v2</strong>. Each thermometer then shows up in thermo, Home Assistant and ESPHome.</li>
+    </ol>
+
+    <h3>Keys</h3>
+    <div class="table-scroll">
+    <table class="keys">
+      <tr><td><kbd>↑</kbd> <kbd>↓</kbd></td><td>select a device · <kbd>Esc</kbd> clears marks, then the selection</td></tr>
+      <tr><td><kbd>space</kbd> <kbd>a</kbd></td><td>mark one / all devices: actions apply to marked devices, or the selected one</td></tr>
+      <tr><td><kbd>c</kbd></td><td>calibration screen</td></tr>
+      <tr><td><kbd>s</kbd></td><td>sync clocks and trim their drift</td></tr>
+      <tr><td><kbd>d</kbd></td><td>download the device log for the last 24 h</td></tr>
+      <tr><td><kbd>n</kbd> <kbd>e</kbd></td><td>rename · settings (advertising, measurement and log interval, TX power)</td></tr>
+      <tr><td><kbd>i</kbd></td><td>identify: show the device's number on its screen</td></tr>
+      <tr><td><kbd>t</kbd> <kbd>h</kbd> <kbd>r</kbd> <kbd>w</kbd> <kbd>p</kbd></td><td>temperature / humidity / signal chart · time span · lines or points</td></tr>
+      <tr><td><kbd>q</kbd></td><td>quit</td></tr>
+    </table>
+    </div>
+  </div>
+</section>
+
+<section class="alt" aria-labelledby="agents">
+  <div class="wrap split">
+    <!-- Symbolic: one codebase branching to different targets. -->
+    <svg class="ill" viewBox="0 0 520 300" role="img" aria-labelledby="ag-t">
+      <title id="ag-t">The thermo code base, shown as a terminal, branching through an AI agent to macOS, Windows, a Raspberry Pi exporter and a web dashboard</title>
+      <rect class="term" x="20" y="100" width="170" height="110" rx="12"/>
+      <text x="38" y="132" font-size="13" fill="#f0b43c">$ claude</text>
+      <text x="38" y="156" font-size="12" fill="#9a9db5">&gt; port thermo</text>
+      <text x="38" y="174" font-size="12" fill="#9a9db5">  to macOS…</text>
+      <rect x="38" y="186" width="9" height="14" fill="#e3e5f0"/>
+      <g fill="none" stroke-width="2.5" class="astroke" stroke-linecap="round">
+        <path d="M190 155 C250 155 250 50 296 50"/>
+        <path d="M190 155 C250 155 250 120 296 120"/>
+        <path d="M190 155 C250 155 250 190 296 190"/>
+        <path d="M190 155 C250 155 250 260 296 260"/>
+      </g>
+      <g>
+        <rect class="shell" x="296" y="28" width="214" height="44" rx="10" stroke-width="1.5"/>
+        <text class="ink" x="312" y="56" font-size="14">macOS · CoreBluetooth</text>
+        <rect class="shell" x="296" y="98" width="214" height="44" rx="10" stroke-width="1.5"/>
+        <text class="ink" x="312" y="126" font-size="14">Windows · WinRT</text>
+        <rect class="shell" x="296" y="168" width="214" height="44" rx="10" stroke-width="1.5"/>
+        <text class="ink" x="312" y="196" font-size="14">Pi → MQTT / Influx</text>
+        <rect class="shell" x="296" y="238" width="214" height="44" rx="10" stroke-width="1.5"/>
+        <text class="ink" x="312" y="266" font-size="14">web dashboard</text>
+      </g>
+    </svg>
+    <div>
+      <h2 id="ag">Not quite what you need? Have an agent rewrite it.</h2>
+      <p>thermo is written to be changed by AI coding agents such as Claude Code, Codex or Cursor. The repository has an <code>AGENTS.md</code> that explains the architecture and what is platform-specific. The BTHome decoder and the calibration maths are dependency-free and fully unit-tested, so an agent can check its own work without hardware.</p>
+      <p>Port it to macOS or Windows, turn it into a headless MQTT exporter on a Raspberry Pi, or add your own sensor model.</p>
+      <p><a class="btn" href="agents.html">Guide and ready-made prompts →</a></p>
+    </div>
+  </div>
+</section>
+
+<section aria-labelledby="faq">
+  <div class="wrap narrow">
+    <h2 id="faq">Questions</h2>
+    <details><summary>Can I calibrate LYWSD03MMC thermometers without a reference thermometer?</summary>
+      <p>Yes, relative to each other: thermo makes all devices agree with their group average, which is usually closer to the truth than any single sensor. Agreement isn't absolute accuracy, though. For absolute humidity, a sealed box over saturated table salt holds 75 %RH and makes a cheap reference. The <a href="calibration.html">guide</a> explains the details.</p></details>
+    <details><summary>Will Home Assistant see the calibrated values?</summary>
+      <p>Yes. The gain and offset are written into each thermometer, so every receiver of its BTHome adverts gets corrected values: Home Assistant's BTHome integration, ESPHome Bluetooth proxies and anything else that decodes BTHome. thermo only listens, so it runs fine next to them. Names set with <kbd>n</kbd> appear in Home Assistant when it scans actively.</p></details>
+    <details><summary>Which thermometers work?</summary>
+      <p>Tested with eight Xiaomi LYWSD03MMC (Mi Temperature and Humidity Monitor 2) on pvvx firmware 5.9, including both sensor variants (SHT4x-type and SHT3x-type coefficients). Other models running the pvvx firmware with BTHome v2, such as MHO-C401 or CGG1, should show up and be calibratable but are untested. Reports are welcome.</p></details>
+    <details><summary>macOS, Windows, Raspberry Pi?</summary>
+      <p>Any Linux with BlueZ works, a Raspberry Pi included. macOS and Windows need the Bluetooth layer replaced. See <a href="agents.html">porting with an AI agent</a>.</p></details>
+    <details><summary>Can I undo a calibration?</summary>
+      <p>Yes. <kbd>x</kbd> on the calibration screen restores the factory coefficients, and every change is logged with old and new values in <code>calibrations.csv</code>. Corrections compose, so you can calibrate again later on top of the last one.</p></details>
+    <details><summary>Does it drain the batteries?</summary>
+      <p>Listening is passive and costs the thermometers nothing. thermo only connects to a device when you ask for something: log download, clock sync, settings, rename, identify or calibration.</p></details>
+  </div>
+</section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>thermo · MIT or Apache-2.0 · by <a href="https://github.com/arturzielazny">Artur Zielazny</a>, written with Claude Code</span>
+    <span>Built on <a href="https://github.com/pvvx/ATC_MiThermometer">pvvx/ATC_MiThermometer</a>, <a href="https://bthome.io">BTHome</a>, <a href="https://github.com/bluez/bluer">bluer</a> and <a href="https://ratatui.rs">ratatui</a>. Not affiliated with Xiaomi.</span>
+  </div>
+</footer>
+
+<script>
+  const img = document.getElementById('shot');
+  const cap = document.getElementById('shot-cap');
+  for (const tab of document.querySelectorAll('.tabs button')) {
+    tab.addEventListener('click', () => {
+      for (const t of document.querySelectorAll('.tabs button')) t.setAttribute('aria-selected', String(t === tab));
+      img.src = tab.dataset.src;
+      cap.textContent = tab.dataset.cap;
+    });
+  }
+</script>
+</body>
+</html>

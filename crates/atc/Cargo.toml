@@ -4,6 +4,13 @@ version = "0.1.0"
 description = "Client for the pvvx ATC_MiThermometer firmware's BLE command interface"
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords = ["ble","bluetooth","thermometer","lywsd03mmc","pvvx"]
+categories = ["hardware-support"]
+readme = "../../README.md"
 
 [dependencies]
 bluer.workspace = true

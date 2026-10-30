@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>How to calibrate Xiaomi LYWSD03MMC thermometers · thermo</title>
+<meta name="description" content="A practical guide to calibrating Xiaomi LYWSD03MMC and other pvvx ATC_MiThermometer thermometers: offsets and gains, consensus calibration without a reference, which temperature range to use, humidity salt tests, and how the fit works.">
+<meta name="keywords" content="LYWSD03MMC calibration, calibrate Xiaomi thermometer, pvvx calibration, temperature offset, humidity offset, hygrometer salt test, SHT4x calibration, BTHome thermometer accuracy">
+<link rel="canonical" href="https://arturzielazny.github.io/atc-thermo/calibration.html">
+<meta name="theme-color" content="#14151e">
+<link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="assets/style.css">
+<meta property="og:type" content="article">
+<meta property="og:title" content="How to calibrate Xiaomi LYWSD03MMC thermometers">
+<meta property="og:description" content="Offsets, gains, consensus calibration without a reference, humidity salt tests, and a tool that does it for a whole houseful at once.">
+<meta property="og:url" content="https://arturzielazny.github.io/atc-thermo/calibration.html">
+<meta property="og:image" content="https://arturzielazny.github.io/atc-thermo/assets/og.png">
+<meta name="twitter:card" content="summary_large_image">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "HowTo",
+  "name": "Calibrate several Xiaomi LYWSD03MMC thermometers against each other",
+  "description": "Co-locate thermometers running pvvx firmware at two temperatures, then let thermo fit and write a gain and offset to each device.",
+  "tool": [{ "@type": "HowToTool", "name": "Linux computer with Bluetooth and thermo" }],
+  "supply": [{ "@type": "HowToSupply", "name": "Two or more LYWSD03MMC thermometers with pvvx ATC_MiThermometer firmware" }],
+  "totalTime": "PT6H",
+  "step": [
+    { "@type": "HowToStep", "name": "Side by side indoors", "text": "Place all thermometers a few centimetres apart away from heat sources and leave them for at least two hours with thermo running." },
+    { "@type": "HowToStep", "name": "Move to a different temperature", "text": "Move all of them at once to a place at least 5 °C warmer or colder and leave them for at least three hours." },
+    { "@type": "HowToStep", "name": "Calibrate", "text": "Press c in thermo, choose a window covering both steady phases but not the move, check the proposed corrections and press Enter to write them." }
+  ]
+}
+</script>
+</head>
+<body>
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="./" aria-label="thermo home">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><rect x="2" y="2" width="28" height="28" rx="7" fill="#e8e8e2"/><rect x="6" y="6" width="20" height="14" rx="2" fill="#aeb39c"/><text x="16" y="17.5" text-anchor="middle" font-family="ui-monospace,monospace" font-weight="700" font-size="10" fill="#22251c">21°</text><circle cx="10" cy="24.5" r="2" fill="#f0b43c"/><rect x="15" y="23.5" width="11" height="2" rx="1" fill="#9a9db5"/></svg>
+      thermo
+    </a>
+    <nav class="links" aria-label="Main">
+      <a href="./#install">Install</a>
+      <a href="calibration.html" aria-current="page">Calibration guide</a>
+      <a href="agents.html" class="opt">AI agents</a>
+      <a href="https://github.com/arturzielazny/atc-thermo">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main class="wrap narrow prose" style="padding-top:3rem;padding-bottom:3rem">
+  <p class="eyebrow">Guide</p>
+  <h1>How to calibrate Xiaomi LYWSD03MMC thermometers</h1>
+  <p class="lead">Five cheap Bluetooth thermometers in one room will show five different numbers. Here's why, what the pvvx firmware lets you fix, and how to fix a whole houseful at once without buying a reference instrument.</p>
+
+  <h2>What the firmware can correct</h2>
+  <p>The <a href="https://github.com/pvvx/ATC_MiThermometer">pvvx ATC_MiThermometer</a> firmware converts each raw sensor value with a straight line, one for temperature and one for humidity:</p>
+<pre><code>temperature = raw × k_T + z_T
+humidity    = raw × k_H + z_H</code></pre>
+  <p>Out of the box <code>k</code> and <code>z</code> are the sensor datasheet's formula. Calibrating means changing them. That gives two knobs per quantity: the <strong>offset</strong> shifts the line, the <strong>gain</strong> tilts it. There's no curve, so a correction is always "multiply a little, then add a little". Both are written to flash over Bluetooth (command <code>0x25</code>). The factory values come back with <code>0x26</code>, or <kbd>x</kbd> in thermo.</p>
+
+  <figure>
+    <svg class="ill" viewBox="0 0 640 316" role="img" aria-labelledby="go-t">
+      <title id="go-t">Offset versus gain: an offset shifts a device's reading line up or down by the same amount everywhere; a gain tilts it so the error grows with distance from one point</title>
+      <rect class="bg" width="640" height="316" rx="16"/>
+      <g transform="translate(30 30)">
+        <text class="text" x="130" y="0" text-anchor="middle" font-size="14" font-weight="700">offset</text>
+        <line class="line" x1="10" y1="230" x2="260" y2="230" stroke-width="1.5"/><line class="line" x1="10" y1="230" x2="10" y2="20" stroke-width="1.5"/>
+        <line x1="10" y1="230" x2="250" y2="30" class="mstroke" stroke-width="2" stroke-dasharray="5 5"/>
+        <line x1="10" y1="200" x2="250" y2="0" stroke="#e08a2e" stroke-width="3"/>
+        <g class="astroke" stroke-width="2"><line x1="70" y1="180" x2="70" y2="150"/><line x1="190" y1="80" x2="190" y2="50"/></g>
+        <text class="muted" x="135" y="252" text-anchor="middle" font-size="12">same error everywhere:</text><text class="muted" x="135" y="268" text-anchor="middle" font-size="12">one place is enough</text>
+      </g>
+      <g transform="translate(350 30)">
+        <text class="text" x="130" y="0" text-anchor="middle" font-size="14" font-weight="700">gain</text>
+        <line class="line" x1="10" y1="230" x2="260" y2="230" stroke-width="1.5"/><line class="line" x1="10" y1="230" x2="10" y2="20" stroke-width="1.5"/>
+        <line x1="10" y1="230" x2="250" y2="30" class="mstroke" stroke-width="2" stroke-dasharray="5 5"/>
+        <line x1="10" y1="250" x2="250" y2="10" stroke="#3d86d6" stroke-width="3"/>
+        <g class="astroke" stroke-width="2"><line x1="70" y1="180" x2="70" y2="190"/><line x1="210" y1="63" x2="210" y2="50"/></g>
+        <circle class="accent" cx="130" cy="130" r="4"/>
+        <text class="muted" x="135" y="252" text-anchor="middle" font-size="12">error grows with distance:</text><text class="muted" x="135" y="268" text-anchor="middle" font-size="12">needs two temperatures</text>
+      </g>
+    </svg>
+    <figcaption>An offset is visible anywhere. A gain error is only visible if you compare at two temperatures far enough apart.</figcaption>
+  </figure>
+
+  <h2>Calibrating without a reference: consensus</h2>
+  <p>If the thermometers sit in the same air, any disagreement between them is sensor error. So you can fit each device against the <em>others</em>. thermo takes the median of every other device as the reference, fits a gain and offset per device, and then shifts the whole set so that the gains average 1 and the offsets average 0. Each device ends up agreeing with the group's average.</p>
+  <figure>
+    <svg class="ill" viewBox="0 0 640 260" role="img" aria-labelledby="cons-t">
+      <title id="cons-t">Before: eight devices scattered around the true value; after: all on the group average, one outlier excluded from the average</title>
+      <rect class="bg" width="640" height="260" rx="16"/>
+      <text class="text" x="160" y="34" text-anchor="middle" font-size="14" font-weight="700">before</text>
+      <text class="text" x="480" y="34" text-anchor="middle" font-size="14" font-weight="700">after</text>
+      <line class="mstroke" x1="40" y1="140" x2="280" y2="140" stroke-width="1.5" stroke-dasharray="4 5"/>
+      <line class="astroke" x1="360" y1="140" x2="600" y2="140" stroke-width="2.5"/>
+      <g>
+        <circle cx="60" cy="112" r="9" fill="#3d86d6"/><circle cx="90" cy="160" r="9" fill="#e08a2e"/><circle cx="120" cy="128" r="9" fill="#3fae4f"/>
+        <circle cx="150" cy="150" r="9" fill="#d9474e"/><circle cx="180" cy="122" r="9" fill="#9a68cf"/><circle cx="210" cy="146" r="9" fill="#d9b02c"/>
+        <circle cx="240" cy="134" r="9" fill="#3fb9ae"/><circle cx="270" cy="210" r="9" fill="#e9848c"/>
+      </g>
+      <g>
+        <circle cx="380" cy="140" r="9" fill="#3d86d6"/><circle cx="410" cy="140" r="9" fill="#e08a2e"/><circle cx="440" cy="140" r="9" fill="#3fae4f"/>
+        <circle cx="470" cy="140" r="9" fill="#d9474e"/><circle cx="500" cy="140" r="9" fill="#9a68cf"/><circle cx="530" cy="140" r="9" fill="#d9b02c"/>
+        <circle cx="560" cy="140" r="9" fill="#3fb9ae"/><circle cx="590" cy="210" r="9" fill="none" stroke="#e9848c" stroke-width="3"/>
+      </g>
+      <text class="muted" x="590" y="240" text-anchor="middle" font-size="11">outlier: not</text>
+      <text class="muted" x="590" y="253" text-anchor="middle" font-size="11">written</text>
+      <text class="muted" x="380" y="120" font-size="11">group average</text>
+    </svg>
+    <figcaption>Agreement is not the same as accuracy. If every sensor reads 0.3 °C high, comparing them can't tell. But the average of eight is usually better than any single one.</figcaption>
+  </figure>
+  <div class="callout"><p><strong>Want absolute humidity?</strong> Put the thermometers in a sealed box with a dish of table salt wetted into a thick slush. The air above saturated NaCl settles at <strong>75.3 %RH</strong> at room temperature (magnesium chloride: about 33 %RH). It's the classic cheap hygrometer check.</p></div>
+
+  <h2>The procedure</h2>
+  <ol class="steps">
+    <li><strong>Side by side, at least 2 hours.</strong><p>A few centimetres apart, not touching, away from radiators, sun, laptop exhaust and people. Keep thermo running and the computer awake: only live adverts are used.</p></li>
+    <li><strong>Move them all at once, at least 3 hours.</strong><p>Somewhere at least 5 °C warmer or colder: outside in the shade, a cold room, a garage. thermo ignores the first hour after a big change while the cases catch up. It also drops readings above 95 %RH, so avoid fog and rain.</p></li>
+    <li><strong>Press <kbd>c</kbd> and choose the window.</strong><p><kbd>Tab</kbd> picks the start or end, <kbd>←</kbd> <kbd>→</kbd> move it by 15 minutes (<kbd>Shift</kbd>: one hour). The chart shades what's left out. Check that two phases were found and that the gain columns show numbers, then press <kbd>Enter</kbd> and <kbd>y</kbd>.</p></li>
+  </ol>
+  <figure>
+    <img src="assets/calibration.webp" width="1600" height="1014" loading="lazy" alt="thermo calibration screen with a window from Wednesday 20:54 to Thursday 12:00, per-device temperature and humidity offsets with bars, fitted gains, and a chart with the excluded time shaded">
+    <figcaption>A real run with 8 devices: disagreement went from 0.078 to 0.012 °C and from 1.76 to 0.40 %RH. The temperature span (15.8–21.6 °C) was wide enough for gains. The humidity span (58–68 %RH) only allowed offsets.</figcaption>
+  </figure>
+
+  <h2>Which range should you calibrate in?</h2>
+  <p>For temperature, the <em>width</em> of the range matters more than where it sits. A gain fitted over 16–22 °C is practically as good at 25 °C as one fitted over 18–25 °C. The extra error a few degrees past the fitted range is around a hundredth of a degree. A wider span such as 8–22 °C (an afternoon outside) pins the gain down even better. These sensors are close to linear, so a gain fitted on a wide span holds well beyond it. thermo only fits a gain when the steady data spans at least 5 °C and the gain is clearly different from 1. Otherwise it writes only the offset.</p>
+  <p>Humidity is different. Humidity sensors are less linear, and outdoor air in autumn sits at 80–90 %RH while a heated home in winter sits at 30–45 %. A gain fitted between 60 and 90 % and used at 35 % reaches far outside its data. Calibrate humidity near where you live, add a dry point such as a magnesium chloride box, or settle for offsets. They matter most anyway. thermo asks for at least a 15 %RH span before fitting a humidity gain.</p>
+  <p class="muted">LYWSD03MMC units ship with different sensors. In one batch of eight, five had SHT4x-style factory coefficients (<code>12500; −600</code>) and three had SHT3x-style ones (<code>10000; 0</code>), and the two groups disagreed by more at high humidity than at low. thermo logs each device's old and new coefficients in <code>calibrations.csv</code>, and <code>cargo run -p atc --example probe -- &lt;MAC&gt;</code> prints them for one device.</p>
+
+  <h2>How the fit works</h2>
+  <p>All of this is plain, unit-tested Rust in <a href="https://github.com/arturzielazny/atc-thermo/tree/main/crates/calibration"><code>crates/calibration</code></a>, with no Bluetooth involved.</p>
+  <ol>
+    <li><strong>Resample</strong> every device to 5-minute bins. Bluetooth reception is lossy, and finer bins would be mostly empty.</li>
+    <li><strong>Keep only steady data.</strong> A bin counts if, over 30 minutes, neither the group median nor the device moved more than 0.75 °C / 3.5 %RH, and the group didn't jump by 2 °C / 10 %RH in the hour before. Slow drifts, like a room cooling in the evening, are fine.</li>
+    <li><strong>Fit each device against the median of the others</strong> with a robust Huber regression. An extra term absorbs case lag: devices responded up to six minutes apart, which during a slow drift looks like a fake offset.</li>
+    <li><strong>Reject outliers.</strong> With four or more devices, one whose correction has a robust z-score above 3.5 is left out of the average, and nothing is written to it. Whatever set it apart probably skews both its temperature and humidity.</li>
+    <li><strong>Anchor</strong> the set so gains average 1 and offsets 0, then compose onto each device's current coefficients (<code>k′ = a·k</code>, <code>z′ = a·z + 100·b</code>). The new values are read back to verify and logged. Calibrating again later builds on the last calibration.</li>
+  </ol>
+  <p>The full write-up, including the firmware commands and what was found on real hardware, is in <a href="https://github.com/arturzielazny/atc-thermo/blob/main/docs/calibration.md">docs/calibration.md</a>.</p>
+
+  <h2>Two things learned on the way</h2>
+  <ul>
+    <li><strong>The device clocks are wrong.</strong> They count seconds since flashing until someone sets them. Once set, they gained about 30 seconds in a day and a half (≈ 200 ppm), because the chip keeps time with an RC oscillator while asleep. thermo maps downloaded log records to real time through each device's measured offset. Pressing <kbd>s</kbd> a day after the first sync also trims each clock's rate.</li>
+    <li><strong>Signal strength varies a lot between devices sitting side by side.</strong> −73 to −92 dBm on one table is normal: antenna orientation, the coin cell's shadow and reflections at 2.4 GHz all add up. That's why thermo shows a 5-minute median next to the latest reading.</li>
+  </ul>
+
+  <p style="margin-top:2.5rem"><a class="btn primary" href="./#install">Install thermo</a></p>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>thermo · MIT or Apache-2.0 · <a href="https://github.com/arturzielazny/atc-thermo">source</a></span>
+    <span>Not affiliated with Xiaomi or Sensirion.</span>
+  </div>
+</footer>
+</body>
+</html>

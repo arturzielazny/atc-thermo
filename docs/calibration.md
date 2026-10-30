@@ -1,4 +1,4 @@
-# Calibration plan
+# Calibration
 
 Goal: make all thermometers agree (and, optionally, be absolutely right) by
 co-locating them through several temperature/humidity conditions and letting

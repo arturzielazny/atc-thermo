@@ -211,7 +211,17 @@
       <div class="card">
         <svg class="icon ill" viewBox="0 0 44 44" aria-hidden="true"><rect class="shell" x="3" y="5" width="38" height="34" rx="8" stroke-width="2"/><rect class="lcd" x="8" y="9" width="28" height="17" rx="2"/><text class="ink" x="22" y="22.5" text-anchor="middle" font-size="11" font-weight="700">333</text><circle cx="13" cy="32" r="3" fill="#f0b43c"/></svg>
         <h3>Which one is which?</h3>
-        <p><kbd>i</kbd> shows the device's row number on its own LCD for ten minutes, <code>333</code> with a smiley for #3, so you can label them.</p>
+        <p><kbd>i</kbd> shows the device's row number on its own LCD for thirty minutes, <code>333</code> with a smiley for #3, so you can label them.</p>
+      </div>
+      <div class="card">
+        <svg class="icon ill" viewBox="0 0 44 44" fill="none" stroke-width="2.5" stroke-linecap="round" aria-hidden="true"><path class="mstroke" d="M4 14h36" stroke-width="1.6" stroke-dasharray="2 3"/><path d="M10 38V14" stroke="#3d86d6"/><path d="M18 38V14" stroke="#e08a2e"/><path d="M26 38V14" stroke="#3fae4f"/><path d="M34 38V14" stroke="#9a68cf"/></svg>
+        <h3>Signal levelling</h3>
+        <p><kbd>l</kbd> listens for a few minutes, then sets each thermometer's TX power so its signal arrives at about −70 dBm: reliable, without a louder radio than it needs. Near ones get quieter, far ones louder, after you confirm.</p>
+      </div>
+      <div class="card">
+        <svg class="icon ill" viewBox="0 0 44 44" fill="none" stroke-width="2.5" stroke-linecap="round" aria-hidden="true"><path class="mstroke" d="M35 26a13 13 0 1 1-3-13"/><path class="astroke" d="M33 5v9h-9"/></svg>
+        <h3>Keeps listening</h3>
+        <p>Bluetooth switched off and on, or <code>bluetoothd</code> restarted: scanning and device commands pick up again by themselves, and the status line says so while they wait.</p>
       </div>
     </div>
   </div>
@@ -288,6 +298,7 @@ thermo</code></pre>
       <tr><td><kbd>↑</kbd> <kbd>↓</kbd></td><td>select a device · <kbd>Esc</kbd> clears marks, then the selection</td></tr>
       <tr><td><kbd>space</kbd> <kbd>a</kbd></td><td>mark one / all devices: actions apply to marked devices, or the selected one</td></tr>
       <tr><td><kbd>c</kbd></td><td>calibration screen</td></tr>
+      <tr><td><kbd>l</kbd></td><td>signal levelling: the lowest TX power that still gives each device a reliable signal</td></tr>
       <tr><td><kbd>s</kbd></td><td>sync clocks and trim their drift</td></tr>
       <tr><td><kbd>d</kbd></td><td>download the device log for the last 24 h</td></tr>
       <tr><td><kbd>n</kbd> <kbd>e</kbd></td><td>rename · settings (advertising, measurement and log interval, TX power)</td></tr>
@@ -349,7 +360,7 @@ thermo</code></pre>
     <details><summary>Can I undo a calibration?</summary>
       <p>Yes. <kbd>x</kbd> on the calibration screen restores the factory coefficients, and every change is logged with old and new values in <code>calibrations.csv</code>. Corrections compose, so you can calibrate again later on top of the last one.</p></details>
     <details><summary>Does it drain the batteries?</summary>
-      <p>Listening is passive and costs the thermometers nothing. thermo only connects to a device when you ask for something: log download, clock sync, settings, rename, identify or calibration.</p></details>
+      <p>Listening is passive and costs the thermometers nothing. thermo only connects to a device when you ask for something: log download, clock sync, settings, rename, identify, calibration or signal levelling, whose screen reads each device's settings when it opens. Levelling can save battery: it turns down the radio of thermometers close to the computer.</p></details>
   </div>
 </section>
 </main>

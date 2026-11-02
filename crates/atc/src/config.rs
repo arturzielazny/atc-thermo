@@ -4,7 +4,7 @@ use std::time::Duration;
 use crate::Error;
 
 /// Size of `cfg_t` for firmware v4.7+.
-pub(crate) const CONFIG_LEN: usize = 11;
+pub const CONFIG_LEN: usize = 11;
 
 const ADV_INTERVAL_STEP: Duration = Duration::from_micros(62_500);
 const ADV_INTERVAL_MAX: u8 = 160;
@@ -25,7 +25,9 @@ const AVERAGING: usize = 10;
 pub struct Config([u8; CONFIG_LEN]);
 
 impl Config {
-    pub(crate) fn from_bytes(bytes: [u8; CONFIG_LEN]) -> Self {
+    /// The config as the firmware stores it, e.g. for tests.
+    #[must_use]
+    pub fn from_bytes(bytes: [u8; CONFIG_LEN]) -> Self {
         Self(bytes)
     }
 
@@ -123,6 +125,9 @@ fn steps_to_u8(steps: f64) -> u8 {
 pub struct TxPower(pub u8);
 
 impl TxPower {
+    /// What the firmware starts with (`RF_POWER_P0p04dBm` in pvvx `def_cfg`), +0.0 dBm.
+    pub const FACTORY: TxPower = TxPower(169);
+
     /// A sensible subset of [`TX_POWER_TABLE`] for menus, weakest first.
     pub const PRESETS: [TxPower; 8] = [
         TxPower(140),
@@ -142,6 +147,23 @@ impl TxPower {
             .iter()
             .find(|&&(code, _)| code == self.0)
             .map(|&(_, centi_dbm)| f32::from(centi_dbm) / 100.0)
+    }
+
+    /// The documented code whose output is closest to `dbm`, clamped to the range the
+    /// radio covers; the weaker one on a tie.
+    #[must_use]
+    pub fn nearest(dbm: f32) -> Self {
+        let distance = |centi_dbm: i16| (f32::from(centi_dbm) / 100.0 - dbm).abs();
+        let mut best = TX_POWER_TABLE[0];
+        for entry in TX_POWER_TABLE {
+            let closer = distance(entry.1)
+                .total_cmp(&distance(best.1))
+                .then(entry.1.cmp(&best.1));
+            if closer.is_lt() {
+                best = entry;
+            }
+        }
+        Self(best.0)
     }
 }
 
@@ -225,6 +247,7 @@ mod tests {
         assert_eq!(config.measure_interval(), 4);
         assert_eq!(config.measurement_period(), Duration::from_secs(10));
         assert_eq!(config.tx_power().to_string(), "+0.0 dBm");
+        assert_eq!(config.tx_power(), TxPower::FACTORY);
         assert_eq!(config.log_period(), Some(Duration::from_secs(1800)));
     }
 
@@ -260,5 +283,17 @@ mod tests {
     fn presets_are_documented_codes() {
         assert!(TxPower::PRESETS.iter().all(|p| p.dbm().is_some()));
         assert_eq!(TxPower(7).to_string(), "code 7");
+    }
+
+    #[test]
+    fn nearest_power_is_clamped_to_the_table() {
+        assert_eq!(TxPower::nearest(0.0), TxPower(169));
+        assert_eq!(TxPower::nearest(-5.2), TxPower(150));
+        assert_eq!(TxPower::nearest(40.0), TxPower(63));
+        assert_eq!(TxPower::nearest(-40.0), TxPower(130));
+        for &(code, _) in &TX_POWER_TABLE {
+            let power = TxPower(code);
+            assert_eq!(TxPower::nearest(power.dbm().expect("documented")), power);
+        }
     }
 }

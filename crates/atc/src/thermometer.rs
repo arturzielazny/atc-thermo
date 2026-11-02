@@ -3,7 +3,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use bluer::gatt::remote::Characteristic;
 use bluer::{Adapter, Address, Device, Uuid};
-use futures::{Stream, StreamExt};
+use futures::{FutureExt, Stream, StreamExt};
 use tokio::time::{Instant, timeout, timeout_at};
 
 use crate::clock::ticks_delta;
@@ -241,18 +241,26 @@ impl Thermometer {
         Ok(clock_from_reply(&reply, SystemTime::now()))
     }
 
-    /// Sets the device clock to `time` and returns a reading taken right after.
+    /// Sets the device clock to this computer's time and returns a reading taken right
+    /// after.
+    ///
+    /// The time is read again for every attempt, so a resent command doesn't set the
+    /// time of the first one.
     ///
     /// # Errors
     ///
     /// Fails if the device does not answer.
-    pub async fn set_clock(&mut self, time: SystemTime) -> Result<ClockReading, Error> {
-        let secs = time.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
-        let secs =
-            u32::try_from(secs).map_err(|_| Error::InvalidValue("time beyond 2106".into()))?;
-        let mut payload = vec![CMD_CLOCK];
-        payload.extend_from_slice(&secs.to_le_bytes());
-        let reply = self.command(&payload, 5).await?;
+    pub async fn set_clock_to_now(&mut self) -> Result<ClockReading, Error> {
+        let reply = self
+            .command_with(CMD_CLOCK, 5, || {
+                let secs = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map_or(0, |d| d.as_secs());
+                let secs = u32::try_from(secs)
+                    .map_err(|_| Error::InvalidValue("time beyond 2106".into()))?;
+                Ok(secs.to_le_bytes().to_vec())
+            })
+            .await?;
         Ok(clock_from_reply(&reply, SystemTime::now()))
     }
 
@@ -324,6 +332,7 @@ impl Thermometer {
         let [lo, hi] = max_records.to_le_bytes();
         let mut records = Vec::new();
         let mut attempts = 0;
+        self.discard_pending();
         'start: loop {
             attempts += 1;
             self.write(&[CMD_LOG, lo, hi]).await?;
@@ -372,10 +381,30 @@ impl Thermometer {
 
     /// Sends a command and returns its reply, which must be at least `min_len` bytes.
     async fn command(&mut self, payload: &[u8], min_len: usize) -> Result<Vec<u8>, Error> {
-        let command = payload[0];
-        for _ in 0..COMMAND_ATTEMPTS {
-            self.write(payload).await?;
+        self.command_with(payload[0], min_len, || Ok(payload[1..].to_vec()))
+            .await
+    }
+
+    /// Like [`Self::command`], with the arguments after the command id built anew for
+    /// every attempt.
+    async fn command_with(
+        &mut self,
+        command: u8,
+        min_len: usize,
+        mut arguments: impl FnMut() -> Result<Vec<u8>, Error>,
+    ) -> Result<Vec<u8>, Error> {
+        self.discard_pending();
+        for attempt in 1..=COMMAND_ATTEMPTS {
+            let mut payload = vec![command];
+            payload.extend(arguments()?);
+            self.write(&payload).await?;
             if let Some(reply) = self.next_reply(command, REPLY_TIMEOUT).await? {
+                if attempt > 1 {
+                    // The earlier writes may be answered too, and such an answer
+                    // would pass for the reply to the next command with this id
+                    // (e.g. reading coefficients, then writing them).
+                    while self.next_reply(command, REPLY_TIMEOUT).await?.is_some() {}
+                }
                 if reply.len() < min_len {
                     return Err(Error::ShortReply {
                         command,
@@ -386,6 +415,11 @@ impl Thermometer {
             }
         }
         Err(Error::Timeout { command })
+    }
+
+    /// Drops notifications that arrived after their command had given up waiting.
+    fn discard_pending(&mut self) {
+        while let Some(Some(_)) = self.notifications.next().now_or_never() {}
     }
 
     /// Waits for the next notification answering `command`, skipping unrelated ones.

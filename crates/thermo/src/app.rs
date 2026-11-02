@@ -13,7 +13,8 @@ use crate::calibrate;
 use crate::devices::{Devices, HISTORY_SPAN, LoggedSample, Sample};
 use crate::forms::SettingsForm;
 use crate::jobs::{Action, IDENTIFY_DURATION, Job, JobEvent, Outcome, RateTrim};
-use crate::scanner::ScanEvent;
+use crate::level::LevelingScreen;
+use crate::scanner::{ScanControl, ScanEvent};
 use crate::store::{CalibrationRecord, Store};
 
 /// Chart time spans the `w` key cycles through.
@@ -32,6 +33,10 @@ const MAX_HISTORY_GAP: Duration = Duration::from_secs(15 * 60);
 
 /// Discovery restarts this long after the last device job, unless another one starts.
 const SCAN_RESTART_DELAY: Duration = Duration::from_secs(5);
+
+/// Devices heard within this span get their settings read when the levelling screen
+/// opens; others are probably out of range, and a job would wait for them in vain.
+const RECENTLY_HEARD: Duration = Duration::from_secs(2 * 60);
 
 /// Calibration window when the screen opens: the last 6 h.
 const DEFAULT_CALIBRATION_SPAN: Duration = Duration::from_secs(6 * 3600);
@@ -122,6 +127,8 @@ pub struct DeviceState {
     pub last: Option<Result<String, String>>,
     /// Device minus host clock, in seconds, when last measured.
     pub clock_offset: Option<f64>,
+    /// Settings last read from or written to the device.
+    pub config: Option<atc::Config>,
 }
 
 /// What the keyboard currently controls.
@@ -131,9 +138,10 @@ pub enum Mode {
     Rename { address: Address, input: String },
     Settings(SettingsForm),
     Calibration(CalibrationScreen),
+    Leveling(LevelingScreen),
 }
 
-/// A destructive calibration step waiting for `y`.
+/// A calibration or TX power step waiting for `y`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Confirm {
     Apply,
@@ -171,8 +179,8 @@ pub struct App {
     pub mode: Mode,
     store: Option<Store>,
     jobs: Option<UnboundedSender<Job>>,
-    /// Asks the scanner to restart discovery.
-    scan_restarts: Option<UnboundedSender<()>>,
+    /// Tells the scanner when device connections start and when they are over.
+    scan_controls: Option<UnboundedSender<ScanControl>>,
     /// When to restart discovery, once device jobs have been idle for a while.
     restart_scan_at: Option<Instant>,
     states: HashMap<Address, DeviceState>,
@@ -189,10 +197,10 @@ pub struct App {
 
 impl App {
     /// `jobs` runs device commands; `None` disables everything that needs a connection.
-    /// `scan_restarts` is told when device connections are over, to restart discovery.
+    /// `scan_controls` is told when device connections start and when they are over.
     pub fn new(
         jobs: Option<UnboundedSender<Job>>,
-        scan_restarts: Option<UnboundedSender<()>>,
+        scan_controls: Option<UnboundedSender<ScanControl>>,
     ) -> Self {
         Self {
             devices: Devices::default(),
@@ -203,7 +211,7 @@ impl App {
             mode: Mode::Normal,
             store: None,
             jobs,
-            scan_restarts,
+            scan_controls,
             restart_scan_at: None,
             states: HashMap::new(),
             marked: BTreeSet::new(),
@@ -287,12 +295,22 @@ impl App {
         }
     }
 
-    /// Devices included in calibration: the marked ones if at least two, else all.
-    pub fn calibration_devices(&self) -> Vec<Address> {
+    /// Devices compared with each other by calibration: the marked ones if at least
+    /// two, else all.
+    pub fn compared_devices(&self) -> Vec<Address> {
         if self.marked.len() >= 2 {
             self.marked.iter().copied().collect()
         } else {
             self.devices.iter().map(|d| d.address).collect()
+        }
+    }
+
+    /// Devices signal levelling applies to: the marked ones, or else all.
+    pub fn leveled_devices(&self) -> Vec<Address> {
+        if self.marked.is_empty() {
+            self.devices.iter().map(|d| d.address).collect()
+        } else {
+            self.marked.iter().copied().collect()
         }
     }
 
@@ -301,6 +319,9 @@ impl App {
             ScanEvent::Started { adapter } => self.scan_status = ScanStatus::Scanning { adapter },
             ScanEvent::Advert(advert) => {
                 let (address, name) = (advert.address, advert.name.clone());
+                if let (Mode::Leveling(screen), Some(rssi)) = (&mut self.mode, advert.rssi) {
+                    screen.record(address, rssi);
+                }
                 match self.devices.record(advert) {
                     Ok(Some(measurement)) => self.save(&[measurement]),
                     Ok(None) => {}
@@ -382,12 +403,26 @@ impl App {
                 self.devices.rename(address, name.clone());
                 format!("renamed to {name}")
             }
-            Outcome::Configured(config) => format!(
-                "adv {} s, measure {} s, {}",
-                config.advertising_interval().as_secs_f64(),
-                config.measurement_period().as_secs_f64(),
-                config.tx_power()
-            ),
+            Outcome::ConfigRead(config) => {
+                self.states.entry(address).or_default().config = Some(config);
+                "settings read".to_owned()
+            }
+            Outcome::Configured(config) => {
+                self.states.entry(address).or_default().config = Some(config);
+                "settings saved".to_owned()
+            }
+            Outcome::TxPowerSet { before, config } => {
+                self.states.entry(address).or_default().config = Some(config);
+                let after = config.tx_power();
+                if before == after {
+                    return format!("TX power {after} unchanged");
+                }
+                // Signal strengths heard before the change no longer apply.
+                if let Mode::Leveling(screen) = &mut self.mode {
+                    screen.forget(address);
+                }
+                format!("TX power {before} → {after}")
+            }
             Outcome::Calibrated {
                 before,
                 after,
@@ -486,7 +521,11 @@ impl App {
             self.warning = Some("device commands are unavailable".to_owned());
             return;
         };
+        let idle = self.states.values().all(|s| s.queued == 0);
         if jobs.send(Job { address, action }).is_ok() {
+            if idle && let Some(controls) = &self.scan_controls {
+                let _ = controls.send(ScanControl::Pause);
+            }
             self.states.entry(address).or_default().queued += 1;
         } else {
             self.warning = Some("device command worker stopped".to_owned());
@@ -498,8 +537,8 @@ impl App {
         let idle = self.states.values().all(|s| s.queued == 0);
         if self.restart_scan_at.is_some_and(|at| Instant::now() >= at) {
             self.restart_scan_at = None;
-            if idle && let Some(restarts) = &self.scan_restarts {
-                let _ = restarts.send(());
+            if idle && let Some(controls) = &self.scan_controls {
+                let _ = controls.send(ScanControl::Resume);
             }
         }
         let stale = matches!(
@@ -513,7 +552,7 @@ impl App {
     }
 
     fn refit(&mut self) {
-        let devices = self.calibration_devices();
+        let devices = self.compared_devices();
         let Mode::Calibration(screen) = &mut self.mode else {
             return;
         };
@@ -540,10 +579,39 @@ impl App {
             Mode::Rename { address, input } => self.on_rename_key(key.code, address, input),
             Mode::Settings(form) => self.on_settings_key(key.code, form),
             Mode::Calibration(screen) => self.on_calibration_key(key, screen),
+            Mode::Leveling(screen) => self.on_leveling_key(key.code, screen),
         }
     }
 
+    /// Moves the selection and marks devices; returns whether `code` was such a key.
+    fn on_selection_key(&mut self, code: KeyCode) -> bool {
+        match code {
+            KeyCode::Down | KeyCode::Char('j') => self.move_selection(1),
+            KeyCode::Up | KeyCode::Char('k') => self.move_selection(-1),
+            KeyCode::Char(' ') => {
+                if let Some(address) = self.selected {
+                    if !self.marked.remove(&address) {
+                        self.marked.insert(address);
+                    }
+                    self.move_selection(1);
+                }
+            }
+            KeyCode::Char('a') => {
+                if self.marked.len() == self.devices.len() {
+                    self.marked.clear();
+                } else {
+                    self.marked = self.devices.iter().map(|d| d.address).collect();
+                }
+            }
+            _ => return false,
+        }
+        true
+    }
+
     fn on_normal_key(&mut self, code: KeyCode) {
+        if self.on_selection_key(code) {
+            return;
+        }
         match code {
             KeyCode::Char('q') => self.quit = true,
             KeyCode::Esc => {
@@ -569,23 +637,6 @@ impl App {
                     ChartStyle::Lines => ChartStyle::Points,
                     ChartStyle::Points => ChartStyle::Lines,
                 };
-            }
-            KeyCode::Down | KeyCode::Char('j') => self.move_selection(1),
-            KeyCode::Up | KeyCode::Char('k') => self.move_selection(-1),
-            KeyCode::Char(' ') => {
-                if let Some(address) = self.selected {
-                    if !self.marked.remove(&address) {
-                        self.marked.insert(address);
-                    }
-                    self.move_selection(1);
-                }
-            }
-            KeyCode::Char('a') => {
-                if self.marked.len() == self.devices.len() {
-                    self.marked.clear();
-                } else {
-                    self.marked = self.devices.iter().map(|d| d.address).collect();
-                }
             }
             KeyCode::Char('n') => self.start_rename(),
             KeyCode::Char('s') => {
@@ -622,7 +673,7 @@ impl App {
             }
             KeyCode::Char('c') => {
                 let requested = SystemTime::now() - DEFAULT_CALIBRATION_SPAN;
-                let devices = self.calibration_devices();
+                let devices = self.compared_devices();
                 self.mode = Mode::Calibration(CalibrationScreen {
                     start: calibrate::window_start(requested, &devices, &self.last_calibrations),
                     end: None,
@@ -632,6 +683,11 @@ impl App {
                     computed_at: None,
                 });
                 self.refit();
+            }
+            KeyCode::Char('l') => {
+                self.metric = Metric::Rssi;
+                self.mode = Mode::Leveling(LevelingScreen::new(Instant::now()));
+                self.read_unknown_configs();
             }
             _ => {}
         }
@@ -730,7 +786,7 @@ impl App {
                 match confirm {
                     Confirm::Apply => self.apply_calibration(screen.result.as_ref()),
                     Confirm::Reset => {
-                        for address in self.calibration_devices() {
+                        for address in self.compared_devices() {
                             self.enqueue(address, Action::ResetCalibration);
                         }
                     }
@@ -765,7 +821,7 @@ impl App {
             }
             KeyCode::Char('x') => screen.confirm = Some(Confirm::Reset),
             KeyCode::Char('s') => {
-                let devices = self.calibration_devices();
+                let devices = self.compared_devices();
                 self.sync_clocks(&devices);
             }
             _ => {}
@@ -774,11 +830,107 @@ impl App {
         self.on_tick();
     }
 
+    /// Reads the settings of recently heard devices whose settings are not known yet.
+    fn read_unknown_configs(&mut self) {
+        let now = SystemTime::now();
+        let unknown: Vec<Address> = self
+            .devices
+            .iter()
+            .filter(|d| now.duration_since(d.last_seen).unwrap_or_default() < RECENTLY_HEARD)
+            .map(|d| d.address)
+            .filter(|&a| {
+                self.state(a)
+                    .is_none_or(|s| s.config.is_none() && s.queued == 0)
+            })
+            .collect();
+        for address in unknown {
+            self.enqueue(address, Action::ReadConfig);
+        }
+    }
+
+    fn on_leveling_key(&mut self, code: KeyCode, mut screen: LevelingScreen) {
+        if let Some(confirm) = screen.confirm.take() {
+            if code == KeyCode::Char('y') {
+                match confirm {
+                    Confirm::Apply => {
+                        for (address, change) in self.leveling_changes(&screen) {
+                            let change_db = f32::from(change);
+                            self.enqueue(address, Action::AdjustTxPower { change_db });
+                        }
+                    }
+                    Confirm::Reset => {
+                        for address in self.factory_resets() {
+                            self.enqueue(address, Action::ResetTxPower);
+                        }
+                    }
+                }
+            }
+            self.mode = Mode::Leveling(screen);
+            return;
+        }
+        if self.on_selection_key(code) {
+            self.mode = Mode::Leveling(screen);
+            return;
+        }
+        match code {
+            KeyCode::Esc | KeyCode::Char('q') => return,
+            KeyCode::Left | KeyCode::Char('h') => screen.nudge_target(-1),
+            KeyCode::Right | KeyCode::Char('l') => screen.nudge_target(1),
+            KeyCode::Char('r') => screen.restart(Instant::now()),
+            KeyCode::Enter => {
+                if !self.leveling_changes(&screen).is_empty() {
+                    screen.confirm = Some(Confirm::Apply);
+                } else if screen.plan(&self.leveled_devices()).has_medians() {
+                    self.warning = Some("nothing to change".to_owned());
+                } else {
+                    self.warning = Some(format!(
+                        "wait until devices are heard {} times",
+                        crate::level::MIN_ADVERTS
+                    ));
+                }
+            }
+            KeyCode::Char('x') => {
+                if self.factory_resets().is_empty() {
+                    self.warning = Some("TX power is already the factory value".to_owned());
+                } else {
+                    screen.confirm = Some(Confirm::Reset);
+                }
+            }
+            _ => {}
+        }
+        self.mode = Mode::Leveling(screen);
+    }
+
+    /// The TX power changes `y` queues after `Enter`, in dB. Devices with a job waiting
+    /// are left out: a queued change was planned from the same samples.
+    pub fn leveling_changes(&self, screen: &LevelingScreen) -> Vec<(Address, i16)> {
+        screen
+            .plan(&self.leveled_devices())
+            .rows
+            .iter()
+            .filter_map(|row| Some((row.address, row.change?)))
+            .filter(|(address, _)| self.state(*address).is_none_or(|s| s.queued == 0))
+            .collect()
+    }
+
+    /// The devices `y` restores the factory TX power on after `x`: those not known
+    /// to have it already.
+    pub fn factory_resets(&self) -> Vec<Address> {
+        self.leveled_devices()
+            .into_iter()
+            .filter(|&address| {
+                self.state(address)
+                    .and_then(|s| s.config)
+                    .is_none_or(|c| c.tx_power() != atc::TxPower::FACTORY)
+            })
+            .collect()
+    }
+
     /// Where the calibration window would start if moved as far back as allowed.
     pub fn earliest_calibration_start(&self) -> SystemTime {
         calibrate::window_start(
             SystemTime::UNIX_EPOCH,
-            &self.calibration_devices(),
+            &self.compared_devices(),
             &self.last_calibrations,
         )
     }
@@ -1072,6 +1224,144 @@ mod tests {
         press(&mut app, KeyCode::Char('n'));
         assert!(matches!(app.mode, Mode::Normal));
         assert_eq!(drain(&mut rx), Vec::<Job>::new());
+    }
+
+    #[test]
+    fn scanning_pauses_for_device_jobs_and_resumes_after_them() {
+        let (jobs, _rx) = mpsc::unbounded_channel();
+        let (controls, mut controls_rx) = mpsc::unbounded_channel();
+        let mut app = App::new(Some(jobs), Some(controls));
+        // The first adverts queue two log downloads; one pause covers both.
+        for address in [A, B] {
+            app.on_scan_event(ScanEvent::Advert(Advert {
+                address,
+                name: "ATC_00000X".to_owned(),
+                rssi: Some(-50),
+                payload: MEASUREMENT.to_vec(),
+                received: SystemTime::now(),
+            }));
+        }
+        let mut sent = || std::iter::from_fn(|| controls_rx.try_recv().ok()).collect::<Vec<_>>();
+        assert_eq!(sent(), [ScanControl::Pause]);
+
+        for address in [A, B] {
+            app.on_job_event(JobEvent::Finished {
+                address,
+                outcome: Err("no log".to_owned()),
+            });
+        }
+        app.on_tick();
+        assert_eq!(sent(), []);
+        app.restart_scan_at = Some(Instant::now());
+        app.on_tick();
+        assert_eq!(sent(), [ScanControl::Resume]);
+    }
+
+    #[test]
+    fn leveling_turns_loud_devices_down_to_the_target() {
+        let (mut app, mut rx) = app_with_devices();
+        for address in [A, B] {
+            finish(&mut app, address, Err("no log".to_owned()));
+        }
+        drain(&mut rx);
+        press(&mut app, KeyCode::Char('l'));
+        assert_eq!(app.metric, Metric::Rssi);
+        // Opening the screen reads the settings it shows.
+        let reads: Vec<_> = drain(&mut rx).into_iter().map(|j| j.action).collect();
+        assert_eq!(reads, [Action::ReadConfig, Action::ReadConfig]);
+        for address in [A, B] {
+            finish(
+                &mut app,
+                address,
+                Ok(Outcome::ConfigRead(config_with_power(169))),
+            );
+        }
+        // Nothing is heard yet.
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(drain(&mut rx), Vec::<Job>::new());
+
+        for _ in 0..crate::level::MIN_ADVERTS {
+            for (address, rssi) in [(A, -50), (B, -70)] {
+                app.on_scan_event(ScanEvent::Advert(Advert {
+                    address,
+                    name: "ATC_00000X".to_owned(),
+                    rssi: Some(rssi),
+                    payload: MEASUREMENT.to_vec(),
+                    received: SystemTime::now(),
+                }));
+            }
+        }
+        // Down to the default target, -70 dBm, where B already is; only after `y`.
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Char('n'));
+        assert_eq!(drain(&mut rx), Vec::<Job>::new());
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Char('y'));
+        let expected = [Job {
+            address: A,
+            action: Action::AdjustTxPower { change_db: -20.0 },
+        }];
+        assert_eq!(drain(&mut rx), expected);
+        // Not again while the change is queued.
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Char('y'));
+        assert_eq!(drain(&mut rx), Vec::<Job>::new());
+
+        let before = atc::TxPower::FACTORY;
+        let config = config_with_power(150);
+        finish(&mut app, A, Ok(Outcome::TxPowerSet { before, config }));
+        assert_eq!(
+            app.state(A).and_then(|s| s.last.clone()),
+            Some(Ok("TX power +0.0 dBm → -5.0 dBm".to_owned()))
+        );
+        assert_eq!(app.state(A).and_then(|s| s.config), Some(config));
+        let Mode::Leveling(screen) = &app.mode else {
+            panic!("still levelling");
+        };
+        // Signal heard at the old power is dropped.
+        let plan = screen.plan(&app.leveled_devices());
+        assert_eq!(plan.rows[0].adverts, 0);
+        assert_eq!(plan.rows[1].median, Some(-70));
+
+        // Factory TX power, only where it isn't already.
+        press(&mut app, KeyCode::Char('x'));
+        press(&mut app, KeyCode::Char('y'));
+        let expected = [Job {
+            address: A,
+            action: Action::ResetTxPower,
+        }];
+        assert_eq!(drain(&mut rx), expected);
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.mode, Mode::Normal));
+    }
+
+    #[test]
+    fn leveling_screen_selects_and_marks_devices() {
+        let (mut app, mut rx) = app_with_devices();
+        drain(&mut rx);
+        press(&mut app, KeyCode::Char('l'));
+        assert_eq!(app.leveled_devices(), [A, B]);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Char(' '));
+        assert_eq!(app.leveled_devices(), [A]);
+        assert_eq!(app.selected_index(), Some(1));
+        press(&mut app, KeyCode::Char('a'));
+        assert_eq!(app.leveled_devices(), [A, B]);
+        assert!(app.is_marked(B));
+        assert!(matches!(app.mode, Mode::Leveling(_)));
+    }
+
+    fn finish(app: &mut App, address: Address, outcome: Result<Outcome, String>) {
+        app.on_job_event(JobEvent::Finished { address, outcome });
+    }
+
+    /// The factory config of a LYWSD03MMC on firmware v5.9 with another TX power code.
+    fn config_with_power(code: u8) -> atc::Config {
+        let mut bytes = [
+            0x87, 0x10, 0x0a, 0x06, 0x28, 0x04, 0xa9, 0x31, 0x31, 0x04, 0xb4,
+        ];
+        bytes[6] = code;
+        atc::Config::from_bytes(bytes)
     }
 
     #[test]

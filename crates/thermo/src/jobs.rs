@@ -16,7 +16,7 @@ const JOB_TIMEOUT: Duration = Duration::from_secs(180);
 const LATE_CONNECT_GRACE: Duration = Duration::from_secs(3);
 /// How long a device shows its number; long enough for a whole row of devices to be
 /// reached one connection after another.
-pub const IDENTIFY_DURATION: Duration = Duration::from_secs(10 * 60);
+pub const IDENTIFY_DURATION: Duration = Duration::from_secs(30 * 60);
 
 /// Settings changes; `None` leaves a value as it is on the device.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -51,7 +51,15 @@ pub enum Action {
         number: u8,
     },
     Rename(String),
+    /// Read the settings, to show them.
+    ReadConfig,
     Configure(Settings),
+    /// Change the TX power by about `change_db`, to the nearest documented level.
+    AdjustTxPower {
+        change_db: f32,
+    },
+    /// Set the TX power the firmware starts with, [`TxPower::FACTORY`].
+    ResetTxPower,
     /// Compose a correction onto the device's current coefficients.
     Calibrate {
         temperature: Correction,
@@ -67,7 +75,10 @@ impl Action {
             Self::SyncClock { .. } => "syncing clock",
             Self::Identify { .. } => "identifying",
             Self::Rename(_) => "renaming",
+            Self::ReadConfig => "reading settings",
             Self::Configure(_) => "configuring",
+            Self::AdjustTxPower { .. } => "adjusting TX power",
+            Self::ResetTxPower => "restoring TX power",
             Self::Calibrate { .. } => "calibrating",
             Self::ResetCalibration => "resetting calibration",
         }
@@ -95,7 +106,13 @@ pub enum Outcome {
         number: u8,
     },
     Renamed(String),
+    ConfigRead(Config),
     Configured(Config),
+    /// The TX power changed from `before`; `config` is the device's config now.
+    TxPowerSet {
+        before: TxPower,
+        config: Config,
+    },
     Calibrated {
         before: Coefficients,
         after: Coefficients,
@@ -142,10 +159,6 @@ pub fn spawn(events: UnboundedSender<JobEvent>) -> UnboundedSender<Job> {
 }
 
 async fn run(mut jobs: UnboundedReceiver<Job>, events: UnboundedSender<JobEvent>) {
-    let adapter = match bluer::Session::new().await {
-        Ok(session) => session.default_adapter().await.map_err(|e| e.to_string()),
-        Err(err) => Err(err.to_string()),
-    };
     while let Some(job) = jobs.recv().await {
         let address = job.address;
         if events
@@ -157,8 +170,8 @@ async fn run(mut jobs: UnboundedReceiver<Job>, events: UnboundedSender<JobEvent>
         {
             return;
         }
-        let outcome = match &adapter {
-            Ok(adapter) => execute_with_timeout(adapter, job).await,
+        let outcome = match default_adapter().await {
+            Ok(adapter) => execute_with_timeout(&adapter, job).await,
             Err(err) => Err(format!("no Bluetooth adapter: {err}")),
         };
         if events
@@ -168,6 +181,12 @@ async fn run(mut jobs: UnboundedReceiver<Job>, events: UnboundedSender<JobEvent>
             return;
         }
     }
+}
+
+/// A new BlueZ session for every job, so jobs work again once `bluetoothd` restarts
+/// or the adapter comes back.
+async fn default_adapter() -> bluer::Result<Adapter> {
+    bluer::Session::new().await?.default_adapter().await
 }
 
 async fn execute_with_timeout(adapter: &Adapter, job: Job) -> Result<Outcome, String> {
@@ -211,7 +230,7 @@ async fn perform(t: &mut Thermometer, action: Action) -> Result<Outcome, atc::Er
             let samples = read_samples(t, &before, download_since).await?;
             // Before setting the clock, so the new rate starts with the new time.
             let rate = trim_rate(t, &before).await?;
-            t.set_clock(SystemTime::now()).await?;
+            t.set_clock_to_now().await?;
             Ok(Outcome::ClockSynced {
                 offset_before: before.offset_secs(),
                 rate,
@@ -228,6 +247,17 @@ async fn perform(t: &mut Thermometer, action: Action) -> Result<Outcome, atc::Er
             apply_settings(&mut config, &settings)?;
             Ok(Outcome::Configured(t.set_config(&config).await?))
         }
+        Action::ReadConfig => Ok(Outcome::ConfigRead(t.config().await?)),
+        Action::AdjustTxPower { change_db } => {
+            set_tx_power(t, |before| {
+                let dbm = before.dbm().ok_or_else(|| {
+                    atc::Error::InvalidValue(format!("unknown TX power {before}"))
+                })?;
+                Ok(TxPower::nearest(dbm + change_db))
+            })
+            .await
+        }
+        Action::ResetTxPower => set_tx_power(t, |_| Ok(TxPower::FACTORY)).await,
         Action::Calibrate {
             temperature,
             humidity,
@@ -270,6 +300,28 @@ fn identify_message(number: u8) -> ScreenMessage {
         smiley: Smiley::Happy,
         duration: IDENTIFY_DURATION,
     }
+}
+
+/// Sets the TX power `wanted` returns for the current one; writes nothing if they match.
+async fn set_tx_power(
+    t: &mut Thermometer,
+    wanted: impl FnOnce(TxPower) -> Result<TxPower, atc::Error>,
+) -> Result<Outcome, atc::Error> {
+    let mut config = t.config().await?;
+    let before = config.tx_power();
+    let wanted = wanted(before)?;
+    if wanted == before {
+        return Ok(Outcome::TxPowerSet { before, config });
+    }
+    config.set_tx_power(wanted);
+    let config = t.set_config(&config).await?;
+    if config.tx_power() != wanted {
+        return Err(atc::Error::InvalidValue(format!(
+            "device stored TX power {} instead of {wanted}",
+            config.tx_power()
+        )));
+    }
+    Ok(Outcome::TxPowerSet { before, config })
 }
 
 async fn trim_rate(t: &mut Thermometer, clock: &ClockReading) -> Result<RateTrim, atc::Error> {

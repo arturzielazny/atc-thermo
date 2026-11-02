@@ -8,6 +8,7 @@ mod calibrate;
 mod devices;
 mod forms;
 mod jobs;
+mod level;
 mod localtime;
 mod scanner;
 mod store;
@@ -68,7 +69,7 @@ fn print_calibration(hours: u32) -> Result<()> {
         eprintln!("warning: {warning}");
     }
     let now = SystemTime::now();
-    let devices = app.calibration_devices();
+    let devices = app.compared_devices();
     let last_changes = open_store()?.last_calibrations()?;
     let requested = now - Duration::from_secs(u64::from(hours) * 3600);
     let since = calibrate::window_start(requested, &devices, &last_changes);
@@ -88,12 +89,12 @@ async fn dashboard() -> Result<()> {
 
 async fn run(terminal: &mut DefaultTerminal, picker: Option<Picker>) -> Result<()> {
     let (scan_tx, mut scan_rx) = mpsc::unbounded_channel();
-    let (restart_tx, restart_rx) = mpsc::unbounded_channel();
-    tokio::spawn(scanner::run(scan_tx, restart_rx));
+    let (control_tx, control_rx) = mpsc::unbounded_channel();
+    tokio::spawn(scanner::run(scan_tx, control_rx));
     let (job_events_tx, mut job_events) = mpsc::unbounded_channel();
     let jobs = jobs::spawn(job_events_tx);
 
-    let mut app = App::new(Some(jobs), Some(restart_tx));
+    let mut app = App::new(Some(jobs), Some(control_tx));
     match open_store() {
         Ok(store) => app.use_store(store),
         Err(err) => app.warning = Some(format!("history is not saved: {err:#}")),

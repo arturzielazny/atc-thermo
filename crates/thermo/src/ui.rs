@@ -1,8 +1,9 @@
-//! Screen layout: chart (or calibration panel) on top, device table below, status at the bottom.
+//! Screen layout: chart (under the calibration or levelling panel) on top, device table below, status at the bottom.
 
 mod calibration;
 mod chart;
 mod kitty;
+mod leveling;
 mod plot;
 mod popup;
 mod table;
@@ -64,9 +65,9 @@ impl Ui {
     }
 }
 
-/// Rows the chart needs under the calibration panel before the device table may
-/// take space from it: borders, time labels and a readable plot.
-const MIN_CALIBRATION_CHART: u16 = 12;
+/// Rows the chart needs under a panel before the device table may take space from
+/// it: borders, time labels and a readable plot.
+const MIN_PANEL_CHART: u16 = 12;
 
 pub fn draw(frame: &mut Frame, app: &App, ui: &mut Ui) {
     let table_height = u16::try_from(app.devices.len().max(1))
@@ -75,24 +76,36 @@ pub fn draw(frame: &mut Frame, app: &App, ui: &mut Ui) {
     let [main_area, status_area] =
         Layout::vertical([Constraint::Min(1), Constraint::Length(2)]).areas(frame.area());
 
-    if let Mode::Calibration(screen) = &app.mode {
-        // Panel, then the chart with the window marked; the device table only if
-        // the chart still gets enough rows.
-        let panel_height = calibration::height(screen).min(main_area.height);
-        let show_table = main_area.height >= panel_height + MIN_CALIBRATION_CHART + table_height;
+    let panel_height = match &app.mode {
+        Mode::Calibration(screen) => Some(calibration::height(screen)),
+        Mode::Leveling(_) => Some(leveling::height(app)),
+        Mode::Normal | Mode::Rename { .. } | Mode::Settings(_) => None,
+    };
+    if let Some(panel_height) = panel_height {
+        // Panel, then the chart (with the calibration window marked); the device
+        // table only if the chart still gets enough rows.
+        let panel_height = panel_height.min(main_area.height);
+        let show_table = main_area.height >= panel_height + MIN_PANEL_CHART + table_height;
         let [panel_area, chart_area, table_area] = Layout::vertical([
             Constraint::Length(panel_height),
             Constraint::Min(0),
             Constraint::Length(if show_table { table_height } else { 0 }),
         ])
         .areas(main_area);
-        calibration::render(frame, panel_area, app, screen);
-        if chart_area.height >= MIN_CALIBRATION_CHART / 2 {
-            let cut = chart::Cut {
-                start: screen.start,
-                end: screen.end,
-            };
-            ui.chart.render(frame, chart_area, app, Some(cut));
+        let mut cut = None;
+        match &app.mode {
+            Mode::Calibration(screen) => {
+                calibration::render(frame, panel_area, app, screen);
+                cut = Some(chart::Cut {
+                    start: screen.start,
+                    end: screen.end,
+                });
+            }
+            Mode::Leveling(screen) => leveling::render(frame, panel_area, app, screen),
+            Mode::Normal | Mode::Rename { .. } | Mode::Settings(_) => {}
+        }
+        if chart_area.height >= MIN_PANEL_CHART / 2 {
+            ui.chart.render(frame, chart_area, app, cut);
         }
         if show_table {
             table::render(frame, table_area, app);
@@ -112,7 +125,7 @@ pub fn draw(frame: &mut Frame, app: &App, ui: &mut Ui) {
     match &app.mode {
         Mode::Rename { address, input } => popup::rename(frame, app, *address, input),
         Mode::Settings(form) => popup::settings(frame, app, form),
-        Mode::Normal | Mode::Calibration(_) => {}
+        Mode::Normal | Mode::Calibration(_) | Mode::Leveling(_) => {}
     }
 }
 
@@ -134,7 +147,9 @@ fn status_line(app: &App) -> Line<'_> {
         ScanStatus::Scanning { adapter } => {
             vec![Span::from(format!(" ● scanning on {adapter}")).green()]
         }
-        ScanStatus::Failed(reason) => vec![Span::from(format!(" ✖ scan failed: {reason}")).red()],
+        ScanStatus::Failed(reason) => {
+            vec![Span::from(format!(" ✖ scan failed, retrying: {reason}")).red()]
+        }
     };
     if let Some(dir) = app.store_dir() {
         spans.push(Span::from(format!("   history: {}", home_relative(dir))).dark_gray());
@@ -148,12 +163,15 @@ fn status_line(app: &App) -> Line<'_> {
 fn key_help(app: &App) -> Line<'static> {
     let help = match &app.mode {
         Mode::Normal => {
-            " ↑↓ select · space mark · a all · i identify · n rename · s sync clock · e settings · d download log · c calibrate · t/h/r metric · w window · p points · q quit"
+            " ↑↓ select · space mark · a all · i identify · n rename · s sync clock · e settings · d download log · c calibrate · l level signal · t/h/r metric · w window · p points · q quit"
         }
         Mode::Rename { .. } => " type a name · Enter save (empty = default) · Esc cancel",
         Mode::Settings(_) => " ↑↓ field · ←→ value · Enter apply · Esc cancel",
         Mode::Calibration(_) => {
             " Tab start/end · ←→ move 15 min (Shift: 1 h) · Enter apply · s sync clocks · x factory reset · mark devices (space/a) first to pick a subset · Esc back"
+        }
+        Mode::Leveling(_) => {
+            " ↑↓ select · space mark · a all · ←→ target 1 dB · Enter change TX power · x factory TX power · r listen anew · Esc back"
         }
     };
     Line::from(help).style(Style::new().dark_gray())

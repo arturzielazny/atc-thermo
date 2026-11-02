@@ -10,6 +10,9 @@ use crate::scanner::Advert;
 
 /// How far back history is kept in memory: the longest calibration window.
 pub const HISTORY_SPAN: Duration = Duration::from_secs(48 * 60 * 60);
+/// Signal strengths (dBm) from which reception counts as reliable, then as marginal.
+pub const RSSI_FINE: i16 = -75;
+pub const RSSI_MARGINAL: i16 = -85;
 /// Signal strengths of the adverts within this span before the latest one make up
 /// [`Device::typical_rssi`].
 const RSSI_SPAN: Duration = Duration::from_secs(5 * 60);
@@ -98,17 +101,7 @@ impl Device {
     /// to channel and fade to fade; the median shows the usual level.
     pub fn typical_rssi(&self) -> Option<i16> {
         let mut values: Vec<i16> = self.recent_rssi.iter().map(|&(_, rssi)| rssi).collect();
-        if values.is_empty() {
-            return self.rssi;
-        }
-        values.sort_unstable();
-        let mid = values.len() / 2;
-        Some(if values.len() % 2 == 0 {
-            let sum = i32::from(values[mid - 1]) + i32::from(values[mid]);
-            i16::try_from(sum.div_euclid(2)).expect("between two i16 values")
-        } else {
-            values[mid]
-        })
+        median_rssi(&mut values).or(self.rssi)
     }
 
     fn note_rssi(&mut self, at: SystemTime, rssi: i16) {
@@ -197,6 +190,21 @@ impl Device {
         }
         until.duration_since(previous).unwrap_or_default() > max_gap
     }
+}
+
+/// Median of signal strengths in dBm, rounded down; `None` for none. Reorders `values`.
+pub fn median_rssi(values: &mut [i16]) -> Option<i16> {
+    if values.is_empty() {
+        return None;
+    }
+    values.sort_unstable();
+    let mid = values.len() / 2;
+    Some(if values.len() % 2 == 0 {
+        let sum = i32::from(values[mid - 1]) + i32::from(values[mid]);
+        i16::try_from(sum.div_euclid(2)).expect("between two i16 values")
+    } else {
+        values[mid]
+    })
 }
 
 /// All known devices, ordered by address so the order (and colors) are stable between runs.

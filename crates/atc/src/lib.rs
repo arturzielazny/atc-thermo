@@ -18,7 +18,7 @@ mod thermometer;
 
 pub use clock::{ClockReading, NOMINAL_SECOND_TICKS, trimmed_second_ticks};
 pub use coefficients::{Coefficients, Correction};
-pub use config::{Config, TxPower};
+pub use config::{CONFIG_LEN, Config, TxPower};
 pub use error::Error;
 pub use log::LogRecord;
 pub use screen::{ScreenMessage, Smiley};

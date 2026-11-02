@@ -10,16 +10,13 @@ use ratatui::widgets::{Block, Cell, Row, Table, TableState};
 
 use super::{device_color, ratatui_color};
 use crate::app::{App, format_offset};
-use crate::devices::Device;
+use crate::devices::{Device, RSSI_FINE, RSSI_MARGINAL};
 
 /// Rows of devices not heard from for this long are dimmed.
 const STALE_AFTER: Duration = Duration::from_secs(120);
 /// Battery percentages from which a level counts as fine, then as getting low.
 const BATTERY_FINE: u8 = 50;
 const BATTERY_LOW: u8 = 20;
-/// Signal strengths (dBm) from which reception counts as reliable, then as marginal.
-const RSSI_FINE: i16 = -75;
-const RSSI_MARGINAL: i16 = -85;
 const MIN_NAME_WIDTH: usize = "Device".len();
 
 pub fn render(frame: &mut Frame, area: Rect, app: &App) {
@@ -32,7 +29,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         .collect();
     let header = Row::new([
         "", "#", "Device", "Address", "Temp", "Humidity", "Battery", "Voltage", "RSSI", "RSSI 5m",
-        "Seen", "Clock", "Status",
+        "Seen", "Clock", "TX power", "Adv", "Measure", "Log", "Status",
     ])
     .style(Style::new().bold());
     let name_width = app
@@ -55,6 +52,10 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         Constraint::Length(8),
         Constraint::Length(5),
         Constraint::Length(7),
+        Constraint::Length(9),
+        Constraint::Length(6),
+        Constraint::Length(7),
+        Constraint::Length(6),
         Constraint::Min(10),
     ];
     let marked = app
@@ -132,6 +133,12 @@ fn row(
     let clock = state
         .and_then(|s| s.clock_offset)
         .map_or_else(|| "?".to_owned(), format_offset);
+    // Settings are known once read or written this session.
+    let setting = |show: fn(&atc::Config) -> String| {
+        state
+            .and_then(|s| s.config)
+            .map_or_else(|| "–".to_owned(), |c| show(&c))
+    };
     let row = Row::new([
         Cell::from(Line::from(vec![
             Span::from(mark).bold(),
@@ -153,6 +160,13 @@ fn row(
         rssi_cell(device.typical_rssi()),
         Cell::from(format_age(age)),
         Cell::from(clock),
+        Cell::from(setting(|c| c.tx_power().to_string())),
+        Cell::from(setting(|c| format_interval(c.advertising_interval()))),
+        Cell::from(setting(|c| format_interval(c.measurement_period()))),
+        Cell::from(setting(|c| {
+            c.log_period()
+                .map_or_else(|| "off".to_owned(), format_interval)
+        })),
         status_cell(state),
     ]);
     if is_stale { row.dark_gray() } else { row }
@@ -212,6 +226,18 @@ fn status_cell(state: Option<&crate::app::DeviceState>) -> Cell<'static> {
     }
 }
 
+/// `500 ms`, `2.5 s`, `10 s`, `30 min`.
+fn format_interval(interval: Duration) -> String {
+    let secs = interval.as_secs_f64();
+    if secs < 1.0 {
+        format!("{} ms", interval.as_millis())
+    } else if secs < 60.0 {
+        format!("{} s", (secs * 10.0).round() / 10.0)
+    } else {
+        format!("{} min", (secs / 6.0).round() / 10.0)
+    }
+}
+
 fn format_age(age: Duration) -> String {
     let secs = age.as_secs();
     match secs {
@@ -230,6 +256,15 @@ mod tests {
         assert_eq!(format_age(Duration::from_secs(5)), "5s");
         assert_eq!(format_age(Duration::from_secs(150)), "2m");
         assert_eq!(format_age(Duration::from_secs(7300)), "2h");
+    }
+
+    #[test]
+    fn intervals() {
+        assert_eq!(format_interval(Duration::from_micros(62_500)), "62 ms");
+        assert_eq!(format_interval(Duration::from_millis(2500)), "2.5 s");
+        assert_eq!(format_interval(Duration::from_secs(10)), "10 s");
+        assert_eq!(format_interval(Duration::from_secs(1800)), "30 min");
+        assert_eq!(format_interval(Duration::from_secs(150)), "2.5 min");
     }
 
     #[test]

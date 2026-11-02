@@ -1,14 +1,14 @@
 //! Background BLE scan that forwards BTHome adverts from BlueZ.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::time::{Duration, SystemTime};
 
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, ensure};
 use bluer::{
     Adapter, AdapterEvent, Address, DeviceEvent, DeviceProperty, DiscoveryFilter,
     DiscoveryTransport, Uuid,
 };
-use futures::stream::SelectAll;
+use futures::stream::{self, SelectAll};
 use futures::{Stream, StreamExt};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
@@ -18,6 +18,9 @@ const BTHOME_UUID: Uuid = Uuid::from_u128(
 );
 
 const DISCOVERY_RESTART_PAUSE: Duration = Duration::from_millis(500);
+/// Wait before starting over after an error, e.g. while the adapter is switched off
+/// or `bluetoothd` restarts.
+const RETRY_PAUSE: Duration = Duration::from_secs(5);
 
 /// Something the scanner wants the app to know.
 #[derive(Debug)]
@@ -26,8 +29,20 @@ pub enum ScanEvent {
     Started { adapter: String },
     /// A device sent new BTHome service data.
     Advert(Advert),
-    /// Scanning stopped and will not resume.
+    /// Scanning stopped; it starts over every few seconds until it works again.
     Failed(String),
+}
+
+/// What the app tells the scanner about device connections.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScanControl {
+    /// Device jobs are about to connect. A connection stops discovery, and it is not
+    /// restarted until [`ScanControl::Resume`].
+    Pause,
+    /// Device jobs are over: restart discovery. BlueZ may have resumed it by itself
+    /// with duplicate filtering, after which adverts trickle in only rarely;
+    /// restarting re-applies the filter.
+    Resume,
 }
 
 /// One BTHome advertisement, still undecoded.
@@ -40,15 +55,15 @@ pub struct Advert {
     pub received: SystemTime,
 }
 
-/// Scans until the receiver is dropped, reporting a failure as [`ScanEvent::Failed`].
-///
-/// A message on `restarts` restarts discovery. BlueZ suspends discovery while it
-/// connects to a device and may resume it with duplicate filtering, after which
-/// adverts trickle in only rarely; restarting re-applies the filter.
-pub async fn run(events: UnboundedSender<ScanEvent>, restarts: UnboundedReceiver<()>) {
-    if let Err(err) = scan(&events, restarts).await {
-        // The app may already be gone; nothing else to do with the error then.
-        let _ = events.send(ScanEvent::Failed(format!("{err:#}")));
+/// Scans until the app is gone. A failure is reported as [`ScanEvent::Failed`], and
+/// scanning starts over with a new BlueZ session after [`RETRY_PAUSE`].
+pub async fn run(events: UnboundedSender<ScanEvent>, mut controls: UnboundedReceiver<ScanControl>) {
+    let mut paused = false;
+    while let Err(err) = scan(&events, &mut controls, &mut paused).await {
+        if events.send(ScanEvent::Failed(format!("{err:#}"))).is_err() {
+            return;
+        }
+        tokio::time::sleep(RETRY_PAUSE).await;
     }
 }
 
@@ -68,9 +83,11 @@ async fn start_discovery(adapter: &Adapter) -> Result<impl Stream<Item = Adapter
         .context("starting discovery")
 }
 
+/// Scans until the app is gone (`Ok`) or BlueZ fails.
 async fn scan(
     events: &UnboundedSender<ScanEvent>,
-    mut restarts: UnboundedReceiver<()>,
+    controls: &mut UnboundedReceiver<ScanControl>,
+    paused: &mut bool,
 ) -> Result<()> {
     let session = bluer::Session::new().await.context("connecting to BlueZ")?;
     let adapter = session
@@ -82,7 +99,11 @@ async fn scan(
         "Bluetooth adapter {} is powered off",
         adapter.name()
     );
-    let mut discovery = Some(Box::pin(start_discovery(&adapter).await?));
+    let mut discovery = if *paused {
+        None
+    } else {
+        Some(Box::pin(start_discovery(&adapter).await?))
+    };
     if events
         .send(ScanEvent::Started {
             adapter: adapter.name().to_owned(),
@@ -93,49 +114,74 @@ async fn scan(
     }
 
     let mut device_events = SelectAll::new();
-    let mut watched = HashSet::new();
-    let mut names: HashMap<Address, String> = HashMap::new();
-    let mut rssi: HashMap<Address, i16> = HashMap::new();
+    let mut watched: HashMap<Address, Watched> = HashMap::new();
+    let mut subscriptions = 0;
     loop {
+        if discovery.is_none() && !*paused {
+            discovery = Some(Box::pin(start_discovery(&adapter).await?));
+        }
         tokio::select! {
-            Some(()) = restarts.recv() => {
-                // Dropping the stream stops discovery; give BlueZ a moment before restarting.
-                drop(discovery.take());
-                tokio::time::sleep(DISCOVERY_RESTART_PAUSE).await;
-                discovery = Some(Box::pin(start_discovery(&adapter).await?));
-            }
-            Some(event) = next_event(&mut discovery) => match event {
-                AdapterEvent::DeviceAdded(address) if watched.insert(address) => {
-                    let device = adapter.device(address)?;
-                    device_events.push(device.events().await?.map(move |e| (address, e)));
+            control = controls.recv() => match control {
+                None => return Ok(()),
+                Some(ScanControl::Pause) => *paused = true,
+                Some(ScanControl::Resume) => {
+                    *paused = false;
+                    // Dropping the stream stops discovery; give BlueZ a moment
+                    // before it starts again at the top of the loop.
+                    drop(discovery.take());
+                    tokio::time::sleep(DISCOVERY_RESTART_PAUSE).await;
                 }
-                AdapterEvent::DeviceRemoved(address) => {
+            },
+            event = next_event(&mut discovery) => match event {
+                Some(AdapterEvent::DeviceAdded(address)) if !watched.contains_key(&address) => {
+                    subscriptions += 1;
+                    device_events.push(watch(&adapter, address, subscriptions).await?);
+                    watched.insert(address, Watched::new(subscriptions));
+                }
+                Some(AdapterEvent::DeviceRemoved(address)) => {
                     // BlueZ drops idle devices; subscribe again when they come back.
                     watched.remove(&address);
                 }
-                _ => {}
+                Some(_) => {}
+                None => {
+                    // BlueZ stopped discovering: for a connection, or the adapter was
+                    // switched off. It starts again at the top of the loop unless
+                    // jobs are running; if it can't, scanning starts over.
+                    drop(discovery.take());
+                    tokio::time::sleep(DISCOVERY_RESTART_PAUSE).await;
+                }
             },
-            Some((address, DeviceEvent::PropertyChanged(property))) = device_events.next() => {
+            Some((address, subscription, event)) = device_events.next() => {
+                let Some(device) = watched
+                    .get_mut(&address)
+                    .filter(|device| device.subscription == subscription)
+                else {
+                    continue;
+                };
+                let Some(DeviceEvent::PropertyChanged(property)) = event else {
+                    // BlueZ removed the device while discovery was paused, so no
+                    // DeviceRemoved arrived; it may already be back.
+                    watched.remove(&address);
+                    if adapter.device_addresses().await?.contains(&address) {
+                        subscriptions += 1;
+                        device_events.push(watch(&adapter, address, subscriptions).await?);
+                        watched.insert(address, Watched::new(subscriptions));
+                    }
+                    continue;
+                };
                 match property {
-                    DeviceProperty::Rssi(value) => {
-                        rssi.insert(address, value);
-                    }
-                    DeviceProperty::Alias(alias) => {
-                        names.insert(address, alias);
-                    }
+                    DeviceProperty::Rssi(value) => device.rssi = Some(value),
+                    DeviceProperty::Alias(alias) => device.name = Some(alias),
                     DeviceProperty::ServiceData(mut data) => {
                         let Some(payload) = data.remove(&BTHOME_UUID) else { continue };
-                        let name = if let Some(name) = names.get(&address) {
-                            name.clone()
-                        } else {
-                            let name = alias(&adapter, address).await;
-                            names.insert(address, name.clone());
-                            name
+                        let name = match &device.name {
+                            Some(name) => name.clone(),
+                            None => device.name.insert(alias(&adapter, address).await).clone(),
                         };
                         let advert = Advert {
                             address,
                             name,
-                            rssi: rssi.get(&address).copied(),
+                            rssi: device.rssi,
                             payload,
                             received: SystemTime::now(),
                         };
@@ -146,16 +192,53 @@ async fn scan(
                     _ => {}
                 }
             }
-            else => break,
         }
     }
-    bail!("BlueZ ended discovery")
 }
 
+/// What the scanner knows about one BlueZ device object.
+///
+/// BlueZ removes idle devices and creates them anew when they are heard again, with
+/// a name that may have changed in between without an `Alias` change being sent, so
+/// nothing here outlives the object.
+struct Watched {
+    /// Tells this object's events apart from those of an earlier one at the same address.
+    subscription: u64,
+    /// Read from BlueZ on the first advert, then kept current by `Alias` changes.
+    name: Option<String>,
+    rssi: Option<i16>,
+}
+
+impl Watched {
+    const fn new(subscription: u64) -> Self {
+        Self {
+            subscription,
+            name: None,
+            rssi: None,
+        }
+    }
+}
+
+/// The device's property changes, tagged with the address and `subscription` and
+/// ended by `None` when BlueZ removes the device.
+async fn watch(
+    adapter: &Adapter,
+    address: Address,
+    subscription: u64,
+) -> Result<impl Stream<Item = (Address, u64, Option<DeviceEvent>)> + use<>> {
+    let events = adapter.device(address)?.events().await?;
+    Ok(events
+        .map(Some)
+        .chain(stream::iter([None]))
+        .map(move |event| (address, subscription, event)))
+}
+
+/// The next discovery event, `None` once BlueZ ended discovery; never ready while
+/// discovery is stopped.
 async fn next_event<S: Stream + Unpin>(stream: &mut Option<S>) -> Option<S::Item> {
     match stream {
         Some(stream) => stream.next().await,
-        None => None,
+        None => std::future::pending().await,
     }
 }
 

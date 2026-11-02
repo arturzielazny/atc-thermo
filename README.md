@@ -33,6 +33,8 @@ the corrected values too.
 - **Clock sync with drift trim**: the clocks ran ~200 ppm fast here.
 - **Bulk actions:** rename, advertising interval, measurement interval, TX power, log
   interval, log download, identify (shows the device's number on its own LCD).
+- **Signal levelling:** listens for a while, then sets each device's TX power so it
+  arrives at about −70 dBm: still reliable, with no battery spent on a louder radio.
 
 ![Calibration screen: per-device corrections with bars, and the chart with the excluded time shaded](docs/images/calibration.webp)
 
@@ -67,11 +69,12 @@ Chrome on Android works out of the box.
 |---|---|
 | `↑` `↓` | select a device · `Esc` clears marks, then the selection |
 | `space` / `a` | mark one / all devices: actions apply to marked devices, or the selected one |
-| `i` | identify: show the device's `#` from the table on its screen for 10 min (`333` for #3, with a smiley) |
+| `i` | identify: show the device's `#` from the table on its screen for 30 min (`333` for #3, with a smiley) |
 | `n` | rename the selected device |
 | `s` | sync device clocks with this computer and trim the drift measured since the last sync |
 | `e` | settings: advertising interval, measurement interval, TX power, log interval |
 | `d` | download the device log for the last 24 h |
+| `l` | signal levelling: `←` `→` target 1 dB, `Enter` change TX power, `x` factory TX power (both confirmed with `y`), `r` listen anew; mark devices there to level only those |
 | `c` | calibration screen: `Tab` start/end, `←` `→` move 15 min (`Shift`: 1 h), `Enter` apply, `x` factory reset |
 | `t` `h` `r` · `w` · `p` | temperature / humidity / signal strength · chart time span · lines or points |
 | `q` | quit |

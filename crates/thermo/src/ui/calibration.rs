@@ -60,7 +60,7 @@ pub fn height(screen: &CalibrationScreen) -> u16 {
 }
 
 pub fn render(frame: &mut Frame, area: Rect, app: &App, screen: &CalibrationScreen) {
-    let devices = app.calibration_devices();
+    let devices = app.compared_devices();
     let title = format!(
         " Calibration · {} devices{} ",
         devices.len(),

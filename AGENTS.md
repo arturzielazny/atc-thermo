@@ -25,6 +25,7 @@ calibration coefficients over GATT. Linux only today (BlueZ via the `bluer` crat
 | `crates/thermo/src/devices.rs` | Per-device latest readings, history, RSSI median. | portable |
 | `crates/thermo/src/store.rs` | `~/.local/share/thermo/`: `YYYY-MM-DD.csv` readings, `calibrations.csv`, `clocks.csv`, `downloads.csv`. | XDG paths |
 | `crates/thermo/src/calibrate.rs` | Glue from history to `calibration`, and from fits to coefficients. | portable |
+| `crates/thermo/src/level.rs` | Signal levelling: per-device median RSSI and the TX power change towards a common target. | portable |
 | `crates/thermo/src/ui/` | ratatui widgets. `chart.rs` axes and layout, `plot.rs` tiny-skia rasterizer, `kitty.rs` kitty graphics protocol via `/dev/shm`, braille fallback in `chart.rs`. | `kitty.rs` assumes `/dev/shm` |
 | `scripts/` | The original Python prototypes (`dbus-python`). Not used by the app. | Linux |
 | `site/` | GitHub Pages site, deployed by `.github/workflows/pages.yml`. Static HTML, no build step. | — |

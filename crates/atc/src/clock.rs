@@ -19,6 +19,9 @@ pub struct ClockReading {
 const PLAUSIBLE_SET_TIME: u32 = 1_600_000_000; // 2020-09-13
 /// Shorter spans since the last set are too short to estimate drift from.
 const MIN_DRIFT_SPAN: u32 = 3600;
+/// A log record can be newer than the clock reading only by the time a download takes
+/// after it; one further ahead was stamped before the clock was set back.
+const MAX_RECORD_AHEAD: u32 = 300;
 /// Shorter spans are too short to measure the clock *rate* from: offsets have a
 /// resolution of about a second, which over 12 h is 3 s/day.
 const MIN_RATE_SPAN: f64 = 12.0 * 3600.0;
@@ -41,9 +44,14 @@ impl ClockReading {
     /// If the clock was set to real time at `last_set`, the offset is assumed to have
     /// grown linearly from zero then to [`offset_secs`](Self::offset_secs) now (constant
     /// drift). Otherwise the current offset is applied unchanged. Returns `None` for
-    /// timestamps from before the last set, which belong to an older, unrelated time base.
+    /// timestamps from before the last set, which belong to an older, unrelated time base,
+    /// and for those well ahead of the reading: stamped by a clock that was later set
+    /// back, which THB2 (no `last_set`) leaves no other trace of.
     #[must_use]
     pub fn to_host(&self, device_time: u32) -> Option<SystemTime> {
+        if device_time > self.device_now.saturating_add(MAX_RECORD_AHEAD) {
+            return None;
+        }
         let offset = match self.last_set {
             Some(set) if set >= PLAUSIBLE_SET_TIME && set <= self.device_now => {
                 if device_time < set {
@@ -186,6 +194,21 @@ mod tests {
         assert_eq!(ticks_delta(slow), Some(-3704));
         // 0.3 % is more than the firmware can correct.
         assert_eq!(trimmed_second_ticks(NOMINAL_SECOND_TICKS, 0.003), None);
+    }
+
+    #[test]
+    fn records_newer_than_the_reading_are_from_an_older_time_base() {
+        // Set back by 3 h without saying so (THB2 has no `last_set`), the device still
+        // holds records stamped with the old, ahead clock: they map into the future.
+        let clock = ClockReading {
+            device_now: HOST_NOW + 2,
+            last_set: None,
+            host_now: at(HOST_NOW),
+        };
+        assert_eq!(clock.to_host(HOST_NOW + 10_757), None);
+        // A record logged while the download runs is a little newer than the reading.
+        let host = clock.to_host(HOST_NOW + 62).expect("valid");
+        assert!((secs(host) - f64::from(HOST_NOW + 60)).abs() < 1e-6);
     }
 
     #[test]

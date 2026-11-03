@@ -52,13 +52,13 @@ pub fn rasterize(
 
     // Most pixels are transparent and stay zero; only the rest need un-premultiplying.
     let mut data = vec![0; pixmap.data().len()];
-    for (out, p) in data.chunks_exact_mut(4).zip(pixmap.pixels()) {
+    for (out, p) in data.as_chunks_mut::<4>().0.iter_mut().zip(pixmap.pixels()) {
         match p.alpha() {
             0 => {}
-            u8::MAX => out.copy_from_slice(&[p.red(), p.green(), p.blue(), u8::MAX]),
+            u8::MAX => *out = [p.red(), p.green(), p.blue(), u8::MAX],
             _ => {
                 let c = p.demultiply();
-                out.copy_from_slice(&[c.red(), c.green(), c.blue(), c.alpha()]);
+                *out = [c.red(), c.green(), c.blue(), c.alpha()];
             }
         }
     }

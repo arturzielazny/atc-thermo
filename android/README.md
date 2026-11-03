@@ -6,6 +6,9 @@ firmware with BTHome v2 advertising (tested on Xiaomi LYWSD03MMC, firmware v5.9,
 Samsung Galaxy S21 with Android 15). Kotlin and Jetpack Compose (Material 3), no other
 dependencies. Android 8 and newer.
 
+**Install:** download the APK from the [Android release](https://github.com/arturzielazny/atc-thermo/releases/tag/android-v0.1.0) and open it on
+the phone (allow installing from your browser or file manager when asked).
+
 ## What it does
 
 Everything the terminal app does, laid out for touch:
@@ -44,11 +47,35 @@ Android SDK (platform 36) and JDK 17 or newer, e.g. Android Studio's.
 cd android
 ./gradlew testDebugUnitTest          # the ported unit tests, no phone needed
 ./gradlew installDebug               # build and install on a connected phone
-./gradlew assembleRelease            # minified, signed with the debug key for sideloading
+./gradlew assembleRelease            # minified; see Releases for the signing key
 ```
 
 `local.properties` holds `sdk.dir` (Android Studio writes it). If Gradle picks a JDK
 that is too new, run it with `JAVA_HOME` pointing at JDK 21.
+
+## Releases
+
+Published APKs are signed with a release key kept outside the repository. Gradle uses it
+when `android/keystore.properties` exists (gitignored):
+
+```properties
+storeFile=/home/you/.android/thermo-release.jks
+storePassword=…
+keyAlias=thermo
+keyPassword=…
+```
+
+Without that file the release build is signed with the debug key. Android only updates
+an app with an APK signed by the same key, so keep the keystore and its password backed
+up: losing them means users must uninstall (and lose the app's history) to update.
+
+To publish: raise `versionCode` and `versionName` in `app/build.gradle.kts`, then
+
+```sh
+./gradlew assembleRelease
+cp app/build/outputs/apk/release/app-release.apk thermo-android-X.Y.Z.apk
+gh release create android-vX.Y.Z thermo-android-X.Y.Z.apk --title "Android X.Y.Z"
+```
 
 ## Code
 

@@ -1,6 +1,13 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.plugin.compose")
+}
+
+/** Release signing key, kept outside the repository; see README "Releases". */
+val keystore = rootProject.file("keystore.properties").takeIf { it.exists() }?.let { file ->
+    Properties().apply { file.inputStream().use(::load) }
 }
 
 android {
@@ -16,13 +23,23 @@ android {
         versionName = "0.1.0"
     }
 
+    signingConfigs {
+        if (keystore != null) create("release") {
+            storeFile = file(keystore.getProperty("storeFile"))
+            storePassword = keystore.getProperty("storePassword")
+            keyAlias = keystore.getProperty("keyAlias")
+            keyPassword = keystore.getProperty("keyPassword")
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"))
-            // Sideloaded build: signed with the debug key so it installs directly.
-            signingConfig = signingConfigs.getByName("debug")
+            // Published APKs use the release key; without it the build is signed with the
+            // debug key so it still installs directly.
+            signingConfig = signingConfigs.getByName(if (keystore != null) "release" else "debug")
         }
     }
 

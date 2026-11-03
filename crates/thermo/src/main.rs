@@ -88,6 +88,10 @@ async fn dashboard() -> Result<()> {
 }
 
 async fn run(terminal: &mut DefaultTerminal, picker: Option<Picker>) -> Result<()> {
+    // A terminal without the kitty protocol (Terminal.app) may print part of the
+    // picker's graphics query instead of swallowing it, and ratatui never redraws the
+    // cells it believes blank: start from a really blank screen.
+    terminal.clear()?;
     let (scan_tx, mut scan_rx) = mpsc::unbounded_channel();
     let (control_tx, control_rx) = mpsc::unbounded_channel();
     tokio::spawn(scanner::run(scan_tx, control_rx));

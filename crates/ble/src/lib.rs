@@ -12,7 +12,7 @@
 //! and [`Link`], its [`atc::Transport`]. Each platform's quirks stay in its backend,
 //! so the app and its job worker never ask which platform they run on.
 //!
-//! Backends: BlueZ on Linux (`bluez.rs`).
+//! Backends: BlueZ on Linux (`bluez.rs`), CoreBluetooth on macOS (`macos.rs`).
 
 use std::time::SystemTime;
 
@@ -23,8 +23,12 @@ use uuid::Uuid;
 mod bluez;
 #[cfg(target_os = "linux")]
 pub use bluez::{Bluetooth, Link};
+#[cfg(target_os = "macos")]
+mod macos;
+#[cfg(target_os = "macos")]
+pub use macos::{Bluetooth, Link};
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 compile_error!(
     "no Bluetooth backend for this platform yet: see \"Porting to another OS\" in AGENTS.md"
 );
@@ -58,7 +62,9 @@ pub enum ScanEvent {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScanControl {
     /// Device jobs are about to connect. Where the stack connects badly while
-    /// scanning (BlueZ), scanning stops until [`ScanControl::Resume`].
+    /// scanning (BlueZ), scanning stops until [`ScanControl::Resume`]; where it
+    /// connects on adverts (CoreBluetooth), scanning goes on and only the backend's
+    /// own connections wait.
     Pause,
     /// Device jobs are over.
     Resume,

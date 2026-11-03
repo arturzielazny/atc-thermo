@@ -224,11 +224,7 @@ impl Axes {
 
     /// Decimals that y labels need to tell gridlines apart.
     pub fn y_decimals(&self) -> usize {
-        match self.y_step {
-            Some(step) if step >= 1.0 => 0,
-            Some(step) if step < 0.1 => 2,
-            _ => 1,
-        }
+        self.y_step.map_or(1, step_decimals)
     }
 
     /// Columns that get a gridline and a time label.
@@ -257,6 +253,48 @@ fn whole_column(value: f64) -> Option<u16> {
     (0.0..=f64::from(u16::MAX))
         .contains(&value)
         .then(|| u16::try_from(whole_seconds(value)).expect("checked range"))
+}
+
+/// Decimals that labels `step` apart need.
+fn step_decimals(step: f64) -> usize {
+    if step >= 1.0 {
+        0
+    } else if step < 0.1 {
+        2
+    } else {
+        1
+    }
+}
+
+/// Y bounds and labels for the braille chart, which ratatui spreads evenly over the
+/// bounds: `y` widened to whole multiples of the finest step from [`Y_STEPS`] (not
+/// below `min_step`) that leaves [`MIN_GRID_ROWS`] of the `rows` per label, with a
+/// label at every step. Without such a step, `y` unchanged with its ends and middle.
+fn braille_y_axis(y: (f64, f64), rows: u16, min_step: f64) -> ((f64, f64), Vec<String>) {
+    let intervals = f64::from(rows.saturating_sub(1));
+    let fitted = Y_STEPS
+        .into_iter()
+        .filter(|&s| s >= min_step)
+        .find_map(|step| {
+            let lo = (y.0 / step).floor();
+            let steps = ((y.1 / step).ceil() - lo).max(1.0);
+            (intervals / steps >= MIN_GRID_ROWS).then_some((step, lo, steps))
+        });
+    let Some((step, lo, steps)) = fitted else {
+        let labels = [y.0, f64::midpoint(y.0, y.1), y.1]
+            .iter()
+            .map(|v| format!("{v:.1}"))
+            .collect();
+        return (y, labels);
+    };
+    let decimals = step_decimals(step);
+    // Each label has at least `MIN_GRID_ROWS` rows, so there are fewer than `rows`.
+    let labels = (0..rows)
+        .map(f64::from)
+        .take_while(|&i| i <= steps)
+        .map(|i| format!("{:.decimals$}", (lo + i) * step))
+        .collect();
+    ((lo * step, (lo + steps) * step), labels)
 }
 
 fn evenly_spaced(last: u16, intervals: u16) -> Vec<u16> {
@@ -355,7 +393,14 @@ impl ChartView {
                 };
                 graphics.render(frame, inner, app, series, shape);
             }
-            None => render_braille(frame, inner, &series, (x, y), origin),
+            None => render_braille(
+                frame,
+                inner,
+                &series,
+                (x, y),
+                origin,
+                app.metric.min_grid_step(),
+            ),
         }
     }
 }
@@ -562,7 +607,14 @@ fn render_x_labels(frame: &mut Frame, area: Rect, axes: &Axes) {
     }
 }
 
-fn render_braille(frame: &mut Frame, area: Rect, series: &[Series], (x, y): Ranges, x_origin: i64) {
+fn render_braille(
+    frame: &mut Frame,
+    area: Rect,
+    series: &[Series],
+    (x, y): Ranges,
+    x_origin: i64,
+    min_step: f64,
+) {
     let coordinates: Vec<Vec<(f64, f64)>> = series
         .iter()
         .map(|s| s.points.iter().map(|p| (p.x, p.y)).collect())
@@ -588,10 +640,9 @@ fn render_braille(frame: &mut Frame, area: Rect, series: &[Series], (x, y): Rang
         .into_iter()
         .map(|v| Line::from(localtime::label(x_origin + whole_seconds(v))))
         .collect();
-    let y_labels: Vec<Line> = [y.0, f64::midpoint(y.0, y.1), y.1]
-        .into_iter()
-        .map(|v| Line::from(format!("{v:.1}")))
-        .collect();
+    // The x axis line and its labels take the bottom two rows.
+    let (y, y_labels) = braille_y_axis(y, area.height.saturating_sub(2), min_step);
+    let y_labels: Vec<Line> = y_labels.into_iter().map(Line::from).collect();
     let chart = Chart::new(datasets)
         .x_axis(
             Axis::default()
@@ -765,6 +816,28 @@ mod tests {
         assert_eq!(axes.y_decimals(), 2);
         // Humidity stops at tenths.
         assert_eq!(gridlines((55.43, 55.55), 30, 0.1).0, Some(0.1));
+    }
+
+    #[test]
+    fn braille_labels_sit_on_round_steps() {
+        // Four sensors within 0.1 °C, as on a 46-line terminal: labels every 0.02 °C.
+        let (bounds, labels) = braille_y_axis((18.695, 18.805), 30, 0.02);
+        assert_eq!(
+            labels,
+            [
+                "18.68", "18.70", "18.72", "18.74", "18.76", "18.78", "18.80", "18.82"
+            ]
+        );
+        assert!((bounds.0 - 18.68).abs() < 1e-9 && (bounds.1 - 18.82).abs() < 1e-9);
+        // Fewer rows take a coarser step; whole units drop the decimals.
+        let (_, labels) = braille_y_axis((18.695, 18.805), 12, 0.02);
+        assert_eq!(labels, ["18.65", "18.70", "18.75", "18.80", "18.85"]);
+        let (_, labels) = braille_y_axis((19.6, 23.4), 12, 0.02);
+        assert_eq!(labels, ["19", "20", "21", "22", "23", "24"]);
+        // No room for any round step: the range ends and middle, as before.
+        let (bounds, labels) = braille_y_axis((0.0, 200.0), 3, 0.1);
+        assert_eq!(bounds, (0.0, 200.0));
+        assert_eq!(labels, ["0.0", "100.0", "200.0"]);
     }
 
     #[test]

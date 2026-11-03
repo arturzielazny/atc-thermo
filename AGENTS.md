@@ -93,6 +93,13 @@ on Debian/Ubuntu, `dbus-devel` on Fedora, `dbus` on Arch).
   bytes with its own offsets and TX power codes (`config.rs`). Coefficient reply adds
   mid, vid, I²C address and sensor type; AHT2x gains must stay ≤ 4095. `0x26` resets
   coefficients only in RAM, so `atc` writes the defaults with `0x25` instead.
+- btleplug on CoreBluetooth drops a peripheral from `Adapter::peripherals()` when it
+  disconnects and lists it again only when a scan sees it. So outside Linux scanning
+  is not paused for jobs (`ble::PAUSE_SCAN_FOR_JOBS`), and the worker in `jobs.rs`
+  connects only right after a fresh advert, retries failed connects later and lets
+  other devices go first. Every BLE stack call in `atc` has its own timeout
+  (`disconnect` can wait forever for a callback otherwise).
+- `logfile.rs` writes `thermo.log` in the data dir (`THERMO_LOG=debug|trace|off`).
 - On macOS `DeviceId` is a per-host UUID, not the MAC. CSV rows keyed by a MAC (from
   Linux) load as separate devices.
 

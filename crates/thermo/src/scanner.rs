@@ -11,7 +11,7 @@ use futures::StreamExt;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use uuid::Uuid;
 
-use crate::ble::Ble;
+use crate::ble::{Ble, PAUSE_SCAN_FOR_JOBS};
 use atc::DeviceId;
 
 /// BTHome's 16-bit UUID expanded with the Bluetooth base UUID.
@@ -65,6 +65,7 @@ pub async fn run(
 ) {
     let mut paused = false;
     while let Err(err) = scan(&ble, &events, &mut controls, &mut paused).await {
+        log::error!("scan failed: {err:#}");
         if events.send(ScanEvent::Failed(format!("{err:#}"))).is_err() {
             return;
         }
@@ -104,6 +105,7 @@ async fn scan(
             .await
             .context("starting discovery")?;
     }
+    log::info!("scanning on {name}");
     if events.send(ScanEvent::Started { adapter: name }).is_err() {
         return Ok(());
     }
@@ -113,11 +115,14 @@ async fn scan(
         tokio::select! {
             control = controls.recv() => match control {
                 None => return Ok(()),
+                Some(ScanControl::Pause | ScanControl::Resume) if !PAUSE_SCAN_FOR_JOBS => {}
                 Some(ScanControl::Pause) => {
+                    log::debug!("scan paused for device jobs");
                     *paused = true;
                     let _ = adapter.stop_scan().await;
                 }
                 Some(ScanControl::Resume) => {
+                    log::debug!("scan restarted after device jobs");
                     *paused = false;
                     let _ = adapter.stop_scan().await;
                     tokio::time::sleep(DISCOVERY_RESTART_PAUSE).await;
@@ -127,12 +132,14 @@ async fn scan(
             event = central_events.next() => match event {
                 None => bail!("the Bluetooth adapter stopped sending events"),
                 Some(CentralEvent::StateUpdate(state)) if state != CentralState::PoweredOn => {
+                    log::warn!("adapter state {state:?}");
                     bail!("Bluetooth adapter switched off");
                 }
                 Some(CentralEvent::RssiUpdate { id, rssi }) => {
                     known.entry(id).or_default().rssi = Some(rssi);
                 }
                 Some(CentralEvent::DeviceDisconnected(id)) => {
+                    log::debug!("stack reports {id} disconnected");
                     // A connection may have changed the name; read it again.
                     known.remove(&id);
                 }
@@ -141,6 +148,7 @@ async fn scan(
                     let Ok(peripheral) = adapter.peripheral(&id).await else { continue };
                     let properties = peripheral.properties().await.ok().flatten().unwrap_or_default();
                     let address = atc::device_id(&peripheral);
+                    ble.heard(address);
                     let entry = known.entry(id).or_default();
                     if let Some(rssi) = properties.rssi {
                         entry.rssi = Some(rssi);

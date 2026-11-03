@@ -368,6 +368,15 @@ impl App {
                     self.restart_scan_at = Some(Instant::now() + SCAN_RESTART_DELAY);
                 }
             }
+            JobEvent::Retrying {
+                address,
+                error,
+                retry_in,
+            } => {
+                let state = self.states.entry(address).or_default();
+                state.busy = None;
+                state.last = Some(Err(format!("{error}; retry in {} s", retry_in.as_secs())));
+            }
         }
     }
 

@@ -1,6 +1,7 @@
 //! Background worker that connects to devices one at a time and runs commands on them.
 
-use std::time::{Duration, SystemTime};
+use std::collections::VecDeque;
+use std::time::{Duration, Instant, SystemTime};
 
 use atc::{
     Adapter, ClockReading, Coefficients, Config, Correction, DeviceId, ScreenMessage, Smiley,
@@ -8,11 +9,22 @@ use atc::{
 };
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
-use crate::ble::Ble;
+use crate::ble::{Ble, PAUSE_SCAN_FOR_JOBS};
 use crate::devices::LoggedSample;
 
 /// Longest a single job may take, including connecting.
 const JOB_TIMEOUT: Duration = Duration::from_secs(180);
+/// Where scanning goes on during jobs, a device is connected to only this soon after
+/// one of its adverts: it is listening then, and certainly not connected elsewhere.
+const FRESH_ADVERT: Duration = Duration::from_secs(2);
+/// How long a job waits for its device to advertise before counting as failed.
+const ADVERT_WAIT: Duration = Duration::from_secs(30);
+/// How often the worker checks for fresh adverts while jobs wait.
+const POLL: Duration = Duration::from_millis(200);
+/// Tries per job whose connection failed. In between, other devices' jobs run.
+const JOB_ATTEMPTS: u32 = 3;
+/// Wait before the second and third try.
+const RETRY_BACKOFF: [Duration; 2] = [Duration::from_secs(10), Duration::from_secs(30)];
 /// Wait after a failed connect before checking for a late, unwanted connection.
 const LATE_CONNECT_GRACE: Duration = Duration::from_secs(3);
 /// How long a device shows its number; long enough for a whole row of devices to be
@@ -151,6 +163,13 @@ pub enum JobEvent {
         address: DeviceId,
         outcome: Result<Outcome, String>,
     },
+    /// Connecting failed; the job stays queued and is tried again after `retry_in`,
+    /// while other devices' jobs go ahead.
+    Retrying {
+        address: DeviceId,
+        error: String,
+        retry_in: Duration,
+    },
 }
 
 /// Starts the worker; jobs sent to the returned sender run in order.
@@ -160,42 +179,220 @@ pub fn spawn(ble: Ble, events: UnboundedSender<JobEvent>) -> UnboundedSender<Job
     jobs_tx
 }
 
-async fn run(ble: Ble, mut jobs: UnboundedReceiver<Job>, events: UnboundedSender<JobEvent>) {
-    while let Some(job) = jobs.recv().await {
-        let address = job.address;
-        if events
-            .send(JobEvent::Started {
-                address,
-                label: job.action.label(),
-            })
-            .is_err()
-        {
-            return;
+/// A job waiting in the worker's queue.
+#[derive(Debug)]
+struct Pending {
+    job: Job,
+    /// Tries made so far.
+    tries: u32,
+    /// Not to be started before this, after a failed try.
+    not_before: Instant,
+}
+
+/// What the worker does next.
+#[derive(Debug, PartialEq, Eq)]
+enum Pick {
+    /// Start the job at this queue index.
+    Run(usize),
+    /// The job at this index waited [`ADVERT_WAIT`] without hearing its device.
+    Unheard(usize),
+    /// Nothing can start yet.
+    Wait,
+}
+
+/// Picks the next job: the first in the queue that is due, whose device has no
+/// earlier job waiting (jobs for one device keep their order), and, when scanning
+/// goes on during jobs, whose device advertised within [`FRESH_ADVERT`].
+fn pick(
+    queue: &VecDeque<Pending>,
+    now: Instant,
+    scan_during_jobs: bool,
+    last_heard: impl Fn(DeviceId) -> Option<Instant>,
+) -> Pick {
+    let mut seen = Vec::new();
+    let mut unheard = None;
+    for (i, pending) in queue.iter().enumerate() {
+        let address = pending.job.address;
+        if seen.contains(&address) {
+            continue;
         }
-        let outcome = match ble.adapter().await {
-            Ok(adapter) => execute_with_timeout(&adapter, job).await,
-            Err(err) => Err(format!("no Bluetooth adapter: {err}")),
+        seen.push(address);
+        if pending.not_before > now {
+            continue;
+        }
+        if !scan_during_jobs {
+            return Pick::Run(i);
+        }
+        let heard = last_heard(address);
+        if heard.is_some_and(|at| now.saturating_duration_since(at) <= FRESH_ADVERT) {
+            return Pick::Run(i);
+        }
+        if unheard.is_none() && now.saturating_duration_since(pending.not_before) >= ADVERT_WAIT {
+            unheard = Some(i);
+        }
+    }
+    unheard.map_or(Pick::Wait, Pick::Unheard)
+}
+
+/// Why a job did not finish.
+#[derive(Debug)]
+struct Failure {
+    message: String,
+    /// Failed before the action wrote anything, so trying again is safe.
+    retryable: bool,
+}
+
+fn queued(job: Job) -> Pending {
+    log::info!("{}: queued {}", job.address, job.action.label());
+    Pending {
+        job,
+        tries: 0,
+        not_before: Instant::now(),
+    }
+}
+
+async fn run(ble: Ble, mut jobs: UnboundedReceiver<Job>, events: UnboundedSender<JobEvent>) {
+    let mut queue: VecDeque<Pending> = VecDeque::new();
+    let mut open = true;
+    loop {
+        while let Ok(job) = jobs.try_recv() {
+            queue.push_back(queued(job));
+        }
+        if queue.is_empty() {
+            match jobs.recv().await {
+                Some(job) => queue.push_back(queued(job)),
+                None => return,
+            }
+            continue;
+        }
+        let picked = pick(&queue, Instant::now(), !PAUSE_SCAN_FOR_JOBS, |id| {
+            ble.last_heard(id)
+        });
+        let (index, unheard) = match picked {
+            Pick::Run(i) => (i, false),
+            Pick::Unheard(i) => (i, true),
+            Pick::Wait if open => {
+                tokio::select! {
+                    job = jobs.recv() => match job {
+                        Some(job) => queue.push_back(queued(job)),
+                        None => open = false,
+                    },
+                    () = tokio::time::sleep(POLL) => {}
+                }
+                continue;
+            }
+            Pick::Wait => {
+                tokio::time::sleep(POLL).await;
+                continue;
+            }
         };
-        if events
-            .send(JobEvent::Finished { address, outcome })
-            .is_err()
-        {
+        let Some(pending) = queue.remove(index) else {
+            continue;
+        };
+        let Some(event) = attempt(&ble, &events, &mut queue, pending, unheard).await else {
+            return;
+        };
+        if events.send(event).is_err() {
             return;
         }
     }
 }
 
-async fn execute_with_timeout(adapter: &Adapter, job: Job) -> Result<Outcome, String> {
+/// Tries `pending` once; a retryable failure puts it back at the end of `queue`.
+/// Returns the event to report, or `None` if the app is gone.
+async fn attempt(
+    ble: &Ble,
+    events: &UnboundedSender<JobEvent>,
+    queue: &mut VecDeque<Pending>,
+    mut pending: Pending,
+    unheard: bool,
+) -> Option<JobEvent> {
+    pending.tries += 1;
+    let address = pending.job.address;
+    let label = pending.job.action.label();
+    let started = Instant::now();
+    let result = if unheard {
+        let silent = ble.last_heard(address).map_or_else(
+            || "never heard".to_owned(),
+            |at| format!("not heard for {} s", at.elapsed().as_secs()),
+        );
+        Err(Failure {
+            message: format!(
+                "{silent}: out of range, or connected to another app (Home Assistant?)"
+            ),
+            retryable: true,
+        })
+    } else {
+        log::info!(
+            "{address}: {label}, try {}/{JOB_ATTEMPTS}{}",
+            pending.tries,
+            ble.last_heard(address)
+                .map_or_else(String::new, |at| format!(
+                    ", last advert {} ms ago",
+                    at.elapsed().as_millis()
+                ))
+        );
+        events.send(JobEvent::Started { address, label }).ok()?;
+        match ble.adapter().await {
+            Ok(adapter) => execute_with_timeout(&adapter, pending.job.clone()).await,
+            Err(err) => Err(Failure {
+                message: format!("no Bluetooth adapter: {err}"),
+                retryable: false,
+            }),
+        }
+    };
+    let elapsed = started.elapsed();
+    Some(match result {
+        Ok(outcome) => {
+            log::info!("{address}: {label} done in {elapsed:?}");
+            JobEvent::Finished {
+                address,
+                outcome: Ok(outcome),
+            }
+        }
+        Err(failure) if failure.retryable && pending.tries < JOB_ATTEMPTS => {
+            let step = usize::try_from(pending.tries - 1).unwrap_or(usize::MAX);
+            let retry_in = RETRY_BACKOFF[step.min(RETRY_BACKOFF.len() - 1)];
+            log::warn!(
+                "{address}: {label} failed after {elapsed:?}: {}; retrying in {retry_in:?}",
+                failure.message
+            );
+            pending.not_before = Instant::now() + retry_in;
+            // Behind everything else, so other devices go first.
+            queue.push_back(pending);
+            JobEvent::Retrying {
+                address,
+                error: failure.message,
+                retry_in,
+            }
+        }
+        Err(failure) => {
+            log::warn!(
+                "{address}: {label} failed after {elapsed:?}: {}",
+                failure.message
+            );
+            JobEvent::Finished {
+                address,
+                outcome: Err(failure.message),
+            }
+        }
+    })
+}
+
+async fn execute_with_timeout(adapter: &Adapter, job: Job) -> Result<Outcome, Failure> {
     let address = job.address;
     if let Ok(result) = tokio::time::timeout(JOB_TIMEOUT, execute(adapter, job)).await {
         return result;
     }
     // The cancelled job may have left the connection open.
     let _ = atc::disconnect(adapter, address).await;
-    Err("timed out".to_owned())
+    Err(Failure {
+        message: format!("timed out after {} s", JOB_TIMEOUT.as_secs()),
+        retryable: false,
+    })
 }
 
-async fn execute(adapter: &Adapter, job: Job) -> Result<Outcome, String> {
+async fn execute(adapter: &Adapter, job: Job) -> Result<Outcome, Failure> {
     let mut thermometer = match Thermometer::connect(adapter, job.address).await {
         Ok(thermometer) => thermometer,
         Err(err) => {
@@ -203,13 +400,27 @@ async fn execute(adapter: &Adapter, job: Job) -> Result<Outcome, String> {
             // thermometer stops advertising, so make sure none is left behind.
             tokio::time::sleep(LATE_CONNECT_GRACE).await;
             let _ = atc::disconnect(adapter, job.address).await;
-            return Err(err.to_string());
+            // Connecting writes nothing but the read-only device id request.
+            let retryable = !matches!(
+                err,
+                atc::Error::NotPvvx | atc::Error::UnsupportedFirmware { .. }
+            );
+            return Err(Failure {
+                message: err.to_string(),
+                retryable,
+            });
         }
     };
     let result = perform(&mut thermometer, job.action).await;
+    if let Err(err) = &result {
+        log::warn!("{}: action failed: {err}", job.address);
+    }
     // The device restarts or carries on by itself; a failed disconnect changes nothing.
     let _ = thermometer.disconnect().await;
-    result.map_err(|e| e.to_string())
+    result.map_err(|e| Failure {
+        message: e.to_string(),
+        retryable: false,
+    })
 }
 
 async fn perform(t: &mut Thermometer, action: Action) -> Result<Outcome, atc::Error> {
@@ -442,5 +653,44 @@ mod tests {
             Config::from_thb_bytes([0x05, 0, 0, 0, 0x1f, 80, 29, 16, 2, 60, 180, 0]);
         apply_settings(&mut thb_config, &settings).expect("valid");
         assert_eq!(thb_config.tx_power().code(), 0x0a);
+    }
+
+    fn pending(address: DeviceId, not_before: Instant) -> Pending {
+        Pending {
+            job: Job {
+                address,
+                action: Action::ReadConfig,
+            },
+            tries: 0,
+            not_before,
+        }
+    }
+
+    const A: DeviceId = DeviceId::Mac([0xa4, 0xc1, 0x38, 0x27, 0xc6, 0x22]);
+    const B: DeviceId = DeviceId::Mac([0x38, 0x1f, 0x8d, 0x26, 0x70, 0x5b]);
+
+    #[test]
+    fn picks_a_device_that_just_advertised() {
+        let now = Instant::now();
+        let queue: VecDeque<_> = [pending(A, now), pending(B, now)].into();
+        let heard = |id| (id == B).then_some(now);
+        assert_eq!(pick(&queue, now, true, heard), Pick::Run(1));
+        // Without fresh adverts nothing starts, until the wait runs out.
+        assert_eq!(pick(&queue, now, true, |_| None), Pick::Wait);
+        let later = now + ADVERT_WAIT;
+        assert_eq!(pick(&queue, later, true, |_| None), Pick::Unheard(0));
+        // BlueZ: discovery is off during jobs, so adverts don't matter.
+        assert_eq!(pick(&queue, now, false, |_| None), Pick::Run(0));
+    }
+
+    #[test]
+    fn keeps_order_per_device_and_skips_deferred() {
+        let now = Instant::now();
+        let later = now + Duration::from_secs(10);
+        // A's first job is deferred: its second must not overtake it, B goes ahead.
+        let queue: VecDeque<_> = [pending(A, later), pending(A, now), pending(B, now)].into();
+        assert_eq!(pick(&queue, now, true, |_| Some(now)), Pick::Run(2));
+        assert_eq!(pick(&queue, now, false, |_| None), Pick::Run(2));
+        assert_eq!(pick(&queue, later, false, |_| None), Pick::Run(0));
     }
 }

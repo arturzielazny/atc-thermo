@@ -52,7 +52,7 @@ pub fn settings(frame: &mut Frame, app: &App, form: &SettingsForm) {
         let selected = i == form.field;
         let value = form.value_label(*field);
         let value = if selected {
-            Span::from(format!("◀ {value} ▶")).bold().reversed()
+            Span::from(format!("◂ {value} ▸")).bold().reversed()
         } else {
             Span::from(format!("  {value}  "))
         };

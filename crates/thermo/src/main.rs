@@ -11,6 +11,7 @@ mod forms;
 mod jobs;
 mod level;
 mod localtime;
+mod logfile;
 mod scanner;
 mod store;
 mod ui;
@@ -19,7 +20,7 @@ use std::io::Write;
 use std::time::{Duration, SystemTime};
 
 use anyhow::{Context, Result, bail};
-use crossterm::event::{Event, EventStream};
+use crossterm::event::{Event, EventStream, KeyCode, KeyModifiers};
 use futures::StreamExt;
 use ratatui::DefaultTerminal;
 use ratatui_image::picker::Picker;
@@ -80,11 +81,19 @@ fn print_calibration(hours: u32) -> Result<()> {
 }
 
 async fn dashboard() -> Result<()> {
+    let log_path = logfile::init(Store::default_dir().as_deref()).unwrap_or_else(|err| {
+        eprintln!("warning: no log file: {err}");
+        None
+    });
     let mut terminal = ratatui::init();
     // Must run after entering the alternate screen and before reading input events.
     let picker = Picker::from_query_stdio().ok();
     let result = run(&mut terminal, picker).await;
     ratatui::restore();
+    log::logger().flush();
+    if let Some(path) = log_path {
+        eprintln!("log: {}", path.display());
+    }
     result
 }
 
@@ -113,8 +122,19 @@ async fn run(terminal: &mut DefaultTerminal, picker: Option<Picker>) -> Result<(
         tokio::select! {
             biased;
             Some(event) = input.next() => {
-                if let Event::Key(key) = event? {
-                    app.on_key(key);
+                match event? {
+                    // Ctrl-L repaints everything, like in a shell.
+                    Event::Key(key)
+                        if key.code == KeyCode::Char('l')
+                            && key.modifiers.contains(KeyModifiers::CONTROL) =>
+                    {
+                        terminal.clear()?;
+                    }
+                    Event::Key(key) => app.on_key(key),
+                    // Some terminals (Terminal.app) leave stray cells behind when the
+                    // window size changes; repaint from scratch.
+                    Event::Resize(..) => terminal.clear()?,
+                    _ => {}
                 }
             }
             Some(update) = chart_updates.recv() => {

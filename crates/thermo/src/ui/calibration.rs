@@ -304,9 +304,9 @@ fn bar(value: f64, scale: &BarScale, written: bool) -> Line<'static> {
     let pad = " ".repeat(BAR_HALF_WIDTH - full - usize::from(half));
     let blocks = "█".repeat(full);
     let (outer_arrow, outer_half) = if value < 0.0 {
-        ('◀', '▐')
+        ('◂', '▐')
     } else {
-        ('▶', '▌')
+        ('▸', '▌')
     };
     let mut body = String::new();
     if value < 0.0 {
@@ -362,8 +362,8 @@ mod tests {
         assert_eq!(text(&bar(-0.075, &TEMPERATURE_BAR, true)), "    ▐█│      ");
         assert_eq!(text(&bar(0.0, &TEMPERATURE_BAR, true)), "      │      ");
         // Past full scale the outermost cell is an arrow.
-        assert_eq!(text(&bar(6.55, &HUMIDITY_BAR, true)), "      │█████▶");
-        assert_eq!(text(&bar(-0.6, &TEMPERATURE_BAR, true)), "◀█████│      ");
+        assert_eq!(text(&bar(6.55, &HUMIDITY_BAR, true)), "      │█████▸");
+        assert_eq!(text(&bar(-0.6, &TEMPERATURE_BAR, true)), "◂█████│      ");
         for value in [0.01, -0.29, 0.31, -2.0] {
             let width = text(&bar(value, &TEMPERATURE_BAR, true)).chars().count();
             assert_eq!(width, usize::from(BAR_WIDTH), "{value}");

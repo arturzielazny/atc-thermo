@@ -216,12 +216,15 @@ fn status_cell(state: Option<&crate::app::DeviceState>) -> Cell<'static> {
         .saturating_sub(usize::from(state.busy.is_some()));
     match (&state.busy, &state.last) {
         (Some(label), _) if waiting > 0 => {
-            Cell::from(format!("⟳ {label}… (+{waiting} queued)")).yellow()
+            Cell::from(format!("» {label}… (+{waiting} queued)")).yellow()
         }
-        (Some(label), _) => Cell::from(format!("⟳ {label}…")).yellow(),
+        (Some(label), _) => Cell::from(format!("» {label}…")).yellow(),
+        (None, Some(Err(message))) if waiting > 0 => {
+            Cell::from(format!("… {waiting} queued · {message}")).yellow()
+        }
         (None, _) if waiting > 0 => Cell::from(format!("… {waiting} queued")).yellow(),
         (None, Some(Ok(message))) => Cell::from(format!("✓ {message}")).green(),
-        (None, Some(Err(message))) => Cell::from(format!("✗ {message}")).red(),
+        (None, Some(Err(message))) => Cell::from(format!("× {message}")).red(),
         (None, None) => Cell::from(""),
     }
 }

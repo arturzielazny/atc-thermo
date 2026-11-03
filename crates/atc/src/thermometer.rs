@@ -35,11 +35,21 @@ const CMD_CONFIG: u8 = 0x55;
 /// Longest name either firmware stores (THB2: `GAP_DEVICE_NAME_LEN` 21 incl. the 0).
 pub const MAX_NAME_LEN: usize = 20;
 
-const CONNECT_ATTEMPTS: u32 = 4;
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(25);
-const CONNECT_RETRY_PAUSE: Duration = Duration::from_secs(1);
+/// Connection attempts per [`Thermometer::connect`]; callers retry whole jobs later.
+const CONNECT_ATTEMPTS: u32 = 2;
+/// CoreBluetooth never gives up on a connect by itself: it waits for the next advert.
+/// Devices advertise every few seconds, so this covers several of them.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(12);
+/// Pause before the second attempt.
+const CONNECT_RETRY_PAUSE: Duration = Duration::from_secs(2);
+const DISCOVER_TIMEOUT: Duration = Duration::from_secs(15);
+const SUBSCRIBE_TIMEOUT: Duration = Duration::from_secs(8);
+const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
+/// `disconnect` waits for the stack's confirmation, which may never come for a
+/// peripheral that is not (or not yet) connected.
+const DISCONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 /// How long to wait for a device the BLE stack has forgotten to advertise again.
-const DEVICE_APPEAR_TIMEOUT: Duration = Duration::from_secs(30);
+const DEVICE_APPEAR_TIMEOUT: Duration = Duration::from_secs(15);
 /// Writes are unacknowledged, so a command is resent if no answer arrives in time.
 const COMMAND_ATTEMPTS: u32 = 5;
 const REPLY_TIMEOUT: Duration = Duration::from_millis(1500);
@@ -98,11 +108,43 @@ pub async fn find_peripheral(adapter: &Adapter, id: DeviceId) -> Result<Option<P
 /// Fails if the BLE stack does.
 pub async fn disconnect(adapter: &Adapter, id: DeviceId) -> Result<(), Error> {
     if let Some(peripheral) = find_peripheral(adapter, id).await? {
-        if peripheral.is_connected().await? {
-            peripheral.disconnect().await?;
+        let connected = step("checking the connection", DISCONNECT_TIMEOUT, async {
+            Ok(peripheral.is_connected().await?)
+        })
+        .await?;
+        if connected {
+            close(&peripheral, id).await?;
         }
     }
     Ok(())
+}
+
+/// Cancels a connection or a pending connect, waiting at most [`DISCONNECT_TIMEOUT`].
+async fn close(peripheral: &Peripheral, id: DeviceId) -> Result<(), Error> {
+    let started = Instant::now();
+    let result = step("disconnecting", DISCONNECT_TIMEOUT, async {
+        Ok(peripheral.disconnect().await?)
+    })
+    .await;
+    match &result {
+        Ok(()) => log::debug!("{id}: disconnected in {:?}", started.elapsed()),
+        Err(err) => log::warn!("{id}: {err}"),
+    }
+    result
+}
+
+/// Runs one BLE stack call with a deadline, so a lost callback cannot hang a job.
+async fn step<T>(
+    name: &'static str,
+    limit: Duration,
+    call: impl Future<Output = Result<T, Error>>,
+) -> Result<T, Error> {
+    timeout(limit, call)
+        .await
+        .unwrap_or(Err(Error::StepTimeout {
+            step: name,
+            after: limit,
+        }))
 }
 
 /// An open connection to a thermometer running pvvx firmware.
@@ -128,44 +170,49 @@ impl Thermometer {
     /// Fails if the connection cannot be made, the device is not running pvvx
     /// firmware, or the firmware is older than [`Firmware::min_version`].
     pub async fn connect(adapter: &Adapter, id: DeviceId) -> Result<Self, Error> {
-        let mut attempt = 0;
-        let peripheral = loop {
-            let peripheral = wait_until_known(adapter, id).await?;
-            if peripheral.is_connected().await? {
-                break peripheral;
+        let started = Instant::now();
+        let peripheral = open(adapter, id).await?;
+        log::debug!("{id}: connected after {:?}", started.elapsed());
+        match Self::set_up(peripheral.clone(), id).await {
+            Ok(thermometer) => {
+                log::info!(
+                    "{id}: ready in {:?}: {} {} v{:#x}, {:?}",
+                    started.elapsed(),
+                    thermometer.info.family,
+                    thermometer.info.model().unwrap_or("unknown model"),
+                    thermometer.info.firmware,
+                    thermometer.write_type
+                );
+                Ok(thermometer)
             }
-            attempt += 1;
-            let error = match timeout(CONNECT_TIMEOUT, peripheral.connect()).await {
-                Ok(Ok(())) => continue,
-                Ok(Err(err)) => Error::Bluetooth(err),
-                Err(_) => Error::Timeout { command: 0 },
-            };
-            // A timed-out or concurrent attempt may still be pending inside the stack,
-            // which makes the next one fail with "in progress"; cancelling it clears that.
-            let _ = peripheral.disconnect().await;
-            if attempt >= CONNECT_ATTEMPTS {
-                return Err(error);
+            Err(err) => {
+                log::warn!("{id}: setup failed after {:?}: {err}", started.elapsed());
+                let _ = close(&peripheral, id).await;
+                Err(err)
             }
-            tokio::time::sleep(CONNECT_RETRY_PAUSE).await;
-        };
+        }
+    }
 
-        timeout(CONNECT_TIMEOUT, peripheral.discover_services())
-            .await
-            .map_err(|_| Error::Timeout { command: 0 })??;
+    /// Finds the command characteristic, subscribes to it (before any write, so no
+    /// reply is missed) and reads the device id.
+    async fn set_up(peripheral: Peripheral, id: DeviceId) -> Result<Self, Error> {
+        let started = Instant::now();
+        step("discovering services", DISCOVER_TIMEOUT, async {
+            Ok(peripheral.discover_services().await?)
+        })
+        .await?;
+        log::debug!("{id}: services discovered in {:?}", started.elapsed());
         let (family, command) = peripheral
             .characteristics()
             .into_iter()
             .find_map(|c| Firmware::from_command_uuid(c.uuid).map(|f| (f, c)))
             .ok_or(Error::NotPvvx)?;
-        // THB2 declares only write-without-response; ATC both.
-        let write_type = if command
-            .properties
-            .contains(CharPropFlags::WRITE_WITHOUT_RESPONSE)
-        {
-            WriteType::WithoutResponse
-        } else {
-            WriteType::WithResponse
-        };
+        let write_type = write_type_for(command.properties);
+        log::debug!(
+            "{id}: {family} command characteristic {}, properties {:?}, writing {write_type:?}",
+            command.uuid,
+            command.properties
+        );
         let uuid = command.uuid;
         let notifications: Notifications = Box::pin(
             peripheral
@@ -173,7 +220,12 @@ impl Thermometer {
                 .await?
                 .filter_map(move |n| futures::future::ready((n.uuid == uuid).then_some(n.value))),
         );
-        peripheral.subscribe(&command).await?;
+        let subscribing = Instant::now();
+        step("subscribing to notifications", SUBSCRIBE_TIMEOUT, async {
+            Ok(peripheral.subscribe(&command).await?)
+        })
+        .await?;
+        log::debug!("{id}: subscribed in {:?}", subscribing.elapsed());
         let mut thermometer = Self {
             peripheral,
             id,
@@ -495,7 +547,7 @@ impl Thermometer {
     ///
     /// Fails if the BLE stack cannot disconnect.
     pub async fn disconnect(self) -> Result<(), Error> {
-        Ok(self.peripheral.disconnect().await?)
+        close(&self.peripheral, self.id).await
     }
 
     fn require_clock_rate(&self) -> Result<(), Error> {
@@ -515,10 +567,12 @@ impl Thermometer {
 
     async fn write(&mut self, payload: &[u8]) -> Result<(), Error> {
         // `&mut` keeps the futures `Send` without requiring `Thermometer: Sync`.
-        Ok(self
-            .peripheral
-            .write(&self.command, payload, self.write_type)
-            .await?)
+        log::trace!("{}: write {payload:02x?}", self.id);
+        let (peripheral, command, write_type) = (&self.peripheral, &self.command, self.write_type);
+        step("writing a command", WRITE_TIMEOUT, async {
+            Ok(peripheral.write(command, payload, write_type).await?)
+        })
+        .await
     }
 
     /// Sends a command and returns its reply, which must be at least `min_len` bytes.
@@ -541,6 +595,7 @@ impl Thermometer {
             payload.extend(arguments()?);
             self.write(&payload).await?;
             if let Some(reply) = self.next_reply(command, REPLY_TIMEOUT).await? {
+                log::trace!("{}: reply {reply:02x?} (attempt {attempt})", self.id);
                 if attempt > 1 {
                     // The earlier writes may be answered too, and such an answer
                     // would pass for the reply to the next command with this id
@@ -556,6 +611,10 @@ impl Thermometer {
                 return Ok(reply);
             }
         }
+        log::warn!(
+            "{}: no answer to {command:#04x} after {COMMAND_ATTEMPTS} attempts",
+            self.id
+        );
         Err(Error::Timeout { command })
     }
 
@@ -575,6 +634,53 @@ impl Thermometer {
                 Err(_) => return Ok(None),
             }
         }
+    }
+}
+
+/// Connects to `id`, cancelling whatever a timed-out attempt left pending.
+async fn open(adapter: &Adapter, id: DeviceId) -> Result<Peripheral, Error> {
+    let mut attempt = 0;
+    loop {
+        let peripheral = wait_until_known(adapter, id).await?;
+        if step("checking the connection", DISCONNECT_TIMEOUT, async {
+            Ok(peripheral.is_connected().await?)
+        })
+        .await?
+        {
+            return Ok(peripheral);
+        }
+        attempt += 1;
+        let started = Instant::now();
+        let result = step("connecting", CONNECT_TIMEOUT, async {
+            Ok(peripheral.connect().await?)
+        })
+        .await;
+        match result {
+            Ok(()) => return Ok(peripheral),
+            Err(err) => {
+                log::warn!(
+                    "{id}: connect attempt {attempt}/{CONNECT_ATTEMPTS} failed after {:?}: {err}",
+                    started.elapsed()
+                );
+                // A timed-out attempt is still pending inside the stack and would make
+                // the next one fail with "in progress"; cancelling it clears that.
+                let _ = close(&peripheral, id).await;
+                if attempt >= CONNECT_ATTEMPTS {
+                    return Err(err);
+                }
+            }
+        }
+        tokio::time::sleep(CONNECT_RETRY_PAUSE * attempt).await;
+    }
+}
+
+/// THB2 declares only write-without-response; ATC both, and either works there.
+/// Without response is quicker and is what the pvvx web tools use.
+fn write_type_for(properties: CharPropFlags) -> WriteType {
+    if properties.contains(CharPropFlags::WRITE_WITHOUT_RESPONSE) {
+        WriteType::WithoutResponse
+    } else {
+        WriteType::WithResponse
     }
 }
 

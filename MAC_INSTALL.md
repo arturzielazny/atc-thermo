@@ -44,6 +44,31 @@ as on Linux.
 In Ghostty or kitty the chart is a pixel image (handed over as a temporary file).
 Terminal.app and iTerm2 get the braille chart.
 
+If the screen ever shows leftover characters, press `Ctrl-L` to repaint it.
+
+## Debug log
+
+Every run writes `~/.local/share/thermo/thermo.log` (the previous run's is kept as
+`thermo.log.1`): each device job with its steps (connect, service discovery,
+subscribe, commands), how long they took and why they failed. `thermo` prints the
+path when it quits. For more detail, including the Bluetooth library's own messages:
+
+```sh
+THERMO_LOG=debug thermo        # or trace for every command byte; off to disable
+THERMO_LOG_FILE=/tmp/thermo.log thermo
+```
+
+Send that file along with any problem report.
+
+## How device jobs run on macOS
+
+Jobs (log download, identify, sync, settings, calibration) run one device at a time.
+Scanning keeps running during jobs, and a device is connected only within 2 s after
+one of its adverts. A device whose connection fails is put back in the queue (retried
+after 10 s, then 30 s, three tries in all) while the other devices go ahead; the
+table shows `… queued · <reason>; retry in N s`. A device not heard for 30 s counts
+as a failed try ("out of range, or connected to another app").
+
 ## Calibrating in short
 
 1. Put all the thermometers side by side for at least 2 h, away from heat sources.

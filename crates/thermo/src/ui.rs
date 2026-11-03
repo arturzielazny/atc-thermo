@@ -11,7 +11,7 @@ mod table;
 use std::path::{Path, PathBuf};
 
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout};
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui_image::picker::Picker;
@@ -120,6 +120,13 @@ pub fn draw(frame: &mut Frame, app: &App, ui: &mut Ui) {
     let [status, keys] =
         Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).areas(status_area);
     frame.render_widget(status_line(app), status);
+    // Never print into the bottom-right cell: a terminal that draws a glyph there
+    // wider than ratatui thinks wraps and scrolls the whole screen by one row, and
+    // every cell ratatui believes unchanged then shows the row below it.
+    let keys = Rect {
+        width: keys.width.saturating_sub(1),
+        ..keys
+    };
     frame.render_widget(key_help(app), keys);
 
     match &app.mode {
@@ -143,19 +150,19 @@ fn home_relative(path: &Path) -> String {
 
 fn status_line(app: &App) -> Line<'_> {
     let mut spans = match &app.scan_status {
-        ScanStatus::Starting => vec![Span::from(" ◌ starting scan").yellow()],
+        ScanStatus::Starting => vec![Span::from(" ○ starting scan").yellow()],
         ScanStatus::Scanning { adapter } => {
             vec![Span::from(format!(" ● scanning on {adapter}")).green()]
         }
         ScanStatus::Failed(reason) => {
-            vec![Span::from(format!(" ✖ scan failed, retrying: {reason}")).red()]
+            vec![Span::from(format!(" × scan failed, retrying: {reason}")).red()]
         }
     };
     if let Some(dir) = app.store_dir() {
         spans.push(Span::from(format!("   history: {}", home_relative(dir))).dark_gray());
     }
     if let Some(warning) = &app.warning {
-        spans.push(Span::from(format!("   ⚠ {warning}")).yellow());
+        spans.push(Span::from(format!("   ! {warning}")).yellow());
     }
     Line::from(spans)
 }

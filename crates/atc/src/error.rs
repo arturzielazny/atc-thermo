@@ -11,6 +11,12 @@ pub enum Error {
     Bluetooth(btleplug::Error),
     /// The device did not answer a command, even after retries.
     Timeout { command: u8 },
+    /// A step of talking to the BLE stack (connect, service discovery, subscribe,
+    /// write, ...) did not finish in time.
+    StepTimeout {
+        step: &'static str,
+        after: std::time::Duration,
+    },
     /// The connection dropped while waiting for an answer.
     Disconnected,
     /// The device has no pvvx command characteristic.
@@ -32,6 +38,9 @@ impl fmt::Display for Error {
         match self {
             Self::Bluetooth(err) => write!(f, "bluetooth: {err}"),
             Self::Timeout { command } => write!(f, "no answer to command {command:#04x}"),
+            Self::StepTimeout { step, after } => {
+                write!(f, "{step} timed out after {:.0} s", after.as_secs_f64())
+            }
             Self::Disconnected => write!(f, "device disconnected"),
             Self::NotPvvx => write!(
                 f,

@@ -9,8 +9,8 @@ repository. Humans are welcome too.
 [pvvx ATC_MiThermometer](https://github.com/pvvx/ATC_MiThermometer) firmware (tested on
 Xiaomi LYWSD03MMC) with BTHome v2 advertising. It listens to adverts, charts them, stores
 history as CSV, downloads device logs, syncs clocks, changes settings and writes
-calibration coefficients over GATT. Linux only today (BlueZ via the `bluer` crate), behind
-a boundary that takes a backend per platform.
+calibration coefficients over GATT. Linux (BlueZ via the `bluer` crate) and macOS
+(CoreBluetooth via `btleplug`), each a backend behind one boundary.
 
 ## Layout
 
@@ -19,7 +19,7 @@ a boundary that takes a backend per platform.
 | `crates/bthome` | BTHome v2 payload decoder. No dependencies. | portable |
 | `crates/calibration` | Consensus calibration: binning, steady-state selection, Huber fit, outliers, anchoring. No dependencies. Algorithm described in `docs/calibration.md` §4. | portable |
 | `crates/atc` | The firmware's command protocol on characteristic `0x1F1F`: name, MAC, config, coefficients, clock and clock rate, LCD message, log download. `thermometer.rs` speaks it over the `Transport` trait (`transport.rs`); `clock.rs`, `config.rs`, `coefficients.rs`, `log.rs`, `screen.rs` are byte encodings and maths; `device_id.rs` is `DeviceId` (a MAC, or a CoreBluetooth UUID). No Bluetooth I/O. | portable |
-| `crates/ble` | Bluetooth backends behind one API: `Bluetooth::scan` (BTHome adverts → `ScanEvent`), `connect` (→ `Thermometer`), `release`. `bluez.rs` is the Linux backend; each platform's quirks stay inside its backend. | `bluez.rs` uses `bluer` (Linux) |
+| `crates/ble` | Bluetooth backends behind one API: `Bluetooth::scan` (BTHome adverts → `ScanEvent`), `connect` (→ `Thermometer`), `release`. `bluez.rs` is the Linux backend, `macos.rs` the macOS one; each platform's quirks stay inside its backend. | `bluez.rs` uses `bluer` (Linux), `macos.rs` uses `btleplug` (macOS) |
 | `crates/thermo/src/main.rs` | Event loop: keys, scan events, job events, chart frames, 1 s tick. | portable |
 | `crates/thermo/src/app.rs` | All state and key handling, no I/O, unit-tested. | portable |
 | `crates/thermo/src/jobs.rs` | One-at-a-time device worker: connect, run an `Action`, report an `Outcome`. | portable (uses `ble`) |
@@ -27,7 +27,7 @@ a boundary that takes a backend per platform.
 | `crates/thermo/src/store.rs` | `~/.local/share/thermo/`: `YYYY-MM-DD.csv` readings, `calibrations.csv`, `clocks.csv`, `downloads.csv`. | XDG paths |
 | `crates/thermo/src/calibrate.rs` | Glue from history to `calibration`, and from fits to coefficients. | portable |
 | `crates/thermo/src/level.rs` | Signal levelling: per-device median RSSI and the TX power change towards a common target. | portable |
-| `crates/thermo/src/ui/` | ratatui widgets. `chart.rs` axes and layout, `plot.rs` tiny-skia rasterizer, `kitty.rs` kitty graphics protocol via `/dev/shm`, braille fallback in `chart.rs`. | `kitty.rs` assumes `/dev/shm` |
+| `crates/thermo/src/ui/` | ratatui widgets. `chart.rs` axes and layout, `plot.rs` tiny-skia rasterizer, `kitty.rs` kitty graphics protocol via `/dev/shm` (`t=s`) or, where that is missing (macOS), a temp file (`t=t`), braille fallback in `chart.rs`. | portable |
 | `android/` | Android app (Kotlin, Compose): ports of `bthome`, `calibration`, the `atc` encodings and `app.rs`, plus an Android GATT client and scanner. See `android/README.md`. | Android |
 | `scripts/` | The original Python prototypes (`dbus-python`). Not used by the app. | Linux |
 | `site/` | GitHub Pages site, deployed by `.github/workflows/pages.yml`. Static HTML, no build step. | — |
@@ -50,9 +50,9 @@ cd android && ./gradlew testDebugUnitTest      # JVM tests, no phone needed
 cd android && ./gradlew installDebug           # needs a phone with USB debugging
 ```
 
-Build dependencies: Rust ≥ 1.90 (`rust-version` in `Cargo.toml`, checked in CI),
-`pkg-config` and the libdbus headers (`libdbus-1-dev` on Debian/Ubuntu, `dbus-devel` on
-Fedora, `dbus` on Arch).
+Build dependencies: Rust ≥ 1.90 (`rust-version` in `Cargo.toml`, checked in CI); on
+Linux also `pkg-config` and the libdbus headers (`libdbus-1-dev` on Debian/Ubuntu,
+`dbus-devel` on Fedora, `dbus` on Arch). macOS needs only the Command Line Tools.
 
 ## Rules
 
@@ -94,11 +94,19 @@ Fedora, `dbus` on Arch).
 - A connected thermometer stops advertising; BlueZ pauses discovery during connects.
   The BlueZ backend restarts discovery after jobs finish (`ScanControl::Resume`) and
   whenever BlueZ ends it by itself.
+- CoreBluetooth only connects peripherals its own central has scanned, forgets them on
+  disconnect until the next advert, and keeps a connect request pending until the
+  device's next connectable advert. So the macOS backend shares one central between
+  scan and connect, keeps scanning during jobs (`ScanControl::Pause` only stops
+  identifications), waits for an advert in the last 60 s before connecting, and cancels
+  a connect request it gives up on. Every btleplug call has its own timeout
+  (`disconnect` can otherwise wait forever for a callback).
 
 ## Porting to another OS
 
 The protocol (`atc`), the app and the job worker are platform-independent; a port adds
-one backend to `crates/ble` and keeps the tests passing.
+one backend to `crates/ble` and keeps the tests passing. macOS (`macos.rs`) follows
+these steps and is the closest example for another btleplug platform.
 
 1. **Backend.** Add `crates/ble/src/<platform>.rs` behind a `cfg` in `ble/src/lib.rs`,
    with the same API as `bluez.rs`: a `Bluetooth` handle (`Default`, `Clone`) with

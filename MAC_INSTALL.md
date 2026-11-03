@@ -63,11 +63,20 @@ Send that file along with any problem report.
 ## How device jobs run on macOS
 
 Jobs (log download, identify, sync, settings, calibration) run one device at a time.
-Scanning keeps running during jobs, and a device is connected only within 2 s after
-one of its adverts. A device whose connection fails is put back in the queue (retried
-after 10 s, then 30 s, three tries in all) while the other devices go ahead; the
-table shows `… queued · <reason>; retry in N s`. A device not heard for 30 s counts
-as a failed try ("out of range, or connected to another app").
+Scanning keeps running during jobs. A job starts once its device was heard in the last
+60 s (120 s for ATC devices). macOS then keeps one connect request pending for up to
+30 s; it goes out on the device's next connectable advert (every 5 s on THB1, 2.5 s
+on LYWSD03MMC with default settings), so weak devices can take a while. A device
+whose connection fails is put back in the queue (retried after 10 s, then 30 s,
+three tries in all) while the other devices go ahead; the table shows
+`… queued · <reason>; retry in N s`. A device silent for its whole window counts as
+a failed try ("out of range, or connected to another app"). Set
+`THERMO_ADVERT_WINDOW=<seconds>` to change the 60 s window (ATC gets twice that).
+
+If a THB1 shows `connecting timed out …; press the device button to connect faster`,
+press its button briefly: the THB2 firmware then advertises every 1.5 s for 60 s.
+Moving it closer or raising its TX power may help too (in the first real-hardware
+log, connects timed out at about −82 and −66 dBm).
 
 ## Calibrating in short
 

@@ -148,7 +148,6 @@ async fn scan(
                     let Ok(peripheral) = adapter.peripheral(&id).await else { continue };
                     let properties = peripheral.properties().await.ok().flatten().unwrap_or_default();
                     let address = atc::device_id(&peripheral);
-                    ble.heard(address);
                     let entry = known.entry(id).or_default();
                     if let Some(rssi) = properties.rssi {
                         entry.rssi = Some(rssi);
@@ -156,9 +155,11 @@ async fn scan(
                     if let Some(local) = properties.local_name.or(properties.advertisement_name) {
                         entry.name = Some(local);
                     }
+                    let name = entry.name.clone().unwrap_or_else(|| address.short());
+                    ble.heard(address, &name);
                     let advert = Advert {
                         address,
-                        name: entry.name.clone().unwrap_or_else(|| address.short()),
+                        name,
                         rssi: entry.rssi,
                         payload,
                         received: SystemTime::now(),

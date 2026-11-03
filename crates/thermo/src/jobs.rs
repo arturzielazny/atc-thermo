@@ -1,11 +1,12 @@
 //! Background worker that connects to devices one at a time and runs commands on them.
 
 use std::collections::VecDeque;
+use std::sync::OnceLock;
 use std::time::{Duration, Instant, SystemTime};
 
 use atc::{
-    Adapter, ClockReading, Coefficients, Config, Correction, DeviceId, ScreenMessage, Smiley,
-    Thermometer, TxPower,
+    Adapter, ClockReading, Coefficients, Config, Correction, DeviceId, Firmware, ScreenMessage,
+    Smiley, Thermometer, TxPower,
 };
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
@@ -14,11 +15,17 @@ use crate::devices::LoggedSample;
 
 /// Longest a single job may take, including connecting.
 const JOB_TIMEOUT: Duration = Duration::from_secs(180);
-/// Where scanning goes on during jobs, a device is connected to only this soon after
-/// one of its adverts: it is listening then, and certainly not connected elsewhere.
-const FRESH_ADVERT: Duration = Duration::from_secs(2);
-/// How long a job waits for its device to advertise before counting as failed.
-const ADVERT_WAIT: Duration = Duration::from_secs(30);
+/// Where scanning goes on during jobs, a job starts only once its device advertised
+/// within this window, and fails as unheard once it was due this long without one.
+/// The connect request itself waits for the next advert, so the window only has to
+/// show the device is around; `THERMO_ADVERT_WINDOW` (seconds) overrides it.
+const ADVERT_WINDOW: Duration = Duration::from_secs(60);
+/// ATC devices are heard less reliably by CoreBluetooth while it connects to others,
+/// so they get this many windows.
+const ATC_WINDOWS: u32 = 2;
+/// Status hint for THB2 devices whose connect timed out: a short press switches
+/// them to 1.5 s adverts for 60 s (`increase_advertising_frequency` in `thb2_main.c`).
+const THB_CONNECT_HINT: &str = "press the device button to connect faster";
 /// How often the worker checks for fresh adverts while jobs wait.
 const POLL: Duration = Duration::from_millis(200);
 /// Tries per job whose connection failed. In between, other devices' jobs run.
@@ -194,20 +201,52 @@ struct Pending {
 enum Pick {
     /// Start the job at this queue index.
     Run(usize),
-    /// The job at this index waited [`ADVERT_WAIT`] without hearing its device.
+    /// The job at this index was due for its device's advert window without hearing
+    /// the device in it.
     Unheard(usize),
     /// Nothing can start yet.
     Wait,
 }
 
+/// [`ADVERT_WINDOW`], or `THERMO_ADVERT_WINDOW` seconds if set.
+fn base_advert_window() -> Duration {
+    static WINDOW: OnceLock<Duration> = OnceLock::new();
+    *WINDOW.get_or_init(|| {
+        let Ok(value) = std::env::var("THERMO_ADVERT_WINDOW") else {
+            return ADVERT_WINDOW;
+        };
+        match value.trim().parse::<u64>() {
+            Ok(secs) if secs > 0 => {
+                log::info!("advert window {secs} s (THERMO_ADVERT_WINDOW)");
+                Duration::from_secs(secs)
+            }
+            _ => {
+                log::warn!("ignoring THERMO_ADVERT_WINDOW={value:?}: not a positive number");
+                ADVERT_WINDOW
+            }
+        }
+    })
+}
+
+/// How recent an advert must be for a job on a device of `firmware` to start, and
+/// how long the job waits for one.
+fn advert_window(base: Duration, firmware: Option<Firmware>) -> Duration {
+    match firmware {
+        Some(Firmware::Atc) => base * ATC_WINDOWS,
+        _ => base,
+    }
+}
+
 /// Picks the next job: the first in the queue that is due, whose device has no
 /// earlier job waiting (jobs for one device keep their order), and, when scanning
-/// goes on during jobs, whose device advertised within [`FRESH_ADVERT`].
+/// goes on during jobs, whose device advertised within its window. A job whose
+/// device stayed silent for a whole window after it fell due is reported unheard;
+/// time spent on other devices' jobs counts only if the device was silent then too.
 fn pick(
     queue: &VecDeque<Pending>,
     now: Instant,
     scan_during_jobs: bool,
-    last_heard: impl Fn(DeviceId) -> Option<Instant>,
+    heard: impl Fn(DeviceId) -> (Option<Instant>, Duration),
 ) -> Pick {
     let mut seen = Vec::new();
     let mut unheard = None;
@@ -223,11 +262,11 @@ fn pick(
         if !scan_during_jobs {
             return Pick::Run(i);
         }
-        let heard = last_heard(address);
-        if heard.is_some_and(|at| now.saturating_duration_since(at) <= FRESH_ADVERT) {
+        let (last, window) = heard(address);
+        if last.is_some_and(|at| now.saturating_duration_since(at) <= window) {
             return Pick::Run(i);
         }
-        if unheard.is_none() && now.saturating_duration_since(pending.not_before) >= ADVERT_WAIT {
+        if unheard.is_none() && now.saturating_duration_since(pending.not_before) >= window {
             unheard = Some(i);
         }
     }
@@ -240,6 +279,8 @@ struct Failure {
     message: String,
     /// Failed before the action wrote anything, so trying again is safe.
     retryable: bool,
+    /// The connect request was never taken up.
+    connect_timeout: bool,
 }
 
 fn queued(job: Job) -> Pending {
@@ -265,8 +306,9 @@ async fn run(ble: Ble, mut jobs: UnboundedReceiver<Job>, events: UnboundedSender
             }
             continue;
         }
+        let base = base_advert_window();
         let picked = pick(&queue, Instant::now(), !PAUSE_SCAN_FOR_JOBS, |id| {
-            ble.last_heard(id)
+            (ble.last_heard(id), advert_window(base, ble.firmware(id)))
         });
         let (index, unheard) = match picked {
             Pick::Run(i) => (i, false),
@@ -321,6 +363,7 @@ async fn attempt(
                 "{silent}: out of range, or connected to another app (Home Assistant?)"
             ),
             retryable: true,
+            connect_timeout: false,
         })
     } else {
         log::info!(
@@ -334,13 +377,20 @@ async fn attempt(
         );
         events.send(JobEvent::Started { address, label }).ok()?;
         match ble.adapter().await {
-            Ok(adapter) => execute_with_timeout(&adapter, pending.job.clone()).await,
+            Ok(adapter) => execute_with_timeout(ble, &adapter, pending.job.clone()).await,
             Err(err) => Err(Failure {
                 message: format!("no Bluetooth adapter: {err}"),
                 retryable: false,
+                connect_timeout: false,
             }),
         }
     };
+    let result = result.map_err(|mut failure| {
+        if failure.connect_timeout && ble.firmware(address) == Some(Firmware::Thb) {
+            failure.message = format!("{}; {THB_CONNECT_HINT}", failure.message);
+        }
+        failure
+    });
     let elapsed = started.elapsed();
     Some(match result {
         Ok(outcome) => {
@@ -379,9 +429,9 @@ async fn attempt(
     })
 }
 
-async fn execute_with_timeout(adapter: &Adapter, job: Job) -> Result<Outcome, Failure> {
+async fn execute_with_timeout(ble: &Ble, adapter: &Adapter, job: Job) -> Result<Outcome, Failure> {
     let address = job.address;
-    if let Ok(result) = tokio::time::timeout(JOB_TIMEOUT, execute(adapter, job)).await {
+    if let Ok(result) = tokio::time::timeout(JOB_TIMEOUT, execute(ble, adapter, job)).await {
         return result;
     }
     // The cancelled job may have left the connection open.
@@ -389,10 +439,11 @@ async fn execute_with_timeout(adapter: &Adapter, job: Job) -> Result<Outcome, Fa
     Err(Failure {
         message: format!("timed out after {} s", JOB_TIMEOUT.as_secs()),
         retryable: false,
+        connect_timeout: false,
     })
 }
 
-async fn execute(adapter: &Adapter, job: Job) -> Result<Outcome, Failure> {
+async fn execute(ble: &Ble, adapter: &Adapter, job: Job) -> Result<Outcome, Failure> {
     let mut thermometer = match Thermometer::connect(adapter, job.address).await {
         Ok(thermometer) => thermometer,
         Err(err) => {
@@ -408,9 +459,11 @@ async fn execute(adapter: &Adapter, job: Job) -> Result<Outcome, Failure> {
             return Err(Failure {
                 message: err.to_string(),
                 retryable,
+                connect_timeout: err.is_connect_timeout(),
             });
         }
     };
+    ble.learnt(job.address, thermometer.firmware());
     let result = perform(&mut thermometer, job.action).await;
     if let Err(err) = &result {
         log::warn!("{}: action failed: {err}", job.address);
@@ -420,6 +473,7 @@ async fn execute(adapter: &Adapter, job: Job) -> Result<Outcome, Failure> {
     result.map_err(|e| Failure {
         message: e.to_string(),
         retryable: false,
+        connect_timeout: false,
     })
 }
 
@@ -669,18 +723,41 @@ mod tests {
     const A: DeviceId = DeviceId::Mac([0xa4, 0xc1, 0x38, 0x27, 0xc6, 0x22]);
     const B: DeviceId = DeviceId::Mac([0x38, 0x1f, 0x8d, 0x26, 0x70, 0x5b]);
 
+    const W: Duration = ADVERT_WINDOW;
+
     #[test]
-    fn picks_a_device_that_just_advertised() {
+    fn picks_a_device_heard_within_its_window() {
         let now = Instant::now();
         let queue: VecDeque<_> = [pending(A, now), pending(B, now)].into();
-        let heard = |id| (id == B).then_some(now);
-        assert_eq!(pick(&queue, now, true, heard), Pick::Run(1));
-        // Without fresh adverts nothing starts, until the wait runs out.
-        assert_eq!(pick(&queue, now, true, |_| None), Pick::Wait);
-        let later = now + ADVERT_WAIT;
-        assert_eq!(pick(&queue, later, true, |_| None), Pick::Unheard(0));
+        let only_b = |id| ((id == B).then_some(now), W);
+        assert_eq!(pick(&queue, now, true, only_b), Pick::Run(1));
+        // Heard a while ago, but within the window: the connect waits for the next advert.
+        let earlier = |_| (Some(now), W);
+        assert_eq!(pick(&queue, now + W, true, earlier), Pick::Run(0));
+        // Without adverts nothing starts, until a whole window passed.
+        assert_eq!(pick(&queue, now, true, |_| (None, W)), Pick::Wait);
+        assert_eq!(pick(&queue, now + W, true, |_| (None, W)), Pick::Unheard(0));
         // BlueZ: discovery is off during jobs, so adverts don't matter.
-        assert_eq!(pick(&queue, now, false, |_| None), Pick::Run(0));
+        assert_eq!(pick(&queue, now, false, |_| (None, W)), Pick::Run(0));
+    }
+
+    #[test]
+    fn busy_time_counts_as_unheard_only_if_the_device_was_silent() {
+        let due = Instant::now();
+        let queue: VecDeque<_> = [pending(A, due)].into();
+        // The worker was busy for two windows; the device spoke a moment ago.
+        let now = due + 2 * W;
+        let recent = |_| (Some(due + W + Duration::from_secs(48)), W);
+        assert_eq!(pick(&queue, now, true, recent), Pick::Run(0));
+        let long_ago = |_| (Some(due), W);
+        assert_eq!(pick(&queue, now, true, long_ago), Pick::Unheard(0));
+    }
+
+    #[test]
+    fn atc_devices_get_a_longer_window() {
+        assert_eq!(advert_window(W, Some(Firmware::Thb)), W);
+        assert_eq!(advert_window(W, None), W);
+        assert_eq!(advert_window(W, Some(Firmware::Atc)), W * ATC_WINDOWS);
     }
 
     #[test]
@@ -689,8 +766,8 @@ mod tests {
         let later = now + Duration::from_secs(10);
         // A's first job is deferred: its second must not overtake it, B goes ahead.
         let queue: VecDeque<_> = [pending(A, later), pending(A, now), pending(B, now)].into();
-        assert_eq!(pick(&queue, now, true, |_| Some(now)), Pick::Run(2));
-        assert_eq!(pick(&queue, now, false, |_| None), Pick::Run(2));
-        assert_eq!(pick(&queue, later, false, |_| None), Pick::Run(0));
+        assert_eq!(pick(&queue, now, true, |_| (Some(now), W)), Pick::Run(2));
+        assert_eq!(pick(&queue, now, false, |_| (None, W)), Pick::Run(2));
+        assert_eq!(pick(&queue, later, false, |_| (None, W)), Pick::Run(0));
     }
 }

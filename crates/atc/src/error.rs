@@ -33,6 +33,24 @@ pub enum Error {
     InvalidValue(String),
 }
 
+/// [`Error::StepTimeout`] step name of the connect request.
+pub(crate) const CONNECTING: &str = "connecting";
+
+impl Error {
+    /// The device never took the connection request: it is far away, or its
+    /// connectable adverts are rare or lost.
+    #[must_use]
+    pub fn is_connect_timeout(&self) -> bool {
+        matches!(
+            self,
+            Self::StepTimeout {
+                step: CONNECTING,
+                ..
+            }
+        )
+    }
+}
+
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

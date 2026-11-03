@@ -35,21 +35,21 @@ const CMD_CONFIG: u8 = 0x55;
 /// Longest name either firmware stores (THB2: `GAP_DEVICE_NAME_LEN` 21 incl. the 0).
 pub const MAX_NAME_LEN: usize = 20;
 
-/// Connection attempts per [`Thermometer::connect`]; callers retry whole jobs later.
-const CONNECT_ATTEMPTS: u32 = 2;
-/// CoreBluetooth never gives up on a connect by itself: it waits for the next advert.
-/// Devices advertise every few seconds, so this covers several of them.
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(12);
-/// Pause before the second attempt.
-const CONNECT_RETRY_PAUSE: Duration = Duration::from_secs(2);
+/// CoreBluetooth never gives up on a connect by itself: it keeps the request pending
+/// and sends it on the device's next connectable advert. Both firmwares advertise
+/// connectable every interval (THB2 default 5 s, ATC 2.5 s), but at weak signal many
+/// of those are lost, so the request is left pending this long, once; cancelling and
+/// asking again only restarts the wait. Callers retry whole jobs later.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 const DISCOVER_TIMEOUT: Duration = Duration::from_secs(15);
 const SUBSCRIBE_TIMEOUT: Duration = Duration::from_secs(8);
 const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 /// `disconnect` waits for the stack's confirmation, which may never come for a
 /// peripheral that is not (or not yet) connected.
 const DISCONNECT_TIMEOUT: Duration = Duration::from_secs(5);
-/// How long to wait for a device the BLE stack has forgotten to advertise again.
-const DEVICE_APPEAR_TIMEOUT: Duration = Duration::from_secs(15);
+/// How long to wait for a device the BLE stack has forgotten to advertise again;
+/// several advert intervals, since weak devices are heard only now and then.
+const DEVICE_APPEAR_TIMEOUT: Duration = Duration::from_secs(30);
 /// Writes are unacknowledged, so a command is resent if no answer arrives in time.
 const COMMAND_ATTEMPTS: u32 = 5;
 const REPLY_TIMEOUT: Duration = Duration::from_millis(1500);
@@ -637,41 +637,30 @@ impl Thermometer {
     }
 }
 
-/// Connects to `id`, cancelling whatever a timed-out attempt left pending.
+/// Connects to `id` with one request left pending up to [`CONNECT_TIMEOUT`]; if it
+/// times out the pending request is cancelled.
 async fn open(adapter: &Adapter, id: DeviceId) -> Result<Peripheral, Error> {
-    let mut attempt = 0;
-    loop {
-        let peripheral = wait_until_known(adapter, id).await?;
-        if step("checking the connection", DISCONNECT_TIMEOUT, async {
-            Ok(peripheral.is_connected().await?)
-        })
-        .await?
-        {
-            return Ok(peripheral);
-        }
-        attempt += 1;
-        let started = Instant::now();
-        let result = step("connecting", CONNECT_TIMEOUT, async {
-            Ok(peripheral.connect().await?)
-        })
-        .await;
-        match result {
-            Ok(()) => return Ok(peripheral),
-            Err(err) => {
-                log::warn!(
-                    "{id}: connect attempt {attempt}/{CONNECT_ATTEMPTS} failed after {:?}: {err}",
-                    started.elapsed()
-                );
-                // A timed-out attempt is still pending inside the stack and would make
-                // the next one fail with "in progress"; cancelling it clears that.
-                let _ = close(&peripheral, id).await;
-                if attempt >= CONNECT_ATTEMPTS {
-                    return Err(err);
-                }
-            }
-        }
-        tokio::time::sleep(CONNECT_RETRY_PAUSE * attempt).await;
+    let peripheral = wait_until_known(adapter, id).await?;
+    if step("checking the connection", DISCONNECT_TIMEOUT, async {
+        Ok(peripheral.is_connected().await?)
+    })
+    .await?
+    {
+        return Ok(peripheral);
     }
+    let started = Instant::now();
+    let result = step(crate::error::CONNECTING, CONNECT_TIMEOUT, async {
+        Ok(peripheral.connect().await?)
+    })
+    .await;
+    if let Err(err) = result {
+        log::warn!("{id}: connect failed after {:?}: {err}", started.elapsed());
+        // A timed-out request is still pending inside the stack and would make the
+        // next one fail with "in progress"; cancelling it clears that.
+        let _ = close(&peripheral, id).await;
+        return Err(err);
+    }
+    Ok(peripheral)
 }
 
 /// THB2 declares only write-without-response; ATC both, and either works there.

@@ -331,7 +331,7 @@ async fn run(ble: Ble, mut jobs: UnboundedReceiver<Job>, events: UnboundedSender
         let Some(pending) = queue.remove(index) else {
             continue;
         };
-        let Some(event) = attempt(&ble, &events, &mut queue, pending, unheard).await else {
+        let Some(event) = attempt(&ble, &events, &mut queue, index, pending, unheard).await else {
             return;
         };
         if events.send(event).is_err() {
@@ -340,12 +340,20 @@ async fn run(ble: Ble, mut jobs: UnboundedReceiver<Job>, events: UnboundedSender
     }
 }
 
-/// Tries `pending` once; a retryable failure puts it back at the end of `queue`.
-/// Returns the event to report, or `None` if the app is gone.
+/// Puts a job to be retried back where it was taken from, at `index`. [`pick`] skips
+/// it until it is due and holds back its device's later jobs meanwhile, so those keep
+/// their order while other devices go first.
+fn requeue(queue: &mut VecDeque<Pending>, index: usize, pending: Pending) {
+    queue.insert(index.min(queue.len()), pending);
+}
+
+/// Tries `pending`, taken from `queue` at `index`, once; a retryable failure puts it
+/// back there. Returns the event to report, or `None` if the app is gone.
 async fn attempt(
     ble: &Ble,
     events: &UnboundedSender<JobEvent>,
     queue: &mut VecDeque<Pending>,
+    index: usize,
     mut pending: Pending,
     unheard: bool,
 ) -> Option<JobEvent> {
@@ -408,8 +416,7 @@ async fn attempt(
                 failure.message
             );
             pending.not_before = Instant::now() + retry_in;
-            // Behind everything else, so other devices go first.
-            queue.push_back(pending);
+            requeue(queue, index, pending);
             JobEvent::Retrying {
                 address,
                 error: failure.message,
@@ -769,5 +776,24 @@ mod tests {
         assert_eq!(pick(&queue, now, true, |_| (Some(now), W)), Pick::Run(2));
         assert_eq!(pick(&queue, now, false, |_| (None, W)), Pick::Run(2));
         assert_eq!(pick(&queue, later, false, |_| (None, W)), Pick::Run(0));
+    }
+
+    #[test]
+    fn retried_job_stays_ahead_of_its_devices_later_jobs() {
+        let now = Instant::now();
+        let mut queue: VecDeque<_> = [pending(A, now), pending(A, now), pending(B, now)].into();
+        let mut first = queue.remove(0).expect("queued");
+        first.tries = 1;
+        first.not_before = now + RETRY_BACKOFF[0];
+        requeue(&mut queue, 0, first);
+        let heard = |_| (Some(now), W);
+        // A's second job waits for the retried first one; B goes ahead.
+        assert_eq!(pick(&queue, now, true, heard), Pick::Run(2));
+        assert_eq!(pick(&queue, now, false, heard), Pick::Run(2));
+        let due = now + RETRY_BACKOFF[0];
+        let Pick::Run(i) = pick(&queue, due, true, |_| (Some(due), W)) else {
+            panic!("a job is due");
+        };
+        assert_eq!(queue[i].tries, 1);
     }
 }

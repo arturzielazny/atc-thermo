@@ -107,6 +107,11 @@ figure.shot { margin: 0; }
 figure.shot img { border-radius: 12px; border: 1px solid var(--line); box-shadow: 0 20px 50px -20px rgb(0 0 0 / 0.45); width: 100%; }
 figure.shot figcaption { color: var(--muted); font-size: 0.9rem; margin-top: 0.7rem; }
 
+.phones { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1.5rem; max-width: 900px; margin: 0 auto; }
+@media (max-width: 720px) { .phones { grid-template-columns: repeat(3, 70%); overflow-x: auto; scroll-snap-type: x mandatory; padding-bottom: 1rem; } .phones figure { scroll-snap-align: center; } }
+.phones img { border-radius: 22px; }
+.phone-notes { margin-top: 2.5rem; }
+
 .tabs { display: flex; gap: 0.4rem; margin-bottom: 1rem; flex-wrap: wrap; }
 .tabs button {
   font: inherit; font-size: 0.92rem; padding: 0.4rem 0.9rem; border-radius: 999px;

@@ -3,9 +3,9 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>thermo · Calibrate Xiaomi LYWSD03MMC thermometers on Linux</title>
-<meta name="description" content="Free, open-source Linux terminal dashboard for Xiaomi LYWSD03MMC and other pvvx ATC_MiThermometer BLE thermometers: live BTHome v2 readings, charts, log download, clock sync and automatic calibration that writes corrections into every device.">
-<meta name="keywords" content="LYWSD03MMC, LYWSD03MMC calibration, Xiaomi thermometer calibration, pvvx ATC_MiThermometer, ATC firmware, BTHome v2, Bluetooth thermometer Linux, BlueZ, Home Assistant BTHome, humidity sensor calibration, Mi Temperature and Humidity Monitor 2, Rust TUI">
+<title>thermo · Calibrate Xiaomi LYWSD03MMC thermometers on Linux and Android</title>
+<meta name="description" content="Free, open-source Linux terminal dashboard and Android app for Xiaomi LYWSD03MMC and other pvvx ATC_MiThermometer BLE thermometers: live BTHome v2 readings, charts, log download, clock sync and automatic calibration that writes corrections into every device.">
+<meta name="keywords" content="LYWSD03MMC, LYWSD03MMC calibration, Xiaomi thermometer calibration, pvvx ATC_MiThermometer, ATC firmware, BTHome v2, Bluetooth thermometer Linux, BlueZ, Home Assistant BTHome, humidity sensor calibration, Mi Temperature and Humidity Monitor 2, Rust TUI, LYWSD03MMC Android app">
 <link rel="canonical" href="https://arturzielazny.github.io/atc-thermo/">
 <meta name="theme-color" content="#14151e">
 <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
@@ -13,7 +13,7 @@
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="thermo">
 <meta property="og:title" content="thermo · make every Xiaomi thermometer in the house agree">
-<meta property="og:description" content="Linux dashboard and automatic calibration for LYWSD03MMC thermometers on pvvx firmware. Live BTHome readings, log download, clock sync, one-key calibration.">
+<meta property="og:description" content="Linux dashboard, Android app and automatic calibration for LYWSD03MMC thermometers on pvvx firmware. Live BTHome readings, log download, clock sync, one-key calibration.">
 <meta property="og:url" content="https://arturzielazny.github.io/atc-thermo/">
 <meta property="og:image" content="https://arturzielazny.github.io/atc-thermo/assets/og.png">
 <meta property="og:image:width" content="1200">
@@ -26,12 +26,12 @@
   "name": "thermo",
   "alternateName": "atc-thermo",
   "applicationCategory": "UtilitiesApplication",
-  "operatingSystem": "Linux",
-  "description": "Terminal dashboard and consensus calibration for Xiaomi LYWSD03MMC and other BLE thermometers running the pvvx ATC_MiThermometer firmware with BTHome v2.",
+  "operatingSystem": "Linux, Android",
+  "description": "Terminal dashboard, Android app and consensus calibration for Xiaomi LYWSD03MMC and other BLE thermometers running the pvvx ATC_MiThermometer firmware with BTHome v2.",
   "url": "https://arturzielazny.github.io/atc-thermo/",
   "downloadUrl": "https://github.com/arturzielazny/atc-thermo",
   "codeRepository": "https://github.com/arturzielazny/atc-thermo",
-  "programmingLanguage": "Rust",
+  "programmingLanguage": ["Rust", "Kotlin"],
   "license": "https://opensource.org/licenses/MIT",
   "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
   "screenshot": "https://arturzielazny.github.io/atc-thermo/assets/temperature.webp"
@@ -48,8 +48,8 @@
       "acceptedAnswer": { "@type": "Answer", "text": "Yes. The corrections are stored in the thermometer itself, so every BTHome receiver, including Home Assistant's BTHome integration and ESPHome Bluetooth proxies, receives the corrected values. thermo only listens to adverts and can run alongside Home Assistant." } },
     { "@type": "Question", "name": "Which devices are supported?",
       "acceptedAnswer": { "@type": "Answer", "text": "Tested with eight Xiaomi LYWSD03MMC (Mi Temperature and Humidity Monitor 2) on pvvx firmware 5.9, with both sensor variants. Other devices running the pvvx ATC_MiThermometer firmware with BTHome v2 advertising should work but are untested." } },
-    { "@type": "Question", "name": "Does it run on macOS, Windows or a Raspberry Pi?",
-      "acceptedAnswer": { "@type": "Answer", "text": "It runs on any Linux with BlueZ, including a Raspberry Pi. macOS and Windows need the Bluetooth layer swapped; the BTHome decoder and the calibration maths are plain portable Rust. The project ships instructions for doing the port with an AI coding agent." } }
+    { "@type": "Question", "name": "Does it run on macOS, Windows, a Raspberry Pi or a phone?",
+      "acceptedAnswer": { "@type": "Answer", "text": "It runs on any Linux with BlueZ, including a Raspberry Pi, and there is an Android app with the same features, built from the same repository. macOS and Windows need the Bluetooth layer swapped; the BTHome decoder and the calibration maths are plain portable Rust. The project ships instructions for doing the port with an AI coding agent." } }
   ]
 }
 </script>
@@ -65,6 +65,7 @@
     <nav class="links" aria-label="Main">
       <a href="#features" class="opt">Features</a>
       <a href="#install">Install</a>
+      <a href="#android" class="opt">Android</a>
       <a href="calibration.html">Calibration guide</a>
       <a href="agents.html" class="opt">AI agents</a>
       <a href="https://github.com/arturzielazny/atc-thermo">GitHub</a>
@@ -76,12 +77,13 @@
 <section class="hero">
   <div class="wrap grid">
     <div>
-      <p class="eyebrow">Open source · Linux · Rust</p>
+      <p class="eyebrow">Open source · Linux · Android</p>
       <h1>Make every Xiaomi thermometer in the house agree.</h1>
       <p class="lead"><strong>thermo</strong> is a terminal dashboard for <strong>LYWSD03MMC</strong> and other thermometers running the
         <a href="https://github.com/pvvx/ATC_MiThermometer">pvvx ATC_MiThermometer</a> firmware. It charts their live
         <strong>BTHome v2</strong> readings and fills gaps from each device's own log. Put them side by side, press <kbd>c</kbd>,
-        and it calibrates them all at once, writing the corrections into the thermometers. Home Assistant sees the fixed values too.</p>
+        and it calibrates them all at once, writing the corrections into the thermometers. Home Assistant sees the fixed values too.
+        The <a href="#android">Android app</a> does the same from your phone.</p>
       <div class="cta">
         <a class="btn primary" href="#install">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 17l6-5-6-5M12 19h8"/></svg>
@@ -310,7 +312,33 @@ thermo</code></pre>
   </div>
 </section>
 
-<section class="alt" aria-labelledby="agents">
+<section id="android" class="alt" aria-labelledby="andr">
+  <div class="wrap">
+    <h2 id="andr">On your phone too</h2>
+    <p class="section-lead">The Android app does what the terminal does, laid out for touch. A card per thermometer, a chart you can scrub with a finger, long-press to select several devices for clock sync, log download or settings. Calibration and signal levelling get sliders instead of keys, and every write to a thermometer asks first.</p>
+    <div class="phones">
+      <figure class="shot"><img src="assets/android-dashboard.webp" width="540" height="1085" alt="thermo Android dashboard: temperature chart of two thermometers with a touch tooltip, time span chips, and a card per device with temperature, humidity, battery and signal" loading="lazy"><figcaption>Dashboard: drag across the chart to read every device at one moment.</figcaption></figure>
+      <figure class="shot"><img src="assets/android-calibration.webp" width="540" height="1085" alt="thermo Android calibration screen: device chips, a 13.5 hour chart with a window slider below it, and a summary of steady data, phases and disagreement before and after" loading="lazy"><figcaption>Calibration: pick devices, drag the window over the steady hours. Shown with the app's simulated demo devices.</figcaption></figure>
+      <figure class="shot"><img src="assets/android-levelling.webp" width="540" height="1085" alt="thermo Android signal levelling screen: a target of −70 dBm, per-device progress and planned TX power change, and a signal strength chart" loading="lazy"><figcaption>Signal levelling: listens, then proposes a TX power change per device.</figcaption></figure>
+    </div>
+    <div class="features phone-notes">
+      <div class="card">
+        <h3>Keeps recording</h3>
+        <p>With the app closed it records in the background behind a notification with a Stop button, and fills gaps from the device logs when it hears a thermometer again. A home-screen widget shows the latest readings.</p>
+      </div>
+      <div class="card">
+        <h3>Same files, same maths</h3>
+        <p>History is the same daily CSV as on the desktop, so it can be shared to a computer or imported from one. The calibration is a port of the Rust code and gives the same result on the same data.</p>
+      </div>
+      <div class="card">
+        <h3>Build it yourself</h3>
+        <p>No store listing yet. Needs Android 8 or newer, JDK 21 and the Android SDK; open <code>android/</code> in Android Studio, or run <code>./gradlew installDebug</code> there with the phone on USB. Reading has been tested on a Galaxy S21; writing from the phone is newer than on the desktop.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section aria-labelledby="agents">
   <div class="wrap split">
     <!-- Symbolic: one codebase branching to different targets. -->
     <svg class="ill" viewBox="0 0 520 300" role="img" aria-labelledby="ag-t">
@@ -340,13 +368,13 @@ thermo</code></pre>
     <div>
       <h2 id="ag">Not quite what you need? Have an agent rewrite it.</h2>
       <p>thermo is written to be changed by AI coding agents such as Claude Code, Codex or Cursor. The repository has an <code>AGENTS.md</code> that explains the architecture and what is platform-specific. The BTHome decoder and the calibration maths are dependency-free and fully unit-tested, so an agent can check its own work without hardware.</p>
-      <p>Port it to macOS or Windows, turn it into a headless MQTT exporter on a Raspberry Pi, or add your own sensor model.</p>
+      <p>Port it to macOS or Windows, turn it into a headless MQTT exporter on a Raspberry Pi, or add your own sensor model. The Android app started this way: Claude Code ported the logic to Kotlin overnight, testing on a real phone over <code>adb</code>.</p>
       <p><a class="btn" href="agents.html">Guide and ready-made prompts →</a></p>
     </div>
   </div>
 </section>
 
-<section aria-labelledby="faq">
+<section class="alt" aria-labelledby="faq">
   <div class="wrap narrow">
     <h2 id="faq">Questions</h2>
     <details><summary>Can I calibrate LYWSD03MMC thermometers without a reference thermometer?</summary>
@@ -355,8 +383,8 @@ thermo</code></pre>
       <p>Yes. The gain and offset are written into each thermometer, so every receiver of its BTHome adverts gets corrected values: Home Assistant's BTHome integration, ESPHome Bluetooth proxies and anything else that decodes BTHome. thermo only listens, so it runs fine next to them. Names set with <kbd>n</kbd> appear in Home Assistant when it scans actively.</p></details>
     <details><summary>Which thermometers work?</summary>
       <p>Tested with eight Xiaomi LYWSD03MMC (Mi Temperature and Humidity Monitor 2) on pvvx firmware 5.9, including both sensor variants (SHT4x-type and SHT3x-type coefficients). Other models running the pvvx firmware with BTHome v2, such as MHO-C401 or CGG1, should show up and be calibratable but are untested. Reports are welcome.</p></details>
-    <details><summary>macOS, Windows, Raspberry Pi?</summary>
-      <p>Any Linux with BlueZ works, a Raspberry Pi included. macOS and Windows need the Bluetooth layer replaced. See <a href="agents.html">porting with an AI agent</a>.</p></details>
+    <details><summary>macOS, Windows, Raspberry Pi, phones?</summary>
+      <p>Any Linux with BlueZ works, a Raspberry Pi included. Android has its <a href="#android">own app</a>. macOS and Windows need the Bluetooth layer replaced. See <a href="agents.html">porting with an AI agent</a>.</p></details>
     <details><summary>Can I undo a calibration?</summary>
       <p>Yes. <kbd>x</kbd> on the calibration screen restores the factory coefficients, and every change is logged with old and new values in <code>calibrations.csv</code>. Corrections compose, so you can calibrate again later on top of the last one.</p></details>
     <details><summary>Does it drain the batteries?</summary>
@@ -368,7 +396,7 @@ thermo</code></pre>
 <footer>
   <div class="wrap">
     <span>thermo · MIT or Apache-2.0 · by <a href="https://github.com/arturzielazny">Artur Zielazny</a>, written with Claude Code</span>
-    <span>Built on <a href="https://github.com/pvvx/ATC_MiThermometer">pvvx/ATC_MiThermometer</a>, <a href="https://bthome.io">BTHome</a>, <a href="https://github.com/bluez/bluer">bluer</a> and <a href="https://ratatui.rs">ratatui</a>. Not affiliated with Xiaomi.</span>
+    <span>Built on <a href="https://github.com/pvvx/ATC_MiThermometer">pvvx/ATC_MiThermometer</a>, <a href="https://bthome.io">BTHome</a>, <a href="https://github.com/bluez/bluer">bluer</a> and <a href="https://ratatui.rs">ratatui</a> and <a href="https://developer.android.com/compose">Jetpack Compose</a>. Not affiliated with Xiaomi.</span>
   </div>
 </footer>
 

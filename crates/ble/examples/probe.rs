@@ -30,6 +30,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let info = thermometer.info();
     println!("firmware v{} hw {}", info.firmware_version(), info.hardware);
     println!("name       {}", thermometer.name().await?);
+    println!("mac        {}", thermometer.mac().await?);
     let config = thermometer.config().await?;
     println!(
         "config     adv {:?}, measure every {:?}, tx {}, log every {:?}",

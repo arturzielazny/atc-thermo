@@ -18,7 +18,7 @@ a boundary that takes a backend per platform.
 |---|---|---|
 | `crates/bthome` | BTHome v2 payload decoder. No dependencies. | portable |
 | `crates/calibration` | Consensus calibration: binning, steady-state selection, Huber fit, outliers, anchoring. No dependencies. Algorithm described in `docs/calibration.md` §4. | portable |
-| `crates/atc` | The firmware's command protocol on characteristic `0x1F1F`: name, config, coefficients, clock and clock rate, LCD message, log download. `thermometer.rs` speaks it over the `Transport` trait (`transport.rs`); `clock.rs`, `config.rs`, `coefficients.rs`, `log.rs`, `screen.rs` are byte encodings and maths; `device_id.rs` is `DeviceId` (a MAC, or a CoreBluetooth UUID). No Bluetooth I/O. | portable |
+| `crates/atc` | The firmware's command protocol on characteristic `0x1F1F`: name, MAC, config, coefficients, clock and clock rate, LCD message, log download. `thermometer.rs` speaks it over the `Transport` trait (`transport.rs`); `clock.rs`, `config.rs`, `coefficients.rs`, `log.rs`, `screen.rs` are byte encodings and maths; `device_id.rs` is `DeviceId` (a MAC, or a CoreBluetooth UUID). No Bluetooth I/O. | portable |
 | `crates/ble` | Bluetooth backends behind one API: `Bluetooth::scan` (BTHome adverts → `ScanEvent`), `connect` (→ `Thermometer`), `release`. `bluez.rs` is the Linux backend; each platform's quirks stay inside its backend. | `bluez.rs` uses `bluer` (Linux) |
 | `crates/thermo/src/main.rs` | Event loop: keys, scan events, job events, chart frames, 1 s tick. | portable |
 | `crates/thermo/src/app.rs` | All state and key handling, no I/O, unit-tested. | portable |
@@ -83,6 +83,9 @@ Fedora, `dbus` on Arch).
 - Command/notify characteristic `0x1F1F`; first byte is the command. Replies echo it.
 - `0x25` coefficients: `temp = raw·k_T/65536 + z_T` in 0.01 °C, same for humidity. Write
   composes as `k' = a·k`, `z' = a·z + 100·b`. `0x26` restores factory values.
+- `0x10` alone returns the device's MAC: `[0x10, 8, MAC least significant byte first,
+  2 random bytes]`. With parameters the same command writes a new MAC to flash (one
+  `0x00` byte resets it to the factory MAC): never send it with any.
 - `0x23` clock (u32 seconds), `0x24` timer ticks per second (16 000 000 nominal; ±32 767
   adjustable, stored in flash), `0x35` log records `{time u32, temp i16, humi u16, vbat u16}`,
   `0x55` config, `0x22` external LCD data.
@@ -103,15 +106,32 @@ one backend to `crates/ble` and keeps the tests passing.
    characteristic `0x1F1F`, disconnect). Scan for service data under UUID `0xFCD2` and
    keep RSSI. [`btleplug`](https://crates.io/crates/btleplug) covers CoreBluetooth and
    WinRT.
-2. **Device ids.** CoreBluetooth hides MAC addresses and gives per-host UUIDs, which
-   `DeviceId::Uuid` holds; history keyed by MAC on Linux then shows the same thermometer
-   as another device.
+2. **Device ids.** History, `calibrations.csv` and the Android app key devices by MAC,
+   so every backend reports MACs whenever it can. CoreBluetooth hides them and hands out
+   per-host UUIDs instead; the macOS backend maps each UUID back to a MAC by connecting
+   once and reading `Thermometer::mac` (command `0x10`, read-only), then:
+   - keeps the UUID → MAC map in a cache file of its own (e.g.
+     `$HOME/Library/Caches/thermo/macos-ids.csv`); losing it only costs a re-read;
+   - sends adverts from mapped UUIDs as `DeviceId::Mac`, and `connect(DeviceId::Mac)`
+     looks the UUID up in the map;
+   - holds back adverts from an unmapped UUID until its first identification attempt
+     ends; if that fails (weak signal), sends them as `DeviceId::Uuid` so the readings
+     still show, and retries now and then;
+   - identifies only while scanning is not paused, one device at a time, and shares a
+     lock with `connect` so a job never connects alongside an identification.
+
+   All of this stays inside the backend: the app and `jobs.rs` see the same ids as on
+   Linux. A device in range of the Mac but never identified keeps its `DeviceId::Uuid`.
 3. **Chart images.** `kitty.rs` passes images through `/dev/shm`, which is Linux-only.
    On macOS use direct transmission (`t=d`, base64 chunks) or a temp file (`t=t`).
    Windows terminals generally lack the protocol, so the braille fallback is used.
 4. **Paths.** `Store::default_dir` uses XDG under `HOME`. On Windows use
    `%LOCALAPPDATA%` (e.g. via the `dirs` crate).
-5. **CI.** Add the platform's runner to `.github/workflows/ci.yml`.
+5. **CI.** Add the platform's runner to `.github/workflows/ci.yml` (fmt, clippy,
+   test); tests must not need Bluetooth.
+6. **Real devices.** `cargo run -p ble --example probe -- <id>` only reads, and must
+   work unchanged on the new backend (on macOS it also shows the identified MAC). Don't
+   test with commands that write (see Rules).
 
 ## Other common changes
 

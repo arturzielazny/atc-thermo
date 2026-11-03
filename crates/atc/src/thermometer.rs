@@ -11,11 +11,14 @@ use crate::config::CONFIG_LEN;
 use crate::log::LOG_RECORD_LEN;
 use crate::screen::SCREEN_MESSAGE_LEN;
 use crate::{
-    ClockReading, Coefficients, Config, Error, LogRecord, Notifications, ScreenMessage, Transport,
+    ClockReading, Coefficients, Config, DeviceId, Error, LogRecord, Notifications, ScreenMessage,
+    Transport,
 };
 
 const CMD_DEV_ID: u8 = 0x00;
 const CMD_NAME: u8 = 0x01;
+/// `CMD_ID_DEV_MAC`. With parameters it writes a new MAC to flash; only ever send it bare.
+const CMD_MAC: u8 = 0x10;
 const CMD_SCREEN: u8 = 0x22;
 const CMD_CLOCK: u8 = 0x23;
 const CMD_SECOND_TICKS: u8 = 0x24;
@@ -26,6 +29,8 @@ const CMD_CONFIG: u8 = 0x55;
 
 /// Oldest firmware whose config layout this crate knows (BCD, v4.7).
 const MIN_VERSION: u16 = 0x47;
+/// Bytes in a MAC address.
+const MAC_LEN: usize = 6;
 /// Longest name the firmware stores.
 pub const MAX_NAME_LEN: usize = 20;
 
@@ -94,6 +99,16 @@ impl<T: Transport> Thermometer<T> {
     #[must_use]
     pub fn info(&self) -> DeviceInfo {
         self.info
+    }
+
+    /// Reads the device's own MAC address, which CoreBluetooth hides from scans.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the device does not answer.
+    pub async fn mac(&mut self) -> Result<DeviceId, Error> {
+        let reply = self.command(&[CMD_MAC], 2 + MAC_LEN).await?;
+        Ok(mac_from_reply(&reply))
     }
 
     /// # Errors
@@ -388,6 +403,15 @@ impl<T: Transport> Thermometer<T> {
     }
 }
 
+/// MAC replies are `[0x10, 8, MAC least significant byte first, random static[2]]`.
+fn mac_from_reply(reply: &[u8]) -> DeviceId {
+    let mut mac: [u8; MAC_LEN] = reply[2..2 + MAC_LEN]
+        .try_into()
+        .expect("caller checked the length");
+    mac.reverse();
+    DeviceId::Mac(mac)
+}
+
 fn decode_name(bytes: &[u8]) -> String {
     let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
     String::from_utf8_lossy(&bytes[..end]).into_owned()
@@ -440,5 +464,9 @@ mod tests {
         assert_eq!(clock.last_set, None);
 
         assert_eq!(decode_name(b"Kitchen\0\0"), "Kitchen");
+
+        // Recorded from A4:C1:38:A0:C9:52 on firmware v5.9.
+        let mac = mac_from_reply(&[0x10, 0x08, 0x52, 0xc9, 0xa0, 0x38, 0xc1, 0xa4, 0x20, 0x34]);
+        assert_eq!(mac.to_string(), "A4:C1:38:A0:C9:52");
     }
 }

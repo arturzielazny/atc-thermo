@@ -199,7 +199,7 @@ pub fn median_rssi(values: &mut [i16]) -> Option<i16> {
     }
     values.sort_unstable();
     let mid = values.len() / 2;
-    Some(if values.len() % 2 == 0 {
+    Some(if values.len().is_multiple_of(2) {
         let sum = i32::from(values[mid - 1]) + i32::from(values[mid]);
         i16::try_from(sum.div_euclid(2)).expect("between two i16 values")
     } else {

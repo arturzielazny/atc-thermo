@@ -49,8 +49,9 @@ cd android && ./gradlew testDebugUnitTest      # JVM tests, no phone needed
 cd android && ./gradlew installDebug           # needs a phone with USB debugging
 ```
 
-Build dependencies: Rust ≥ 1.85, `pkg-config` and the libdbus headers (`libdbus-1-dev`
-on Debian/Ubuntu, `dbus-devel` on Fedora, `dbus` on Arch).
+Build dependencies: Rust ≥ 1.88 (`rust-version` in `Cargo.toml`, checked in CI),
+`pkg-config` and the libdbus headers (`libdbus-1-dev` on Debian/Ubuntu, `dbus-devel` on
+Fedora, `dbus` on Arch).
 
 ## Rules
 

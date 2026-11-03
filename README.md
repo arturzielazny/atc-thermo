@@ -40,7 +40,7 @@ the corrected values too.
 
 ## Install
 
-Linux with BlueZ, Rust ≥ 1.85, and the D-Bus headers:
+Linux with BlueZ, Rust ≥ 1.88, and the D-Bus headers:
 
 ```sh
 sudo apt install libdbus-1-dev pkg-config          # Debian, Ubuntu, Raspberry Pi OS

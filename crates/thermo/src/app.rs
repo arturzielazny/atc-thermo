@@ -4,8 +4,8 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::Path;
 use std::time::{Duration, Instant, SystemTime};
 
+use atc::DeviceId;
 use atc::{Correction, MAX_NAME_LEN};
-use bluer::Address;
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -14,8 +14,8 @@ use crate::devices::{Devices, HISTORY_SPAN, LoggedSample, Sample};
 use crate::forms::SettingsForm;
 use crate::jobs::{Action, IDENTIFY_DURATION, Job, JobEvent, Outcome, RateTrim};
 use crate::level::LevelingScreen;
-use crate::scanner::{ScanControl, ScanEvent};
 use crate::store::{CalibrationRecord, Store};
+use ble::{ScanControl, ScanEvent};
 
 /// Chart time spans the `w` key cycles through.
 const WINDOWS: [Duration; 4] = [
@@ -135,7 +135,7 @@ pub struct DeviceState {
 #[derive(Debug)]
 pub enum Mode {
     Normal,
-    Rename { address: Address, input: String },
+    Rename { address: DeviceId, input: String },
     Settings(SettingsForm),
     Calibration(CalibrationScreen),
     Leveling(LevelingScreen),
@@ -183,15 +183,15 @@ pub struct App {
     scan_controls: Option<UnboundedSender<ScanControl>>,
     /// When to restart discovery, once device jobs have been idle for a while.
     restart_scan_at: Option<Instant>,
-    states: HashMap<Address, DeviceState>,
-    marked: BTreeSet<Address>,
-    selected: Option<Address>,
+    states: HashMap<DeviceId, DeviceState>,
+    marked: BTreeSet<DeviceId>,
+    selected: Option<DeviceId>,
     window_index: usize,
     /// Devices already checked for history gaps this session.
-    gap_checked: HashSet<Address>,
-    last_calibrations: HashMap<Address, SystemTime>,
+    gap_checked: HashSet<DeviceId>,
+    last_calibrations: HashMap<DeviceId, SystemTime>,
     /// When each device's log was last downloaded; older history needs no new download.
-    last_downloads: HashMap<Address, SystemTime>,
+    last_downloads: HashMap<DeviceId, SystemTime>,
     quit: bool,
 }
 
@@ -278,16 +278,16 @@ impl App {
         self.devices.iter().position(|d| d.address == selected)
     }
 
-    pub fn is_marked(&self, address: Address) -> bool {
+    pub fn is_marked(&self, address: DeviceId) -> bool {
         self.marked.contains(&address)
     }
 
-    pub fn state(&self, address: Address) -> Option<&DeviceState> {
+    pub fn state(&self, address: DeviceId) -> Option<&DeviceState> {
         self.states.get(&address)
     }
 
     /// Devices an action applies to: the marked ones, or else the selected one.
-    pub fn targets(&self) -> Vec<Address> {
+    pub fn targets(&self) -> Vec<DeviceId> {
         if self.marked.is_empty() {
             self.selected.into_iter().collect()
         } else {
@@ -297,7 +297,7 @@ impl App {
 
     /// Devices compared with each other by calibration: the marked ones if at least
     /// two, else all.
-    pub fn compared_devices(&self) -> Vec<Address> {
+    pub fn compared_devices(&self) -> Vec<DeviceId> {
         if self.marked.len() >= 2 {
             self.marked.iter().copied().collect()
         } else {
@@ -306,7 +306,7 @@ impl App {
     }
 
     /// Devices signal levelling applies to: the marked ones, or else all.
-    pub fn leveled_devices(&self) -> Vec<Address> {
+    pub fn leveled_devices(&self) -> Vec<DeviceId> {
         if self.marked.is_empty() {
             self.devices.iter().map(|d| d.address).collect()
         } else {
@@ -337,7 +337,7 @@ impl App {
 
     /// The first time a device is heard, fetches its log if history since the last
     /// download (at most a day back) has holes.
-    fn download_if_gaps(&mut self, address: Address) {
+    fn download_if_gaps(&mut self, address: DeviceId) {
         let now = SystemTime::now();
         let since = now - DOWNLOAD_SPAN;
         let check_from = self.download_since(address);
@@ -372,7 +372,7 @@ impl App {
     }
 
     /// Updates the model with a job's result; returns a short message for the table.
-    fn apply_outcome(&mut self, address: Address, outcome: Outcome) -> String {
+    fn apply_outcome(&mut self, address: DeviceId, outcome: Outcome) -> String {
         match outcome {
             Outcome::Downloaded {
                 samples,
@@ -443,7 +443,7 @@ impl App {
     }
 
     /// Shows a freshly measured clock offset and keeps it for the next start.
-    fn note_clock_offset(&mut self, address: Address, offset: f64) {
+    fn note_clock_offset(&mut self, address: DeviceId, offset: f64) {
         self.states.entry(address).or_default().clock_offset = Some(offset);
         if let Some(store) = &self.store
             && let Err(err) = store.record_clock_offset(address, SystemTime::now(), offset)
@@ -453,7 +453,7 @@ impl App {
     }
 
     /// Adds downloaded log records to history and notes the download; returns how many were new.
-    fn merge_downloaded(&mut self, address: Address, samples: &[LoggedSample]) -> usize {
+    fn merge_downloaded(&mut self, address: DeviceId, samples: &[LoggedSample]) -> usize {
         let added = self.devices.merge_log(address, samples);
         self.save(&added);
         let now = SystemTime::now();
@@ -467,7 +467,7 @@ impl App {
     }
 
     /// Start of the history still worth downloading: since the last download, at most a day.
-    fn download_since(&self, address: Address) -> SystemTime {
+    fn download_since(&self, address: DeviceId) -> SystemTime {
         let day_ago = SystemTime::now() - DOWNLOAD_SPAN;
         self.last_downloads
             .get(&address)
@@ -476,7 +476,7 @@ impl App {
 
     fn record_calibration(
         &mut self,
-        address: Address,
+        address: DeviceId,
         corrections: Option<(Correction, Correction)>,
         before: atc::Coefficients,
         after: atc::Coefficients,
@@ -516,7 +516,7 @@ impl App {
         }
     }
 
-    fn enqueue(&mut self, address: Address, action: Action) {
+    fn enqueue(&mut self, address: DeviceId, action: Action) {
         let Some(jobs) = &self.jobs else {
             self.warning = Some("device commands are unavailable".to_owned());
             return;
@@ -651,7 +651,7 @@ impl App {
                 self.for_targets(|_| Action::Download { since });
             }
             KeyCode::Char('i') => {
-                let numbers: Vec<(Address, u8)> = self
+                let numbers: Vec<(DeviceId, u8)> = self
                     .targets()
                     .into_iter()
                     .filter_map(|address| Some((address, self.device_number(address)?)))
@@ -694,7 +694,7 @@ impl App {
     }
 
     /// The device's row number in the table, from 1; what `i` shows on its screen.
-    pub fn device_number(&self, address: Address) -> Option<u8> {
+    pub fn device_number(&self, address: DeviceId) -> Option<u8> {
         let index = self.devices.iter().position(|d| d.address == address)?;
         u8::try_from(index + 1).ok()
     }
@@ -714,14 +714,14 @@ impl App {
         }
     }
 
-    fn sync_clocks(&mut self, addresses: &[Address]) {
+    fn sync_clocks(&mut self, addresses: &[DeviceId]) {
         for &address in addresses {
             let download_since = self.download_since(address);
             self.enqueue(address, Action::SyncClock { download_since });
         }
     }
 
-    fn for_targets(&mut self, action: impl Fn(Address) -> Action) {
+    fn for_targets(&mut self, action: impl Fn(DeviceId) -> Action) {
         let targets = self.targets();
         if targets.is_empty() {
             self.warn_no_targets();
@@ -735,7 +735,7 @@ impl App {
         self.warning = Some("select a device (↑↓) or mark some (space, a) first".to_owned());
     }
 
-    fn on_rename_key(&mut self, code: KeyCode, address: Address, mut input: String) {
+    fn on_rename_key(&mut self, code: KeyCode, address: DeviceId, mut input: String) {
         match code {
             KeyCode::Esc => {}
             KeyCode::Enter => {
@@ -833,7 +833,7 @@ impl App {
     /// Reads the settings of recently heard devices whose settings are not known yet.
     fn read_unknown_configs(&mut self) {
         let now = SystemTime::now();
-        let unknown: Vec<Address> = self
+        let unknown: Vec<DeviceId> = self
             .devices
             .iter()
             .filter(|d| now.duration_since(d.last_seen).unwrap_or_default() < RECENTLY_HEARD)
@@ -903,7 +903,7 @@ impl App {
 
     /// The TX power changes `y` queues after `Enter`, in dB. Devices with a job waiting
     /// are left out: a queued change was planned from the same samples.
-    pub fn leveling_changes(&self, screen: &LevelingScreen) -> Vec<(Address, i16)> {
+    pub fn leveling_changes(&self, screen: &LevelingScreen) -> Vec<(DeviceId, i16)> {
         screen
             .plan(&self.leveled_devices())
             .rows
@@ -915,7 +915,7 @@ impl App {
 
     /// The devices `y` restores the factory TX power on after `x`: those not known
     /// to have it already.
-    pub fn factory_resets(&self) -> Vec<Address> {
+    pub fn factory_resets(&self) -> Vec<DeviceId> {
         self.leveled_devices()
             .into_iter()
             .filter(|&address| {
@@ -937,7 +937,7 @@ impl App {
 
     fn apply_calibration(&mut self, result: Option<&Result<calibrate::Run, String>>) {
         let Some(Ok(run)) = result else { return };
-        let jobs: Vec<(Address, Correction, Correction)> = run
+        let jobs: Vec<(DeviceId, Correction, Correction)> = run
             .devices
             .iter()
             .zip(&run.report.sensors)
@@ -1102,10 +1102,10 @@ mod tests {
     use tokio::sync::mpsc::{self, UnboundedReceiver};
 
     use crate::jobs::Settings;
-    use crate::scanner::Advert;
+    use ble::Advert;
 
-    const A: Address = Address([0xa4, 0xc1, 0x38, 0, 0, 1]);
-    const B: Address = Address([0xa4, 0xc1, 0x38, 0, 0, 2]);
+    const A: DeviceId = DeviceId::Mac([0xa4, 0xc1, 0x38, 0, 0, 1]);
+    const B: DeviceId = DeviceId::Mac([0xa4, 0xc1, 0x38, 0, 0, 2]);
     // A pvvx measurement packet (temperature 22.44 °C, humidity 56.94 %).
     const MEASUREMENT: [u8; 11] = [
         0x40, 0x00, 0xa4, 0x01, 0x57, 0x02, 0xc4, 0x08, 0x03, 0x3e, 0x16,
@@ -1163,7 +1163,7 @@ mod tests {
 
         press(&mut app, KeyCode::Char('a'));
         press(&mut app, KeyCode::Char('s'));
-        let addresses: Vec<Address> = drain(&mut rx).iter().map(|j| j.address).collect();
+        let addresses: Vec<DeviceId> = drain(&mut rx).iter().map(|j| j.address).collect();
         assert_eq!(addresses, [A, B]);
 
         // Each marked device shows its own row number.
@@ -1181,7 +1181,7 @@ mod tests {
         press(&mut app, KeyCode::Esc);
         assert_eq!(app.targets(), [A]);
         press(&mut app, KeyCode::Esc);
-        assert_eq!(app.targets(), Vec::<Address>::new());
+        assert_eq!(app.targets(), Vec::<DeviceId>::new());
     }
 
     #[test]
@@ -1351,7 +1351,7 @@ mod tests {
         assert!(matches!(app.mode, Mode::Leveling(_)));
     }
 
-    fn finish(app: &mut App, address: Address, outcome: Result<Outcome, String>) {
+    fn finish(app: &mut App, address: DeviceId, outcome: Result<Outcome, String>) {
         app.on_job_event(JobEvent::Finished { address, outcome });
     }
 

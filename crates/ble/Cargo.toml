@@ -1,0 +1,26 @@
+[package]
+name = "ble"
+version = "0.1.0"
+description = "Scanning for BTHome thermometers and connecting to them, with one backend per platform"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords = ["ble","bluetooth","bthome","thermometer","pvvx"]
+categories = ["hardware-support"]
+readme = "../../README.md"
+
+[dependencies]
+atc.workspace = true
+bthome.workspace = true
+futures.workspace = true
+tokio.workspace = true
+uuid.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+bluer.workspace = true
+
+[lints]
+workspace = true

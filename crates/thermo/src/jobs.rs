@@ -3,18 +3,16 @@
 use std::time::{Duration, SystemTime};
 
 use atc::{
-    ClockReading, Coefficients, Config, Correction, LogRecord, ScreenMessage, Smiley, Thermometer,
+    ClockReading, Coefficients, Config, Correction, DeviceId, LogRecord, ScreenMessage, Smiley,
     TxPower,
 };
-use bluer::{Adapter, Address};
+use ble::{Bluetooth, Thermometer};
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
 use crate::devices::LoggedSample;
 
 /// Longest a single job may take, including connecting.
 const JOB_TIMEOUT: Duration = Duration::from_secs(180);
-/// Wait after a failed connect before checking for a late, unwanted connection.
-const LATE_CONNECT_GRACE: Duration = Duration::from_secs(3);
 /// How long a device shows its number; long enough for a whole row of devices to be
 /// reached one connection after another.
 pub const IDENTIFY_DURATION: Duration = Duration::from_secs(30 * 60);
@@ -88,7 +86,7 @@ impl Action {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Job {
-    pub address: Address,
+    pub address: DeviceId,
     pub action: Action,
 }
 
@@ -143,23 +141,27 @@ pub enum RateTrim {
 #[derive(Debug, Clone, PartialEq)]
 pub enum JobEvent {
     Started {
-        address: Address,
+        address: DeviceId,
         label: &'static str,
     },
     Finished {
-        address: Address,
+        address: DeviceId,
         outcome: Result<Outcome, String>,
     },
 }
 
 /// Starts the worker; jobs sent to the returned sender run in order.
-pub fn spawn(events: UnboundedSender<JobEvent>) -> UnboundedSender<Job> {
+pub fn spawn(bluetooth: Bluetooth, events: UnboundedSender<JobEvent>) -> UnboundedSender<Job> {
     let (jobs_tx, jobs_rx) = mpsc::unbounded_channel();
-    tokio::spawn(run(jobs_rx, events));
+    tokio::spawn(run(bluetooth, jobs_rx, events));
     jobs_tx
 }
 
-async fn run(mut jobs: UnboundedReceiver<Job>, events: UnboundedSender<JobEvent>) {
+async fn run(
+    bluetooth: Bluetooth,
+    mut jobs: UnboundedReceiver<Job>,
+    events: UnboundedSender<JobEvent>,
+) {
     while let Some(job) = jobs.recv().await {
         let address = job.address;
         if events
@@ -171,10 +173,7 @@ async fn run(mut jobs: UnboundedReceiver<Job>, events: UnboundedSender<JobEvent>
         {
             return;
         }
-        let outcome = match default_adapter().await {
-            Ok(adapter) => execute_with_timeout(&adapter, job).await,
-            Err(err) => Err(format!("no Bluetooth adapter: {err}")),
-        };
+        let outcome = execute_with_timeout(&bluetooth, job).await;
         if events
             .send(JobEvent::Finished { address, outcome })
             .is_err()
@@ -184,39 +183,21 @@ async fn run(mut jobs: UnboundedReceiver<Job>, events: UnboundedSender<JobEvent>
     }
 }
 
-/// A new BlueZ session for every job, so jobs work again once `bluetoothd` restarts
-/// or the adapter comes back.
-async fn default_adapter() -> bluer::Result<Adapter> {
-    bluer::Session::new().await?.default_adapter().await
-}
-
-async fn execute_with_timeout(adapter: &Adapter, job: Job) -> Result<Outcome, String> {
+async fn execute_with_timeout(bluetooth: &Bluetooth, job: Job) -> Result<Outcome, String> {
     let address = job.address;
-    if let Ok(result) = tokio::time::timeout(JOB_TIMEOUT, execute(adapter, job)).await {
+    if let Ok(result) = tokio::time::timeout(JOB_TIMEOUT, execute(bluetooth, job)).await {
         return result;
     }
     // The cancelled job may have left the connection open.
-    if let Ok(device) = adapter.device(address) {
-        let _ = device.disconnect().await;
-    }
+    bluetooth.release(address).await;
     Err("timed out".to_owned())
 }
 
-async fn execute(adapter: &Adapter, job: Job) -> Result<Outcome, String> {
-    let mut thermometer = match Thermometer::connect(adapter, job.address).await {
-        Ok(thermometer) => thermometer,
-        Err(err) => {
-            // BlueZ can finish a connection after we gave up on it; a connected
-            // thermometer stops advertising, so make sure none is left behind.
-            tokio::time::sleep(LATE_CONNECT_GRACE).await;
-            if let Ok(device) = adapter.device(job.address)
-                && device.is_connected().await.unwrap_or(false)
-            {
-                let _ = device.disconnect().await;
-            }
-            return Err(err.to_string());
-        }
-    };
+async fn execute(bluetooth: &Bluetooth, job: Job) -> Result<Outcome, String> {
+    let mut thermometer = bluetooth
+        .connect(job.address)
+        .await
+        .map_err(|err| err.to_string())?;
     let result = perform(&mut thermometer, job.action).await;
     // The device restarts or carries on by itself; a failed disconnect changes nothing.
     let _ = thermometer.disconnect().await;

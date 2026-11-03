@@ -3,10 +3,10 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::time::{Duration, SystemTime};
 
-use bluer::Address;
+use atc::DeviceId;
 use bthome::{Object, ParseError, Payload};
 
-use crate::scanner::Advert;
+use ble::Advert;
 
 /// How far back history is kept in memory: the longest calibration window.
 pub const HISTORY_SPAN: Duration = Duration::from_secs(48 * 60 * 60);
@@ -52,7 +52,7 @@ pub struct LoggedSample {
 /// A sample together with the device context it was taken in; the unit of persistence.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Measurement {
-    pub address: Address,
+    pub address: DeviceId,
     pub name: String,
     pub sample: Sample,
     pub battery: Option<u8>,
@@ -62,7 +62,7 @@ pub struct Measurement {
 /// A thermometer and its most recent values.
 #[derive(Debug)]
 pub struct Device {
-    pub address: Address,
+    pub address: DeviceId,
     pub name: String,
     pub rssi: Option<i16>,
     pub temperature: Option<f32>,
@@ -79,7 +79,7 @@ pub struct Device {
 }
 
 impl Device {
-    fn new(address: Address, name: String, seen: SystemTime) -> Self {
+    fn new(address: DeviceId, name: String, seen: SystemTime) -> Self {
         Self {
             address,
             name,
@@ -210,7 +210,7 @@ pub fn median_rssi(values: &mut [i16]) -> Option<i16> {
 /// All known devices, ordered by address so the order (and colors) are stable between runs.
 #[derive(Debug, Default)]
 pub struct Devices {
-    by_address: BTreeMap<Address, Device>,
+    by_address: BTreeMap<DeviceId, Device>,
 }
 
 impl Devices {
@@ -280,7 +280,7 @@ impl Devices {
 
     /// Adds downloaded log records where history has no sample within half a record's
     /// span; returns the added ones so they can be saved.
-    pub fn merge_log(&mut self, address: Address, records: &[LoggedSample]) -> Vec<Measurement> {
+    pub fn merge_log(&mut self, address: DeviceId, records: &[LoggedSample]) -> Vec<Measurement> {
         let Some(device) = self.by_address.get_mut(&address) else {
             return Vec::new();
         };
@@ -308,11 +308,11 @@ impl Devices {
         added
     }
 
-    pub fn get(&self, address: Address) -> Option<&Device> {
+    pub fn get(&self, address: DeviceId) -> Option<&Device> {
         self.by_address.get(&address)
     }
 
-    pub fn rename(&mut self, address: Address, name: String) {
+    pub fn rename(&mut self, address: DeviceId, name: String) {
         if let Some(device) = self.by_address.get_mut(&address) {
             device.name = name;
         }
@@ -335,7 +335,7 @@ impl Devices {
 mod tests {
     use super::*;
 
-    const ADDR: Address = Address([0xa4, 0xc1, 0x38, 0x84, 0x7e, 0xfc]);
+    const ADDR: DeviceId = DeviceId::Mac([0xa4, 0xc1, 0x38, 0x84, 0x7e, 0xfc]);
 
     fn advert(payload: &[u8], received: SystemTime) -> Advert {
         Advert {

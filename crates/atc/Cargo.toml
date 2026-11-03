@@ -13,9 +13,9 @@ categories = ["hardware-support"]
 readme = "../../README.md"
 
 [dependencies]
-bluer.workspace = true
 futures.workspace = true
 tokio.workspace = true
+uuid.workspace = true
 
 [lints]
 workspace = true

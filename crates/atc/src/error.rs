@@ -1,12 +1,18 @@
 use std::error;
 use std::fmt;
 
+use crate::DeviceId;
+
 /// Why talking to a thermometer failed.
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum Error {
-    /// BlueZ reported an error (not connected, connection failed, ...).
-    Bluetooth(bluer::Error),
+    /// The BLE stack reported an error (not connected, connection failed, ...).
+    Bluetooth(Box<dyn error::Error + Send + Sync>),
+    /// The BLE stack has not heard the device recently, so it cannot connect to it.
+    NotInRange(DeviceId),
+    /// No connection was made in time.
+    ConnectTimeout,
     /// The device did not answer a command, even after retries.
     Timeout { command: u8 },
     /// The connection dropped while waiting for an answer.
@@ -25,6 +31,8 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Bluetooth(err) => write!(f, "bluetooth: {err}"),
+            Self::NotInRange(id) => write!(f, "{id} is not in range"),
+            Self::ConnectTimeout => write!(f, "connecting timed out"),
             Self::Timeout { command } => write!(f, "no answer to command {command:#04x}"),
             Self::Disconnected => write!(f, "device disconnected"),
             Self::NotPvvx => write!(f, "not a pvvx ATC firmware device"),
@@ -45,14 +53,8 @@ impl fmt::Display for Error {
 impl error::Error for Error {
     fn source(&self) -> Option<&(dyn error::Error + 'static)> {
         match self {
-            Self::Bluetooth(err) => Some(err),
+            Self::Bluetooth(err) => Some(err.as_ref()),
             _ => None,
         }
-    }
-}
-
-impl From<bluer::Error> for Error {
-    fn from(err: bluer::Error) -> Self {
-        Self::Bluetooth(err)
     }
 }

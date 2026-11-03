@@ -15,7 +15,7 @@ readme = "../../README.md"
 [dependencies]
 anyhow = "1.0.104"
 atc.workspace = true
-bluer.workspace = true
+ble.workspace = true
 bthome.workspace = true
 calibration.workspace = true
 crossterm = { version = "0.29.0", features = ["event-stream"] }

@@ -1,20 +1,18 @@
-use std::pin::Pin;
+//! [`Thermometer`]: the firmware's command protocol over one open [`Transport`].
+
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use bluer::gatt::remote::Characteristic;
-use bluer::{Adapter, Address, Device, Uuid};
-use futures::{FutureExt, Stream, StreamExt};
-use tokio::time::{Instant, timeout, timeout_at};
+use futures::{FutureExt, StreamExt};
+use tokio::time::{Instant, timeout_at};
 
 use crate::clock::ticks_delta;
 use crate::coefficients::COEFFICIENTS_LEN;
 use crate::config::CONFIG_LEN;
 use crate::log::LOG_RECORD_LEN;
 use crate::screen::SCREEN_MESSAGE_LEN;
-use crate::{ClockReading, Coefficients, Config, Error, LogRecord, ScreenMessage};
-
-/// The firmware's command/notify characteristic `0x1F1F`.
-const COMMAND_UUID: Uuid = Uuid::from_u128(0x0000_1f1f_0000_1000_8000_0080_5f9b_34fb);
+use crate::{
+    ClockReading, Coefficients, Config, Error, LogRecord, Notifications, ScreenMessage, Transport,
+};
 
 const CMD_DEV_ID: u8 = 0x00;
 const CMD_NAME: u8 = 0x01;
@@ -31,18 +29,11 @@ const MIN_VERSION: u16 = 0x47;
 /// Longest name the firmware stores.
 pub const MAX_NAME_LEN: usize = 20;
 
-const CONNECT_ATTEMPTS: u32 = 4;
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(25);
-const CONNECT_RETRY_PAUSE: Duration = Duration::from_secs(1);
-/// How long to wait for a device BlueZ has forgotten to advertise again.
-const DEVICE_APPEAR_TIMEOUT: Duration = Duration::from_secs(30);
 /// Writes are unacknowledged, so a command is resent if no answer arrives in time.
 const COMMAND_ATTEMPTS: u32 = 5;
 const REPLY_TIMEOUT: Duration = Duration::from_millis(1500);
 /// Longest pause between two log records before the download counts as stalled.
 const LOG_RECORD_TIMEOUT: Duration = Duration::from_secs(5);
-
-type Notifications = Pin<Box<dyn Stream<Item = Vec<u8>> + Send>>;
 
 /// Identity reported by the firmware (`CMD_ID_DEV_ID`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,63 +55,29 @@ impl DeviceInfo {
 /// An open connection to a thermometer running pvvx firmware.
 ///
 /// Only one command runs at a time; methods take `&mut self`.
-pub struct Thermometer {
-    device: Device,
-    command: Characteristic,
+pub struct Thermometer<T> {
+    transport: T,
     notifications: Notifications,
     info: DeviceInfo,
 }
 
-impl Thermometer {
-    /// Connects to a device BlueZ already knows (i.e. one seen while scanning).
+impl<T: Transport> Thermometer<T> {
+    /// Starts talking to a device over a fresh connection: reads its identity and
+    /// checks the firmware version. `notifications` must already be subscribed, so no
+    /// reply is missed.
     ///
     /// # Errors
     ///
-    /// Fails if the connection cannot be made, the device is not running pvvx
-    /// firmware, or the firmware is older than v4.7.
-    pub async fn connect(adapter: &Adapter, address: Address) -> Result<Self, Error> {
-        let device = adapter.device(address)?;
-        let mut attempt = 0;
-        loop {
-            wait_until_known(adapter, address).await?;
-            if device.is_connected().await? {
-                break;
-            }
-            attempt += 1;
-            let error = match timeout(CONNECT_TIMEOUT, device.connect()).await {
-                Ok(Ok(())) => continue,
-                Ok(Err(err)) => Error::Bluetooth(err),
-                Err(_) => Error::Timeout { command: 0 },
-            };
-            // A timed-out or concurrent attempt may still be pending inside BlueZ, which
-            // makes the next one fail with "in progress"; cancelling it clears that.
-            let _ = device.disconnect().await;
-            if attempt >= CONNECT_ATTEMPTS {
-                return Err(error);
-            }
-            tokio::time::sleep(CONNECT_RETRY_PAUSE).await;
-        }
-
-        let mut command = None;
-        for service in device.services().await? {
-            for characteristic in service.characteristics().await? {
-                if characteristic.uuid().await? == COMMAND_UUID {
-                    command = Some(characteristic);
-                }
-            }
-        }
-        let command = command.ok_or(Error::NotPvvx)?;
-        let notifications: Notifications = Box::pin(command.notify().await?);
+    /// Fails if the device does not answer or its firmware is older than v4.7.
+    pub async fn open(transport: T, notifications: Notifications) -> Result<Self, Error> {
         let mut thermometer = Self {
-            device,
-            command,
+            transport,
             notifications,
             info: DeviceInfo {
                 hardware: 0,
                 firmware: 0,
             },
         };
-
         let reply = thermometer.command(&[CMD_DEV_ID], 6).await?;
         thermometer.info = DeviceInfo {
             hardware: u16::from_le_bytes([reply[2], reply[3]]),
@@ -132,11 +89,6 @@ impl Thermometer {
             });
         }
         Ok(thermometer)
-    }
-
-    #[must_use]
-    pub fn address(&self) -> Address {
-        self.device.address()
     }
 
     #[must_use]
@@ -369,14 +321,14 @@ impl Thermometer {
 
     /// # Errors
     ///
-    /// Fails if BlueZ cannot disconnect.
+    /// Fails if the BLE stack cannot disconnect.
     pub async fn disconnect(self) -> Result<(), Error> {
-        Ok(self.device.disconnect().await?)
+        self.transport.disconnect().await
     }
 
     async fn write(&mut self, payload: &[u8]) -> Result<(), Error> {
         // `&mut` keeps the futures `Send` without requiring `Thermometer: Sync`.
-        Ok(self.command.write(payload).await?)
+        self.transport.write(payload).await
     }
 
     /// Sends a command and returns its reply, which must be at least `min_len` bytes.
@@ -435,27 +387,6 @@ impl Thermometer {
         }
     }
 }
-
-/// Waits for BlueZ to list the device. It drops devices it has not heard from in a
-/// while (e.g. after discovery restarts) and lists them again on their next advert.
-async fn wait_until_known(adapter: &Adapter, address: Address) -> Result<(), Error> {
-    let deadline = Instant::now() + DEVICE_APPEAR_TIMEOUT;
-    while !adapter.device_addresses().await?.contains(&address) {
-        if Instant::now() >= deadline {
-            return Err(Error::InvalidValue(format!(
-                "{address} is not in range (not seen by BlueZ)"
-            )));
-        }
-        tokio::time::sleep(Duration::from_millis(500)).await;
-    }
-    Ok(())
-}
-
-// Connections are handed to background tasks, so they must stay `Send`.
-const _: () = {
-    const fn assert_send<T: Send>() {}
-    assert_send::<Thermometer>();
-};
 
 fn decode_name(bytes: &[u8]) -> String {
     let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());

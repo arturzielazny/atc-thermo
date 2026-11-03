@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::ops::RangeInclusive;
 use std::time::Instant;
 
-use bluer::Address;
+use atc::DeviceId;
 
 use crate::app::Confirm;
 use crate::devices::{RSSI_FINE, median_rssi};
@@ -29,7 +29,7 @@ const TARGET_RANGE: RangeInclusive<i16> = -95..=-30;
 pub struct LevelingScreen {
     pub started: Instant,
     /// Every advert's signal strength since `started` or the device's last TX power change.
-    samples: HashMap<Address, Vec<i16>>,
+    samples: HashMap<DeviceId, Vec<i16>>,
     /// Median signal strength to aim for, in dBm.
     pub target: i16,
     /// A TX power change waiting for `y`.
@@ -51,7 +51,7 @@ impl Plan {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Row {
-    pub address: Address,
+    pub address: DeviceId,
     pub adverts: usize,
     pub median: Option<i16>,
     /// TX power change in dB; `None` while the device is heard too rarely or is
@@ -69,12 +69,12 @@ impl LevelingScreen {
         }
     }
 
-    pub fn record(&mut self, address: Address, rssi: i16) {
+    pub fn record(&mut self, address: DeviceId, rssi: i16) {
         self.samples.entry(address).or_default().push(rssi);
     }
 
     /// Drops a device's samples after its TX power changed; they no longer apply.
-    pub fn forget(&mut self, address: Address) {
+    pub fn forget(&mut self, address: DeviceId) {
         self.samples.remove(&address);
     }
 
@@ -90,7 +90,7 @@ impl LevelingScreen {
     }
 
     /// Proposed TX power changes for `devices`, in that order.
-    pub fn plan(&self, devices: &[Address]) -> Plan {
+    pub fn plan(&self, devices: &[DeviceId]) -> Plan {
         let rows = devices
             .iter()
             .map(|&address| {
@@ -116,11 +116,11 @@ impl LevelingScreen {
 mod tests {
     use super::*;
 
-    const A: Address = Address([0xa4, 0xc1, 0x38, 0, 0, 1]);
-    const B: Address = Address([0xa4, 0xc1, 0x38, 0, 0, 2]);
-    const C: Address = Address([0xa4, 0xc1, 0x38, 0, 0, 3]);
+    const A: DeviceId = DeviceId::Mac([0xa4, 0xc1, 0x38, 0, 0, 1]);
+    const B: DeviceId = DeviceId::Mac([0xa4, 0xc1, 0x38, 0, 0, 2]);
+    const C: DeviceId = DeviceId::Mac([0xa4, 0xc1, 0x38, 0, 0, 3]);
 
-    fn screen_with(levels: &[(Address, i16)]) -> LevelingScreen {
+    fn screen_with(levels: &[(DeviceId, i16)]) -> LevelingScreen {
         let mut screen = LevelingScreen::new(Instant::now());
         for &(address, rssi) in levels {
             for i in 0..MIN_ADVERTS {

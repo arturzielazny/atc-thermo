@@ -42,26 +42,24 @@
   <ul>
     <li><strong><code>AGENTS.md</code></strong> at the root explains the layout, the build and test commands, the firmware protocol, the rules (never write to your devices unasked) and a step-by-step porting plan. Claude Code reads it through <code>CLAUDE.md</code>, and most other agents read <code>AGENTS.md</code> directly.</li>
     <li><strong>The hard parts are pure.</strong> The BTHome decoder and the calibration maths have no dependencies and no I/O. They compile anywhere and are covered by unit tests that need no hardware.</li>
-    <li><strong>The platform-specific parts are small and named:</strong> the Bluetooth scanner, the GATT transport, and shared-memory chart images. Everything else is ordinary Rust.</li>
+    <li><strong>The platform-specific parts are small and named:</strong> one Bluetooth backend in the <code>ble</code> crate (scanning and the GATT transport), and shared-memory chart images. Everything else is ordinary Rust.</li>
     <li><strong>Strict lints and many tests</strong> (<code>cargo clippy -- -D warnings</code> with pedantic lints, <code>cargo test --workspace</code>) give the agent fast, honest feedback.</li>
   </ul>
 
   <figure>
     <svg class="ill" viewBox="0 0 640 250" role="img" aria-labelledby="arch-t">
-      <title id="arch-t">Architecture: portable crates bthome and calibration, protocol encoding in atc, and the platform-specific Bluetooth transport, scanner and chart transfer that a port replaces</title>
+      <title id="arch-t">Architecture: portable crates bthome and calibration, protocol encoding in atc, and the a Bluetooth backend per platform in ble, and the chart transfer that a port replaces</title>
       <rect class="bg" width="640" height="250" rx="16"/>
       <g font-size="13">
         <rect x="24" y="26" width="592" height="54" rx="10" fill="none" class="mstroke" stroke-width="1.5"/>
         <text class="text" x="40" y="50" font-weight="700">thermo</text>
         <text class="muted" x="40" y="68" font-size="12">app state · keys · table · chart layout · CSV store</text>
-        <rect x="430" y="36" width="174" height="34" rx="8" fill="none" class="astroke" stroke-width="2" stroke-dasharray="5 4"/>
-        <text class="text" x="517" y="58" text-anchor="middle" font-size="12">scanner · kitty shm</text>
+        <rect x="494" y="36" width="110" height="34" rx="8" fill="none" class="astroke" stroke-width="2" stroke-dasharray="5 4"/>
+        <text class="text" x="549" y="58" text-anchor="middle" font-size="12">kitty shm</text>
 
         <rect x="24" y="98" width="290" height="54" rx="10" fill="none" class="mstroke" stroke-width="1.5"/>
         <text class="text" x="40" y="122" font-weight="700">atc</text>
-        <text class="muted" x="40" y="140" font-size="12">commands as bytes</text>
-        <rect x="196" y="108" width="108" height="34" rx="8" fill="none" class="astroke" stroke-width="2" stroke-dasharray="5 4"/>
-        <text class="text" x="252" y="130" text-anchor="middle" font-size="12">transport</text>
+        <text class="muted" x="40" y="140" font-size="12">protocol · commands as bytes · no I/O</text>
 
         <rect x="326" y="98" width="140" height="54" rx="10" class="accent" opacity="0.18"/>
         <text class="text" x="342" y="122" font-weight="700">bthome</text>
@@ -71,15 +69,15 @@
         <text class="muted" x="492" y="140" font-size="12">0 deps · pure</text>
 
         <rect x="24" y="170" width="592" height="54" rx="10" class="term"/>
-        <text x="40" y="196" fill="#e3e5f0" font-weight="700">BlueZ (Linux)</text>
-        <text x="40" y="213" fill="#9a9db5" font-size="12">swap for btleplug → CoreBluetooth (macOS) · WinRT (Windows)</text>
+        <text x="40" y="196" fill="#e3e5f0" font-weight="700">ble · BlueZ backend (Linux)</text>
+        <text x="40" y="213" fill="#9a9db5" font-size="12">add one beside it: btleplug → CoreBluetooth (macOS) · WinRT (Windows)</text>
       </g>
       <g font-size="11">
         <rect x="430" y="232" width="12" height="8" fill="none" class="astroke" stroke-width="1.5" stroke-dasharray="3 2"/>
         <text class="muted" x="448" y="240">replace when porting</text>
       </g>
     </svg>
-    <figcaption>Dashed boxes are what a port replaces. The filled crates come along unchanged.</figcaption>
+    <figcaption>A port adds a backend to <code>ble</code> and replaces the dashed box. The filled crates come along unchanged.</figcaption>
   </figure>
 
   <h2>How to do it</h2>
@@ -98,15 +96,15 @@ claude</code></pre></li>
 
   <div class="prompt">
     <h3>Port to macOS</h3>
-    <blockquote>Read AGENTS.md. Port thermo to macOS following its "Porting to another OS" section: introduce a DeviceId type instead of bluer::Address, reimplement the scanner and the atc transport with btleplug, and send chart images with direct kitty transmission instead of /dev/shm. Keep Linux working behind cfg. Plan first, then implement step by step, keeping cargo test and clippy green after each step.</blockquote>
+    <blockquote>Read AGENTS.md. Port thermo to macOS following its "Porting to another OS" section: add a btleplug backend to the ble crate beside bluez.rs, with the same API, and send chart images with direct kitty transmission instead of /dev/shm. Keep the Linux backend unchanged. Plan first, then implement step by step, keeping cargo test and clippy green after each step.</blockquote>
   </div>
   <div class="prompt">
     <h3>Port to Windows</h3>
-    <blockquote>Read AGENTS.md. Make thermo build and run on Windows 11 with btleplug (WinRT). Store history under %LOCALAPPDATA%. Windows Terminal has no kitty graphics, so make sure the braille chart fallback is used. Keep the Linux build unchanged. Plan first.</blockquote>
+    <blockquote>Read AGENTS.md. Make thermo build and run on Windows 11 with a btleplug (WinRT) backend in the ble crate. Store history under %LOCALAPPDATA%. Windows Terminal has no kitty graphics, so make sure the braille chart fallback is used. Keep the Linux build unchanged. Plan first.</blockquote>
   </div>
   <div class="prompt">
     <h3>Headless Raspberry Pi exporter</h3>
-    <blockquote>Read AGENTS.md. Add a new binary crate thermo-mqtt that reuses the scanner and the bthome crate, without the TUI, and publishes every reading to MQTT as JSON (topic thermo/&lt;name&gt;), with Home Assistant MQTT discovery. Add a systemd unit file and a README section for Raspberry Pi OS.</blockquote>
+    <blockquote>Read AGENTS.md. Add a new binary crate thermo-mqtt that reuses ble::Bluetooth::scan and the bthome crate, without the TUI, and publishes every reading to MQTT as JSON (topic thermo/&lt;name&gt;), with Home Assistant MQTT discovery. Add a systemd unit file and a README section for Raspberry Pi OS.</blockquote>
   </div>
   <div class="prompt">
     <h3>InfluxDB / Grafana</h3>

@@ -2,8 +2,8 @@
 
 use std::time::Duration;
 
+use atc::DeviceId;
 use atc::TxPower;
-use bluer::Address;
 
 use crate::jobs::Settings;
 
@@ -60,13 +60,13 @@ impl Field {
 /// Settings to apply to `targets`; choice 0 of every field means "keep".
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SettingsForm {
-    pub targets: Vec<Address>,
+    pub targets: Vec<DeviceId>,
     pub field: usize,
     choices: [usize; Field::ALL.len()],
 }
 
 impl SettingsForm {
-    pub fn new(targets: Vec<Address>) -> Self {
+    pub fn new(targets: Vec<DeviceId>) -> Self {
         Self {
             targets,
             field: 0,

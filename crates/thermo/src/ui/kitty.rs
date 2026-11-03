@@ -1,14 +1,17 @@
-//! Kitty graphics protocol: images handed over in shared memory and shown with Unicode
-//! placeholders, so they occupy ordinary buffer cells.
+//! Kitty graphics protocol: images handed over in shared memory (Linux) or a temporary
+//! file (macOS and others without `/dev/shm`) and shown with Unicode placeholders, so
+//! they occupy ordinary buffer cells.
 //!
-//! Only a short object name passes through the terminal, instead of megabytes of base64.
-//! That needs the terminal on the same machine, which is why [`usable`] refuses SSH.
+//! Only a short object name or path passes through the terminal, instead of megabytes
+//! of base64. That needs the terminal on the same machine, which is why [`usable`]
+//! refuses SSH. Terminals without the Kitty protocol (Terminal.app, iTerm2) get the
+//! braille chart instead.
 
 use std::fs;
 use std::io;
 use std::num::NonZeroU16;
-use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant, SystemTime};
 
 use ratatui::buffer::{Buffer, CellDiffOption};
 use ratatui::layout::Rect;
@@ -18,6 +21,12 @@ use ratatui_image::picker::{Picker, ProtocolType};
 /// Where `shm_open` objects live on Linux; `/dev/shm/x` is the object `/x`.
 const SHM_DIR: &str = "/dev/shm";
 const SHM_PREFIX: &str = "thermo-chart-";
+/// Kitty and Ghostty read (and delete) a `t=t` file only if it sits in a temporary
+/// directory and its name contains `tty-graphics-protocol`.
+const TEMP_PREFIX: &str = "thermo-chart-tty-graphics-protocol-";
+/// Without `/proc` to check whether its writer still runs, a file is an orphan once
+/// it is far older than any terminal takes to read it.
+const ORPHANED_AFTER: Duration = Duration::from_secs(60);
 /// The terminal unlinks an object once it has read it; one still there after this long
 /// was never going to be read.
 const SHM_ABANDONED_AFTER: Duration = Duration::from_secs(10);
@@ -42,9 +51,54 @@ pub struct Rgba {
     pub data: Vec<u8>,
 }
 
-/// An image written to shared memory, waiting for the terminal to pick it up.
+/// How images reach the terminal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Medium {
+    /// POSIX shared memory (`t=s`), named relative to `/dev/shm`.
+    SharedMemory,
+    /// A temporary file (`t=t`), named by its absolute path.
+    TempFile,
+}
+
+impl Medium {
+    /// Shared memory where `shm_open` objects are files we can write (Linux), else a
+    /// temporary file: macOS has `shm_open` but no file system view of it.
+    fn detect() -> Self {
+        if Path::new(SHM_DIR).is_dir() {
+            Self::SharedMemory
+        } else {
+            Self::TempFile
+        }
+    }
+
+    fn dir(self) -> PathBuf {
+        match self {
+            Self::SharedMemory => PathBuf::from(SHM_DIR),
+            Self::TempFile => std::env::temp_dir(),
+        }
+    }
+
+    fn prefix(self) -> &'static str {
+        match self {
+            Self::SharedMemory => SHM_PREFIX,
+            Self::TempFile => TEMP_PREFIX,
+        }
+    }
+
+    fn code(self) -> char {
+        match self {
+            Self::SharedMemory => 's',
+            Self::TempFile => 't',
+        }
+    }
+}
+
+/// An image written to shared memory or a temporary file, waiting for the terminal to
+/// pick it up.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Shared {
+    medium: Medium,
+    /// Shared memory object name, or the file's path.
     name: String,
     width: u32,
     height: u32,
@@ -59,8 +113,9 @@ impl Shared {
     /// pixels but keeps the old placement's size (seen in Ghostty after a resize).
     pub fn transmit(&self, id: u32, cols: u16, rows: u16) -> String {
         format!(
-            "{}\x1b_Ga=T,U=1,q=2,i={id},f=32,t=s,s={},v={},S={},c={cols},r={rows};{}\x1b\\",
+            "{}\x1b_Ga=T,U=1,q=2,i={id},f=32,t={},s={},v={},S={},c={cols},r={rows};{}\x1b\\",
             delete(id),
+            self.medium.code(),
             self.width,
             self.height,
             self.len,
@@ -104,8 +159,10 @@ fn diacritic_count() -> u16 {
     u16::try_from(DIACRITICS.len()).expect("table is short")
 }
 
-/// Writes images to `/dev/shm` under names unique to this process.
+/// Writes images to `/dev/shm` or the temporary directory under names unique to this
+/// process.
 pub struct SharedMemory {
+    medium: Medium,
     next: u64,
     written: Vec<(PathBuf, Instant)>,
 }
@@ -113,8 +170,10 @@ pub struct SharedMemory {
 impl SharedMemory {
     /// Also removes objects left behind by earlier runs that have since exited.
     pub fn new() -> Self {
-        remove_orphans();
+        let medium = Medium::detect();
+        remove_orphans(medium);
         Self {
+            medium,
             next: 0,
             written: Vec::new(),
         }
@@ -122,16 +181,26 @@ impl SharedMemory {
 
     /// # Errors
     ///
-    /// Fails if `/dev/shm` is missing or full.
+    /// Fails if the directory is missing or full.
     pub fn write(&mut self, image: &Rgba) -> io::Result<Shared> {
         self.remove_abandoned();
-        let name = format!("{SHM_PREFIX}{}-{}", std::process::id(), self.next);
+        let name = format!(
+            "{}{}-{}",
+            self.medium.prefix(),
+            std::process::id(),
+            self.next
+        );
         self.next += 1;
-        let path = PathBuf::from(SHM_DIR).join(&name);
+        let path = self.medium.dir().join(&name);
         fs::write(&path, &image.data)?;
+        let name = match self.medium {
+            Medium::SharedMemory => format!("/{name}"),
+            Medium::TempFile => path.to_string_lossy().into_owned(),
+        };
         self.written.push((path, Instant::now()));
         Ok(Shared {
-            name: format!("/{name}"),
+            medium: self.medium,
+            name,
             width: image.width,
             height: image.height,
             len: image.data.len(),
@@ -158,21 +227,33 @@ impl Drop for SharedMemory {
     }
 }
 
-/// Removes objects whose process no longer runs, e.g. after a crash.
-fn remove_orphans() {
-    let Ok(entries) = fs::read_dir(SHM_DIR) else {
+/// Removes objects whose process no longer runs, e.g. after a crash. Without `/proc`
+/// (macOS), removes those older than [`ORPHANED_AFTER`] instead.
+fn remove_orphans(medium: Medium) {
+    let Ok(entries) = fs::read_dir(medium.dir()) else {
         return;
     };
+    let proc = Path::new("/proc/self").exists();
     for entry in entries.flatten() {
         let name = entry.file_name();
         let Some(pid) = name
             .to_str()
-            .and_then(|n| n.strip_prefix(SHM_PREFIX))
+            .and_then(|n| n.strip_prefix(medium.prefix()))
             .and_then(|rest| rest.split('-').next())
         else {
             continue;
         };
-        if !PathBuf::from("/proc").join(pid).exists() {
+        let orphaned = if proc {
+            !PathBuf::from("/proc").join(pid).exists()
+        } else {
+            entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|at| SystemTime::now().duration_since(at).ok())
+                .is_some_and(|age| age > ORPHANED_AFTER)
+        };
+        if orphaned {
             let _ = fs::remove_file(entry.path());
         }
     }
@@ -283,6 +364,7 @@ mod tests {
     #[test]
     fn transmit_names_object_and_size() {
         let shared = Shared {
+            medium: Medium::SharedMemory,
             name: "/thermo-chart-1-0".into(),
             width: 28,
             height: 64,
@@ -293,5 +375,46 @@ mod tests {
             "\x1b_Ga=d,d=I,i=7,q=2\x1b\\\
              \x1b_Ga=T,U=1,q=2,i=7,f=32,t=s,s=28,v=64,S=7168,c=2,r=2;L3RoZXJtby1jaGFydC0xLTA=\x1b\\"
         );
+    }
+
+    #[test]
+    fn temp_files_use_t_t_and_their_path() {
+        let shared = Shared {
+            medium: Medium::TempFile,
+            name: "/tmp/thermo-chart-tty-graphics-protocol-1-0".into(),
+            width: 1,
+            height: 1,
+            len: 4,
+        };
+        let sequence = shared.transmit(7, 1, 1);
+        assert!(sequence.contains(",t=t,"));
+        assert!(sequence.ends_with(&format!(
+            ";{}\x1b\\",
+            base64(b"/tmp/thermo-chart-tty-graphics-protocol-1-0")
+        )));
+        assert!(TEMP_PREFIX.contains("tty-graphics-protocol"));
+    }
+
+    #[test]
+    fn temp_file_round_trip() {
+        let mut memory = SharedMemory {
+            medium: Medium::TempFile,
+            next: 0,
+            written: Vec::new(),
+        };
+        let image = Rgba {
+            width: 1,
+            height: 1,
+            data: vec![1, 2, 3, 4],
+        };
+        let shared = memory.write(&image).expect("temp dir is writable");
+        assert!(
+            shared
+                .name
+                .starts_with(&*std::env::temp_dir().to_string_lossy())
+        );
+        assert_eq!(fs::read(&shared.name).expect("written"), image.data);
+        drop(memory);
+        assert!(!Path::new(&shared.name).exists());
     }
 }

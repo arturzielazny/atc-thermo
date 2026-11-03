@@ -197,10 +197,10 @@ fun MetricSelector(metric: Metric, onSelect: (Metric) -> Unit, modifier: Modifie
 }
 
 @Composable
-fun SpanChips(model: ThermoModel, modifier: Modifier = Modifier) {
+fun SpanChips(selected: Int, onSelect: (Int) -> Unit, modifier: Modifier = Modifier) {
     Row(modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
         WINDOWS.forEachIndexed { i, span ->
-            FilterChip(selected = model.windowIndex == i, onClick = { model.windowIndex = i }, label = { Text(formatSpan(span)) })
+            FilterChip(selected = selected == i, onClick = { onSelect(i) }, label = { Text(formatSpan(span)) })
         }
     }
 }
@@ -219,7 +219,7 @@ private fun ChartCard(model: ThermoModel, devices: List<Device>, revision: Long,
                 points = points,
             )
             Row(verticalAlignment = Alignment.CenterVertically) {
-                SpanChips(model, Modifier.weight(1f))
+                SpanChips(model.windowIndex, { model.windowIndex = it }, Modifier.weight(1f))
                 IconButton(onClick = onTogglePoints) {
                     Icon(if (points) Icons.AutoMirrored.Filled.ShowChart else Icons.Default.ScatterPlot, if (points) "Lines" else "Points")
                 }

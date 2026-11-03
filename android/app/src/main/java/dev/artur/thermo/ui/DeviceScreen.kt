@@ -136,7 +136,7 @@ fun DeviceScreen(
                         model.metric, now - model.window, now, revision,
                         Modifier.fillMaxWidth().height(220.dp).padding(top = 12.dp),
                     )
-                    SpanChips(model)
+                    SpanChips(model.windowIndex, { model.windowIndex = it })
                 }
             }
 

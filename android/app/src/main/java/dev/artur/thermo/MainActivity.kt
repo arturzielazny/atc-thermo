@@ -60,7 +60,7 @@ import dev.artur.thermo.ui.RenameDialog
 import dev.artur.thermo.ui.SettingsSheet
 import dev.artur.thermo.ui.ThermoTheme
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.flow.transform
 
 /** How often the UI follows the model at most; adverts arrive several times a second. */
 private const val REDRAW_INTERVAL_MS = 400L
@@ -159,8 +159,9 @@ class MainActivity : ComponentActivity() {
             return
         }
         val model = controller.model
-        // StateFlow keeps only the latest value, so a slow collector skips intermediate ones.
-        val revision by remember { model.revision.onEach { delay(REDRAW_INTERVAL_MS) } }.collectAsState(0L)
+        // Redraw at once, then at most every REDRAW_INTERVAL_MS: StateFlow keeps only the latest
+        // value while the collector waits, so intermediate ones are skipped.
+        val revision by remember { model.revision.transform { emit(it); delay(REDRAW_INTERVAL_MS) } }.collectAsState(0L)
         val now by produceState(System.currentTimeMillis()) {
             while (true) {
                 value = System.currentTimeMillis()

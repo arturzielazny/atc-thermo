@@ -89,6 +89,13 @@ Chrome on Android works out of the box.
 Agreement isn't absolute accuracy. For absolute humidity, add a salt test (75.3 %RH
 over saturated NaCl).
 
+## Android
+
+[`android/`](android) has the same features as an Android app, built for touch: cards,
+a chart with a crosshair, multi-select actions, a range slider for the calibration
+window, and recording in the background. Its history files are the same CSVs and can be
+moved between phone and computer. See [android/README.md](android/README.md).
+
 ## Customize it with an AI agent
 
 [AGENTS.md](AGENTS.md) describes the architecture, what's platform-specific and how to

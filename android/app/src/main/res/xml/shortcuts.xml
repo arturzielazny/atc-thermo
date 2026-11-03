@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:shortcutId="calibration"
+        android:icon="@drawable/ic_shortcut_calibration"
+        android:shortcutShortLabel="@string/shortcut_calibration">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="dev.artur.thermo"
+            android:targetClass="dev.artur.thermo.MainActivity">
+            <extra android:name="screen" android:value="calibration" />
+        </intent>
+    </shortcut>
+    <shortcut
+        android:shortcutId="leveling"
+        android:icon="@drawable/ic_shortcut_signal"
+        android:shortcutShortLabel="@string/shortcut_leveling">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="dev.artur.thermo"
+            android:targetClass="dev.artur.thermo.MainActivity">
+            <extra android:name="screen" android:value="leveling" />
+        </intent>
+    </shortcut>
+</shortcuts>

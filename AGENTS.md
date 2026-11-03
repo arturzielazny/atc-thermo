@@ -27,6 +27,7 @@ calibration coefficients over GATT. Linux only today (BlueZ via the `bluer` crat
 | `crates/thermo/src/calibrate.rs` | Glue from history to `calibration`, and from fits to coefficients. | portable |
 | `crates/thermo/src/level.rs` | Signal levelling: per-device median RSSI and the TX power change towards a common target. | portable |
 | `crates/thermo/src/ui/` | ratatui widgets. `chart.rs` axes and layout, `plot.rs` tiny-skia rasterizer, `kitty.rs` kitty graphics protocol via `/dev/shm`, braille fallback in `chart.rs`. | `kitty.rs` assumes `/dev/shm` |
+| `android/` | Android app (Kotlin, Compose): ports of `bthome`, `calibration`, the `atc` encodings and `app.rs`, plus an Android GATT client and scanner. See `android/README.md`. | Android |
 | `scripts/` | The original Python prototypes (`dbus-python`). Not used by the app. | Linux |
 | `site/` | GitHub Pages site, deployed by `.github/workflows/pages.yml`. Static HTML, no build step. | — |
 
@@ -39,6 +40,13 @@ cargo test --workspace                                   # no hardware needed
 cargo run --release -p thermo                            # needs Bluetooth
 cargo run --release -p thermo -- calibrate 6             # offline: fit the last 6 h of saved history
 cargo run -p atc --example probe -- A4:C1:38:xx:xx:xx    # read-only dump of one device
+```
+
+Android (`android/`, not part of the Cargo workspace):
+
+```bash
+cd android && ./gradlew testDebugUnitTest      # JVM tests, no phone needed
+cd android && ./gradlew installDebug           # needs a phone with USB debugging
 ```
 
 Build dependencies: Rust ≥ 1.85, `pkg-config` and the libdbus headers (`libdbus-1-dev`
@@ -61,6 +69,9 @@ on Debian/Ubuntu, `dbus-devel` on Fedora, `dbus` on Arch).
 - Match the surrounding style: small modules with a `//!` doc line, doc comments on
   items, named constants with a comment saying where the value comes from, `anyhow` in
   `thermo`, typed errors in the library crates.
+- The Android app ports the Rust logic rather than calling it. A change to the
+  calibration algorithm, a byte layout or a CSV format must be made in both, with tests
+  on both sides; `android/.../RealDataTest.kt` compares a fit with the Rust crate on real data.
 
 ## Firmware facts worth knowing
 

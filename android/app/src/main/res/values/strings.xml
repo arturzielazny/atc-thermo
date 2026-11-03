@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="shortcut_calibration">Calibrate</string>
+    <string name="shortcut_leveling">Signal levelling</string>
+    <string name="widget_description">Latest temperature and humidity of each thermometer</string>
+</resources>

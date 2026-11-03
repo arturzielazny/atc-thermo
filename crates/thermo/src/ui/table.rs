@@ -28,7 +28,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         .map(|(i, device)| row(app, i + 1, device, device_color(i), now))
         .collect();
     let header = Row::new([
-        "", "#", "Device", "Address", "Temp", "Humidity", "Battery", "Voltage", "RSSI", "RSSI 5m",
+        "", "#", "Device", "Id", "Temp", "Humidity", "Battery", "Voltage", "RSSI", "RSSI 5m",
         "Seen", "Clock", "TX power", "Adv", "Measure", "Log", "Status",
     ])
     .style(Style::new().bold());
@@ -146,7 +146,7 @@ fn row(
         ])),
         Cell::from(format!("{number:>2}")),
         Cell::from(device.name.clone()),
-        Cell::from(device.address.to_string()),
+        Cell::from(device.address.short()),
         Cell::from(temperature),
         Cell::from(humidity),
         level_cell(

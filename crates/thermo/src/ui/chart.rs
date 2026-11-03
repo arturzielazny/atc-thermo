@@ -408,7 +408,7 @@ fn spawn_renderer(
             .and_then(|pixels| {
                 memory
                     .write(&pixels)
-                    .map_err(|e| format!("writing to shared memory: {e}"))
+                    .map_err(|e| format!("handing the chart to the terminal: {e}"))
             });
             let update = ChartUpdate {
                 view: request.view,

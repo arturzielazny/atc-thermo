@@ -1,20 +1,26 @@
+//! [`Thermometer`]: one open connection, over `btleplug`, to a device running pvvx
+//! ATC or THB2 firmware.
+
 use std::pin::Pin;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use bluer::gatt::remote::Characteristic;
-use bluer::{Adapter, Address, Device, Uuid};
+use btleplug::api::{
+    BDAddr, Central as _, CharPropFlags, Characteristic, Manager as _, Peripheral as _, WriteType,
+};
+pub use btleplug::platform::{Adapter, Peripheral};
 use futures::{FutureExt, Stream, StreamExt};
 use tokio::time::{Instant, timeout, timeout_at};
+use uuid::Uuid;
 
 use crate::clock::ticks_delta;
 use crate::coefficients::COEFFICIENTS_LEN;
-use crate::config::CONFIG_LEN;
+use crate::firmware::DEV_ID_MIN_LEN;
 use crate::log::LOG_RECORD_LEN;
 use crate::screen::SCREEN_MESSAGE_LEN;
-use crate::{ClockReading, Coefficients, Config, Error, LogRecord, ScreenMessage};
-
-/// The firmware's command/notify characteristic `0x1F1F`.
-const COMMAND_UUID: Uuid = Uuid::from_u128(0x0000_1f1f_0000_1000_8000_0080_5f9b_34fb);
+use crate::{
+    ATC_MAX_GAIN, ClockReading, Coefficients, Config, DeviceId, DeviceInfo, Error, Firmware,
+    LogRecord, ScreenMessage, SensorInfo,
+};
 
 const CMD_DEV_ID: u8 = 0x00;
 const CMD_NAME: u8 = 0x01;
@@ -26,15 +32,13 @@ const CMD_COEFFICIENTS_DEFAULT: u8 = 0x26;
 const CMD_LOG: u8 = 0x35;
 const CMD_CONFIG: u8 = 0x55;
 
-/// Oldest firmware whose config layout this crate knows (BCD, v4.7).
-const MIN_VERSION: u16 = 0x47;
-/// Longest name the firmware stores.
+/// Longest name either firmware stores (THB2: `GAP_DEVICE_NAME_LEN` 21 incl. the 0).
 pub const MAX_NAME_LEN: usize = 20;
 
 const CONNECT_ATTEMPTS: u32 = 4;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(25);
 const CONNECT_RETRY_PAUSE: Duration = Duration::from_secs(1);
-/// How long to wait for a device BlueZ has forgotten to advertise again.
+/// How long to wait for a device the BLE stack has forgotten to advertise again.
 const DEVICE_APPEAR_TIMEOUT: Duration = Duration::from_secs(30);
 /// Writes are unacknowledged, so a command is resent if no answer arrives in time.
 const COMMAND_ATTEMPTS: u32 = 5;
@@ -44,90 +48,152 @@ const LOG_RECORD_TIMEOUT: Duration = Duration::from_secs(5);
 
 type Notifications = Pin<Box<dyn Stream<Item = Vec<u8>> + Send>>;
 
-/// Identity reported by the firmware (`CMD_ID_DEV_ID`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DeviceInfo {
-    /// Hardware revision code (for LYWSD03MMC: 4 = B1.6, ...).
-    pub hardware: u16,
-    /// Firmware version, BCD: `0x59` is v5.9.
-    pub firmware: u16,
+/// The first Bluetooth adapter of this machine.
+///
+/// On macOS every call opens a new `CBCentralManager`, which only knows the devices
+/// it has scanned itself: create one and share it between scanning and connecting.
+///
+/// # Errors
+///
+/// Fails if the BLE stack is unavailable or there is no adapter.
+pub async fn default_adapter() -> Result<Adapter, Error> {
+    let manager = btleplug::platform::Manager::new().await?;
+    manager
+        .adapters()
+        .await?
+        .into_iter()
+        .next()
+        .ok_or_else(|| Error::NotFound("bluetooth adapter".into()))
 }
 
-impl DeviceInfo {
-    /// Firmware version as text, e.g. `"5.9"`.
-    #[must_use]
-    pub fn firmware_version(&self) -> String {
-        format!("{}.{}", self.firmware >> 4, self.firmware & 0xf)
+/// How this machine names `peripheral`: its MAC where the stack shows it (BlueZ,
+/// WinRT), else the CoreBluetooth UUID.
+#[must_use]
+pub fn device_id(peripheral: &Peripheral) -> DeviceId {
+    let address = peripheral.address();
+    if address != BDAddr::default() {
+        return DeviceId::Mac(address.into_inner());
     }
+    Uuid::parse_str(&peripheral.id().to_string())
+        .map_or(DeviceId::Mac(address.into_inner()), DeviceId::Uuid)
+}
+
+/// The peripheral the adapter lists under `id`, if any.
+///
+/// # Errors
+///
+/// Fails if the adapter cannot list peripherals.
+pub async fn find_peripheral(adapter: &Adapter, id: DeviceId) -> Result<Option<Peripheral>, Error> {
+    Ok(adapter
+        .peripherals()
+        .await?
+        .into_iter()
+        .find(|p| device_id(p) == id))
+}
+
+/// Drops a connection to `id` that may be left over, e.g. from a cancelled connect.
+///
+/// # Errors
+///
+/// Fails if the BLE stack does.
+pub async fn disconnect(adapter: &Adapter, id: DeviceId) -> Result<(), Error> {
+    if let Some(peripheral) = find_peripheral(adapter, id).await? {
+        if peripheral.is_connected().await? {
+            peripheral.disconnect().await?;
+        }
+    }
+    Ok(())
 }
 
 /// An open connection to a thermometer running pvvx firmware.
 ///
 /// Only one command runs at a time; methods take `&mut self`.
 pub struct Thermometer {
-    device: Device,
+    peripheral: Peripheral,
+    id: DeviceId,
     command: Characteristic,
+    write_type: WriteType,
     notifications: Notifications,
     info: DeviceInfo,
+    /// THB2 only: learned from the coefficient reply.
+    sensor: Option<SensorInfo>,
 }
 
 impl Thermometer {
-    /// Connects to a device BlueZ already knows (i.e. one seen while scanning).
+    /// Connects to a device the adapter already knows (i.e. one seen while scanning)
+    /// and detects its firmware family by its command characteristic.
     ///
     /// # Errors
     ///
     /// Fails if the connection cannot be made, the device is not running pvvx
-    /// firmware, or the firmware is older than v4.7.
-    pub async fn connect(adapter: &Adapter, address: Address) -> Result<Self, Error> {
-        let device = adapter.device(address)?;
+    /// firmware, or the firmware is older than [`Firmware::min_version`].
+    pub async fn connect(adapter: &Adapter, id: DeviceId) -> Result<Self, Error> {
         let mut attempt = 0;
-        loop {
-            wait_until_known(adapter, address).await?;
-            if device.is_connected().await? {
-                break;
+        let peripheral = loop {
+            let peripheral = wait_until_known(adapter, id).await?;
+            if peripheral.is_connected().await? {
+                break peripheral;
             }
             attempt += 1;
-            let error = match timeout(CONNECT_TIMEOUT, device.connect()).await {
+            let error = match timeout(CONNECT_TIMEOUT, peripheral.connect()).await {
                 Ok(Ok(())) => continue,
                 Ok(Err(err)) => Error::Bluetooth(err),
                 Err(_) => Error::Timeout { command: 0 },
             };
-            // A timed-out or concurrent attempt may still be pending inside BlueZ, which
-            // makes the next one fail with "in progress"; cancelling it clears that.
-            let _ = device.disconnect().await;
+            // A timed-out or concurrent attempt may still be pending inside the stack,
+            // which makes the next one fail with "in progress"; cancelling it clears that.
+            let _ = peripheral.disconnect().await;
             if attempt >= CONNECT_ATTEMPTS {
                 return Err(error);
             }
             tokio::time::sleep(CONNECT_RETRY_PAUSE).await;
-        }
+        };
 
-        let mut command = None;
-        for service in device.services().await? {
-            for characteristic in service.characteristics().await? {
-                if characteristic.uuid().await? == COMMAND_UUID {
-                    command = Some(characteristic);
-                }
-            }
-        }
-        let command = command.ok_or(Error::NotPvvx)?;
-        let notifications: Notifications = Box::pin(command.notify().await?);
+        timeout(CONNECT_TIMEOUT, peripheral.discover_services())
+            .await
+            .map_err(|_| Error::Timeout { command: 0 })??;
+        let (family, command) = peripheral
+            .characteristics()
+            .into_iter()
+            .find_map(|c| Firmware::from_command_uuid(c.uuid).map(|f| (f, c)))
+            .ok_or(Error::NotPvvx)?;
+        // THB2 declares only write-without-response; ATC both.
+        let write_type = if command
+            .properties
+            .contains(CharPropFlags::WRITE_WITHOUT_RESPONSE)
+        {
+            WriteType::WithoutResponse
+        } else {
+            WriteType::WithResponse
+        };
+        let uuid = command.uuid;
+        let notifications: Notifications = Box::pin(
+            peripheral
+                .notifications()
+                .await?
+                .filter_map(move |n| futures::future::ready((n.uuid == uuid).then_some(n.value))),
+        );
+        peripheral.subscribe(&command).await?;
         let mut thermometer = Self {
-            device,
+            peripheral,
+            id,
             command,
+            write_type,
             notifications,
             info: DeviceInfo {
+                family,
                 hardware: 0,
                 firmware: 0,
+                services: None,
             },
+            sensor: None,
         };
 
-        let reply = thermometer.command(&[CMD_DEV_ID], 6).await?;
-        thermometer.info = DeviceInfo {
-            hardware: u16::from_le_bytes([reply[2], reply[3]]),
-            firmware: u16::from_le_bytes([reply[4], reply[5]]),
-        };
-        if thermometer.info.firmware < MIN_VERSION {
+        let reply = thermometer.command(&[CMD_DEV_ID], DEV_ID_MIN_LEN).await?;
+        thermometer.info = DeviceInfo::from_reply(family, &reply);
+        if thermometer.info.firmware < family.min_version() {
             return Err(Error::UnsupportedFirmware {
+                firmware: family,
                 version: thermometer.info.firmware,
             });
         }
@@ -135,13 +201,45 @@ impl Thermometer {
     }
 
     #[must_use]
-    pub fn address(&self) -> Address {
-        self.device.address()
+    pub fn id(&self) -> DeviceId {
+        self.id
     }
 
     #[must_use]
     pub fn info(&self) -> DeviceInfo {
         self.info
+    }
+
+    #[must_use]
+    pub fn firmware(&self) -> Firmware {
+        self.info.family
+    }
+
+    /// The sensor a THB2 device reported with its last coefficient reply.
+    #[must_use]
+    pub fn sensor(&self) -> Option<SensorInfo> {
+        self.sensor
+    }
+
+    /// Largest gain coefficient this device takes, for
+    /// [`Coefficients::corrected_within`]. Reads the coefficients on THB2 if the
+    /// sensor is not known yet.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the device does not answer.
+    pub async fn max_gain(&mut self) -> Result<u32, Error> {
+        match self.firmware() {
+            Firmware::Atc => Ok(ATC_MAX_GAIN),
+            Firmware::Thb => {
+                if self.sensor.is_none() {
+                    self.coefficients().await?;
+                }
+                Ok(self
+                    .sensor
+                    .map_or(crate::THB_AHT_MAX_GAIN, |s| s.max_gain()))
+            }
+        }
     }
 
     /// # Errors
@@ -154,7 +252,7 @@ impl Thermometer {
 
     /// Stores a new name; the device restarts and uses it once disconnected.
     ///
-    /// Returns the name as stored. An empty name restores the default `ATC_xxxxxx`.
+    /// Returns the name as stored. An empty name restores the default (`ATC_xxxxxx`, `THB1-xxxxxx`, ...).
     ///
     /// # Errors
     ///
@@ -180,20 +278,30 @@ impl Thermometer {
     ///
     /// Fails if the device does not answer.
     pub async fn config(&mut self) -> Result<Config, Error> {
-        let reply = self.command(&[CMD_CONFIG], 2 + CONFIG_LEN).await?;
-        Ok(config_from_reply(&reply))
+        let family = self.firmware();
+        let reply = self
+            .command(&[CMD_CONFIG], config_reply_len(family))
+            .await?;
+        Ok(config_from_reply(family, &reply))
     }
 
     /// Writes the config and returns it as the device accepted it (it may clamp values).
     ///
     /// # Errors
     ///
-    /// Fails if the device does not answer.
+    /// Fails if `config` is for the other firmware family or the device does not answer.
     pub async fn set_config(&mut self, config: &Config) -> Result<Config, Error> {
+        let family = self.firmware();
+        if config.firmware() != family {
+            return Err(Error::InvalidValue(format!(
+                "{} config for a {family} device",
+                config.firmware()
+            )));
+        }
         let mut payload = vec![CMD_CONFIG];
         payload.extend_from_slice(config.as_bytes());
-        let reply = self.command(&payload, 2 + CONFIG_LEN).await?;
-        Ok(config_from_reply(&reply))
+        let reply = self.command(&payload, config_reply_len(family)).await?;
+        Ok(config_from_reply(family, &reply))
     }
 
     /// # Errors
@@ -203,7 +311,7 @@ impl Thermometer {
         let reply = self
             .command(&[CMD_COEFFICIENTS], 1 + COEFFICIENTS_LEN)
             .await?;
-        Ok(coefficients_from_reply(&reply))
+        Ok(self.coefficients_from_reply(&reply))
     }
 
     /// Writes new sensor coefficients (persisted in flash) and returns them as read back.
@@ -218,10 +326,13 @@ impl Thermometer {
         let mut payload = vec![CMD_COEFFICIENTS];
         payload.extend_from_slice(&coefficients.to_bytes());
         let reply = self.command(&payload, 1 + COEFFICIENTS_LEN).await?;
-        Ok(coefficients_from_reply(&reply))
+        Ok(self.coefficients_from_reply(&reply))
     }
 
     /// Restores the factory coefficients for the sensor type.
+    ///
+    /// THB2 only resets them in RAM (`CMD_ID_CFS_DEF` does not write flash), so the
+    /// defaults are written back to make the reset survive a reboot.
     ///
     /// # Errors
     ///
@@ -230,7 +341,11 @@ impl Thermometer {
         let reply = self
             .command(&[CMD_COEFFICIENTS_DEFAULT], 1 + COEFFICIENTS_LEN)
             .await?;
-        Ok(coefficients_from_reply(&reply))
+        let defaults = self.coefficients_from_reply(&reply);
+        match self.firmware() {
+            Firmware::Atc => Ok(defaults),
+            Firmware::Thb => self.set_coefficients(&defaults).await,
+        }
     }
 
     /// # Errors
@@ -268,9 +383,12 @@ impl Thermometer {
     ///
     /// # Errors
     ///
-    /// Fails if the message cannot be displayed, or the device does not answer or
-    /// stores something else.
+    /// Fails if the device has no screen, the message cannot be displayed, or the
+    /// device does not answer or stores something else.
     pub async fn show(&mut self, message: &ScreenMessage) -> Result<(), Error> {
+        if !self.info.has_screen() {
+            return Err(Error::Unsupported("a screen"));
+        }
         let bytes = message.to_bytes()?;
         let mut payload = vec![CMD_SCREEN];
         payload.extend_from_slice(&bytes);
@@ -289,8 +407,10 @@ impl Thermometer {
     ///
     /// # Errors
     ///
-    /// Fails if the device does not answer, e.g. firmware built without time adjustment.
+    /// Fails with [`Error::Unsupported`] on THB2 (built without time adjustment), or
+    /// if the device does not answer.
     pub async fn second_ticks(&mut self) -> Result<u32, Error> {
+        self.require_clock_rate()?;
         let reply = self.command(&[CMD_SECOND_TICKS], 5).await?;
         Ok(u32::from_le_bytes([reply[1], reply[2], reply[3], reply[4]]))
     }
@@ -302,6 +422,7 @@ impl Thermometer {
     /// Fails if `ticks` is outside nominal ± 32767, or the device does not answer or
     /// stores something else.
     pub async fn set_second_ticks(&mut self, ticks: u32) -> Result<u32, Error> {
+        self.require_clock_rate()?;
         let delta = ticks_delta(ticks).ok_or_else(|| {
             Error::InvalidValue(format!("{ticks} ticks per second is out of range"))
         })?;
@@ -329,6 +450,9 @@ impl Thermometer {
         max_records: u16,
         mut wanted: impl FnMut(&LogRecord) -> bool,
     ) -> Result<Vec<LogRecord>, Error> {
+        if !self.info.has_log() {
+            return Err(Error::Unsupported("a measurement log"));
+        }
         let [lo, hi] = max_records.to_le_bytes();
         let mut records = Vec::new();
         let mut attempts = 0;
@@ -369,14 +493,32 @@ impl Thermometer {
 
     /// # Errors
     ///
-    /// Fails if BlueZ cannot disconnect.
+    /// Fails if the BLE stack cannot disconnect.
     pub async fn disconnect(self) -> Result<(), Error> {
-        Ok(self.device.disconnect().await?)
+        Ok(self.peripheral.disconnect().await?)
+    }
+
+    fn require_clock_rate(&self) -> Result<(), Error> {
+        if self.info.has_clock_rate() {
+            Ok(())
+        } else {
+            Err(Error::Unsupported("clock rate trimming"))
+        }
+    }
+
+    fn coefficients_from_reply(&mut self, reply: &[u8]) -> Coefficients {
+        if self.firmware() == Firmware::Thb {
+            self.sensor = SensorInfo::from_thb_reply(reply).or(self.sensor);
+        }
+        coefficients_from_reply(reply)
     }
 
     async fn write(&mut self, payload: &[u8]) -> Result<(), Error> {
         // `&mut` keeps the futures `Send` without requiring `Thermometer: Sync`.
-        Ok(self.command.write(payload).await?)
+        Ok(self
+            .peripheral
+            .write(&self.command, payload, self.write_type)
+            .await?)
     }
 
     /// Sends a command and returns its reply, which must be at least `min_len` bytes.
@@ -436,19 +578,20 @@ impl Thermometer {
     }
 }
 
-/// Waits for BlueZ to list the device. It drops devices it has not heard from in a
-/// while (e.g. after discovery restarts) and lists them again on their next advert.
-async fn wait_until_known(adapter: &Adapter, address: Address) -> Result<(), Error> {
+/// Waits for the adapter to list the device. BlueZ drops devices it has not heard
+/// from in a while (e.g. after discovery restarts) and lists them again on their next
+/// advert; CoreBluetooth only lists what this process has scanned.
+async fn wait_until_known(adapter: &Adapter, id: DeviceId) -> Result<Peripheral, Error> {
     let deadline = Instant::now() + DEVICE_APPEAR_TIMEOUT;
-    while !adapter.device_addresses().await?.contains(&address) {
+    loop {
+        if let Some(peripheral) = find_peripheral(adapter, id).await? {
+            return Ok(peripheral);
+        }
         if Instant::now() >= deadline {
-            return Err(Error::InvalidValue(format!(
-                "{address} is not in range (not seen by BlueZ)"
-            )));
+            return Err(Error::NotFound(id.to_string()));
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
-    Ok(())
 }
 
 // Connections are handed to background tasks, so they must stay `Send`.
@@ -462,12 +605,22 @@ fn decode_name(bytes: &[u8]) -> String {
     String::from_utf8_lossy(&bytes[..end]).into_owned()
 }
 
-/// Config replies are `[0x55, firmware version, cfg_t...]`.
-fn config_from_reply(reply: &[u8]) -> Config {
-    let bytes: [u8; CONFIG_LEN] = reply[2..2 + CONFIG_LEN]
-        .try_into()
-        .expect("caller checked the length");
-    Config::from_bytes(bytes)
+/// Where `cfg_t` starts in a config reply: ATC sends `[0x55, firmware version,
+/// cfg_t...]`, THB2 `[0x55, cfg_t...]`.
+fn config_offset(family: Firmware) -> usize {
+    match family {
+        Firmware::Atc => 2,
+        Firmware::Thb => 1,
+    }
+}
+
+fn config_reply_len(family: Firmware) -> usize {
+    config_offset(family) + Config::len_for(family)
+}
+
+/// The caller checked the reply is [`config_reply_len`] long.
+fn config_from_reply(family: Firmware, reply: &[u8]) -> Config {
+    Config::from_slice(family, &reply[config_offset(family)..])
 }
 
 fn coefficients_from_reply(reply: &[u8]) -> Coefficients {
@@ -497,10 +650,21 @@ mod tests {
 
     #[test]
     fn parses_replies() {
-        let config = config_from_reply(&[
+        let reply = [
             0x55, 0x59, 0x87, 0x10, 0x0a, 0x06, 0x28, 0x04, 0xa9, 0x31, 0x31, 0x04, 0xb4, 0x00,
-        ]);
+        ];
+        assert!(reply.len() >= config_reply_len(Firmware::Atc));
+        let config = config_from_reply(Firmware::Atc, &reply);
         assert_eq!(config.measure_interval(), 4);
+
+        // THB1 `def_cfg` as `cmd_parser.c` sends it: no version byte.
+        let reply = [0x55, 0x05, 0, 0, 0, 0x1f, 80, 29, 16, 2, 60, 180, 0];
+        assert_eq!(reply.len(), config_reply_len(Firmware::Thb));
+        let config = config_from_reply(Firmware::Thb, &reply);
+        assert_eq!(config.firmware(), Firmware::Thb);
+        assert_eq!(config.measure_interval(), 2);
+        assert_eq!(config.advertising_interval(), Duration::from_secs(5));
+        assert!(config.tx_power().is_factory());
 
         let clock = clock_from_reply(&[0x23, 1, 0, 0, 0, 2, 0, 0, 0], UNIX_EPOCH);
         assert_eq!(clock.device_now, 1);

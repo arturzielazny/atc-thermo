@@ -3,11 +3,12 @@
 use std::time::{Duration, SystemTime};
 
 use atc::{
-    ClockReading, Coefficients, Config, Correction, ScreenMessage, Smiley, Thermometer, TxPower,
+    Adapter, ClockReading, Coefficients, Config, Correction, DeviceId, ScreenMessage, Smiley,
+    Thermometer, TxPower,
 };
-use bluer::{Adapter, Address};
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
+use crate::ble::Ble;
 use crate::devices::LoggedSample;
 
 /// Longest a single job may take, including connecting.
@@ -23,7 +24,8 @@ pub const IDENTIFY_DURATION: Duration = Duration::from_secs(30 * 60);
 pub struct Settings {
     pub advertising_interval: Option<Duration>,
     pub measure_interval: Option<u8>,
-    pub tx_power: Option<TxPower>,
+    /// In dBm; each device takes its firmware's nearest level.
+    pub tx_power: Option<f32>,
     /// Desired time per on-device log record.
     pub log_period: Option<Duration>,
 }
@@ -58,7 +60,7 @@ pub enum Action {
     AdjustTxPower {
         change_db: f32,
     },
-    /// Set the TX power the firmware starts with, [`TxPower::FACTORY`].
+    /// Set the TX power the firmware starts with, [`TxPower::factory`].
     ResetTxPower,
     /// Compose a correction onto the device's current coefficients.
     Calibrate {
@@ -87,7 +89,7 @@ impl Action {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Job {
-    pub address: Address,
+    pub address: DeviceId,
     pub action: Action,
 }
 
@@ -142,23 +144,23 @@ pub enum RateTrim {
 #[derive(Debug, Clone, PartialEq)]
 pub enum JobEvent {
     Started {
-        address: Address,
+        address: DeviceId,
         label: &'static str,
     },
     Finished {
-        address: Address,
+        address: DeviceId,
         outcome: Result<Outcome, String>,
     },
 }
 
 /// Starts the worker; jobs sent to the returned sender run in order.
-pub fn spawn(events: UnboundedSender<JobEvent>) -> UnboundedSender<Job> {
+pub fn spawn(ble: Ble, events: UnboundedSender<JobEvent>) -> UnboundedSender<Job> {
     let (jobs_tx, jobs_rx) = mpsc::unbounded_channel();
-    tokio::spawn(run(jobs_rx, events));
+    tokio::spawn(run(ble, jobs_rx, events));
     jobs_tx
 }
 
-async fn run(mut jobs: UnboundedReceiver<Job>, events: UnboundedSender<JobEvent>) {
+async fn run(ble: Ble, mut jobs: UnboundedReceiver<Job>, events: UnboundedSender<JobEvent>) {
     while let Some(job) = jobs.recv().await {
         let address = job.address;
         if events
@@ -170,7 +172,7 @@ async fn run(mut jobs: UnboundedReceiver<Job>, events: UnboundedSender<JobEvent>
         {
             return;
         }
-        let outcome = match default_adapter().await {
+        let outcome = match ble.adapter().await {
             Ok(adapter) => execute_with_timeout(&adapter, job).await,
             Err(err) => Err(format!("no Bluetooth adapter: {err}")),
         };
@@ -183,21 +185,13 @@ async fn run(mut jobs: UnboundedReceiver<Job>, events: UnboundedSender<JobEvent>
     }
 }
 
-/// A new BlueZ session for every job, so jobs work again once `bluetoothd` restarts
-/// or the adapter comes back.
-async fn default_adapter() -> bluer::Result<Adapter> {
-    bluer::Session::new().await?.default_adapter().await
-}
-
 async fn execute_with_timeout(adapter: &Adapter, job: Job) -> Result<Outcome, String> {
     let address = job.address;
     if let Ok(result) = tokio::time::timeout(JOB_TIMEOUT, execute(adapter, job)).await {
         return result;
     }
     // The cancelled job may have left the connection open.
-    if let Ok(device) = adapter.device(address) {
-        let _ = device.disconnect().await;
-    }
+    let _ = atc::disconnect(adapter, address).await;
     Err("timed out".to_owned())
 }
 
@@ -205,14 +199,10 @@ async fn execute(adapter: &Adapter, job: Job) -> Result<Outcome, String> {
     let mut thermometer = match Thermometer::connect(adapter, job.address).await {
         Ok(thermometer) => thermometer,
         Err(err) => {
-            // BlueZ can finish a connection after we gave up on it; a connected
+            // The stack can finish a connection after we gave up on it; a connected
             // thermometer stops advertising, so make sure none is left behind.
             tokio::time::sleep(LATE_CONNECT_GRACE).await;
-            if let Ok(device) = adapter.device(job.address)
-                && device.is_connected().await.unwrap_or(false)
-            {
-                let _ = device.disconnect().await;
-            }
+            let _ = atc::disconnect(adapter, job.address).await;
             return Err(err.to_string());
         }
     };
@@ -250,20 +240,22 @@ async fn perform(t: &mut Thermometer, action: Action) -> Result<Outcome, atc::Er
         Action::ReadConfig => Ok(Outcome::ConfigRead(t.config().await?)),
         Action::AdjustTxPower { change_db } => {
             set_tx_power(t, |before| {
-                let dbm = before.dbm().ok_or_else(|| {
-                    atc::Error::InvalidValue(format!("unknown TX power {before}"))
-                })?;
-                Ok(TxPower::nearest(dbm + change_db))
+                before
+                    .changed_by(change_db)
+                    .ok_or_else(|| atc::Error::InvalidValue(format!("unknown TX power {before}")))
             })
             .await
         }
-        Action::ResetTxPower => set_tx_power(t, |_| Ok(TxPower::FACTORY)).await,
+        Action::ResetTxPower => {
+            set_tx_power(t, |before| Ok(TxPower::factory(before.firmware()))).await
+        }
         Action::Calibrate {
             temperature,
             humidity,
         } => {
             let before = t.coefficients().await?;
-            let wanted = before.corrected(temperature, humidity)?;
+            let max_gain = t.max_gain().await?;
+            let wanted = before.corrected_within(temperature, humidity, max_gain)?;
             let after = t.set_coefficients(&wanted).await?;
             if after != wanted {
                 return Err(atc::Error::InvalidValue(format!(
@@ -325,12 +317,17 @@ async fn set_tx_power(
 }
 
 async fn trim_rate(t: &mut Thermometer, clock: &ClockReading) -> Result<RateTrim, atc::Error> {
+    if !t.info().has_clock_rate() {
+        return Ok(RateTrim::Unsupported);
+    }
     let Some(drift) = clock.drift() else {
         return Ok(RateTrim::Unknown);
     };
     let current = match t.second_ticks().await {
         Ok(ticks) => ticks,
-        Err(atc::Error::Timeout { .. }) => return Ok(RateTrim::Unsupported),
+        Err(atc::Error::Timeout { .. } | atc::Error::Unsupported(_)) => {
+            return Ok(RateTrim::Unsupported);
+        }
         Err(err) => return Err(err),
     };
     let Some(ticks) = atc::trimmed_second_ticks(current, drift) else {
@@ -402,8 +399,8 @@ fn apply_settings(config: &mut Config, settings: &Settings) -> Result<(), atc::E
     if let Some(adverts) = settings.measure_interval {
         config.set_measure_interval(adverts)?;
     }
-    if let Some(power) = settings.tx_power {
-        config.set_tx_power(power);
+    if let Some(dbm) = settings.tx_power {
+        config.set_tx_power(TxPower::nearest(config.firmware(), dbm));
     }
     // After the other changes, since the log period counts measurements.
     if let Some(period) = settings.log_period {
@@ -428,5 +425,22 @@ mod tests {
         assert_eq!(identify_message(3).small, 3);
         assert_eq!(identify_message(200).small, 99);
         assert_eq!(identify_message(200).duration, IDENTIFY_DURATION);
+    }
+
+    #[test]
+    fn tx_power_setting_maps_per_firmware() {
+        let settings = Settings {
+            tx_power: Some(-5.03),
+            ..Settings::default()
+        };
+        let mut atc_config = Config::from_bytes([
+            0x87, 0x10, 0x0a, 0x06, 0x28, 0x04, 0xa9, 0x31, 0x31, 0x04, 0xb4,
+        ]);
+        apply_settings(&mut atc_config, &settings).expect("valid");
+        assert_eq!(atc_config.tx_power().code(), 150);
+        let mut thb_config =
+            Config::from_thb_bytes([0x05, 0, 0, 0, 0x1f, 80, 29, 16, 2, 60, 180, 0]);
+        apply_settings(&mut thb_config, &settings).expect("valid");
+        assert_eq!(thb_config.tx_power().code(), 0x0a);
     }
 }

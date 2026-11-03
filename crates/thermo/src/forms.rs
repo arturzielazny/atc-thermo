@@ -2,8 +2,7 @@
 
 use std::time::Duration;
 
-use atc::TxPower;
-use bluer::Address;
+use atc::{DeviceId, TX_POWER_PRESETS_DBM};
 
 use crate::jobs::Settings;
 
@@ -51,7 +50,7 @@ impl Field {
         match self {
             Self::Advertising => ADVERTISING.len(),
             Self::MeasureEvery => MEASURE_EVERY.len(),
-            Self::TxPower => TxPower::PRESETS.len(),
+            Self::TxPower => TX_POWER_PRESETS_DBM.len(),
             Self::LogEvery => LOG_EVERY.len(),
         }
     }
@@ -60,13 +59,13 @@ impl Field {
 /// Settings to apply to `targets`; choice 0 of every field means "keep".
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SettingsForm {
-    pub targets: Vec<Address>,
+    pub targets: Vec<DeviceId>,
     pub field: usize,
     choices: [usize; Field::ALL.len()],
 }
 
 impl SettingsForm {
-    pub fn new(targets: Vec<Address>) -> Self {
+    pub fn new(targets: Vec<DeviceId>) -> Self {
         Self {
             targets,
             field: 0,
@@ -95,7 +94,7 @@ impl SettingsForm {
         match field {
             Field::Advertising => format!("{} s", ADVERTISING[i].as_secs_f64()),
             Field::MeasureEvery => format!("{} adverts", MEASURE_EVERY[i]),
-            Field::TxPower => TxPower::PRESETS[i].to_string(),
+            Field::TxPower => format!("{:+.1} dBm", TX_POWER_PRESETS_DBM[i]),
             Field::LogEvery => format!("{} min", LOG_EVERY[i].as_secs() / 60),
         }
     }
@@ -105,7 +104,7 @@ impl SettingsForm {
         Settings {
             advertising_interval: pick(Field::Advertising).map(|i| ADVERTISING[i]),
             measure_interval: pick(Field::MeasureEvery).map(|i| MEASURE_EVERY[i]),
-            tx_power: pick(Field::TxPower).map(|i| TxPower::PRESETS[i]),
+            tx_power: pick(Field::TxPower).map(|i| TX_POWER_PRESETS_DBM[i]),
             log_period: pick(Field::LogEvery).map(|i| LOG_EVERY[i]),
         }
     }

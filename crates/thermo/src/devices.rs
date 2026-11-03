@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::time::{Duration, SystemTime};
 
-use bluer::Address;
+use atc::DeviceId;
 use bthome::{Object, ParseError, Payload};
 
 use crate::scanner::Advert;
@@ -52,7 +52,7 @@ pub struct LoggedSample {
 /// A sample together with the device context it was taken in; the unit of persistence.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Measurement {
-    pub address: Address,
+    pub address: DeviceId,
     pub name: String,
     pub sample: Sample,
     pub battery: Option<u8>,
@@ -62,7 +62,7 @@ pub struct Measurement {
 /// A thermometer and its most recent values.
 #[derive(Debug)]
 pub struct Device {
-    pub address: Address,
+    pub address: DeviceId,
     pub name: String,
     pub rssi: Option<i16>,
     pub temperature: Option<f32>,
@@ -79,7 +79,7 @@ pub struct Device {
 }
 
 impl Device {
-    fn new(address: Address, name: String, seen: SystemTime) -> Self {
+    fn new(address: DeviceId, name: String, seen: SystemTime) -> Self {
         Self {
             address,
             name,
@@ -210,7 +210,7 @@ pub fn median_rssi(values: &mut [i16]) -> Option<i16> {
 /// All known devices, ordered by address so the order (and colors) are stable between runs.
 #[derive(Debug, Default)]
 pub struct Devices {
-    by_address: BTreeMap<Address, Device>,
+    by_address: BTreeMap<DeviceId, Device>,
 }
 
 impl Devices {
@@ -280,7 +280,7 @@ impl Devices {
 
     /// Adds downloaded log records where history has no sample within half a record's
     /// span; returns the added ones so they can be saved.
-    pub fn merge_log(&mut self, address: Address, records: &[LoggedSample]) -> Vec<Measurement> {
+    pub fn merge_log(&mut self, address: DeviceId, records: &[LoggedSample]) -> Vec<Measurement> {
         let Some(device) = self.by_address.get_mut(&address) else {
             return Vec::new();
         };
@@ -308,11 +308,11 @@ impl Devices {
         added
     }
 
-    pub fn get(&self, address: Address) -> Option<&Device> {
+    pub fn get(&self, address: DeviceId) -> Option<&Device> {
         self.by_address.get(&address)
     }
 
-    pub fn rename(&mut self, address: Address, name: String) {
+    pub fn rename(&mut self, address: DeviceId, name: String) {
         if let Some(device) = self.by_address.get_mut(&address) {
             device.name = name;
         }
@@ -335,7 +335,7 @@ impl Devices {
 mod tests {
     use super::*;
 
-    const ADDR: Address = Address([0xa4, 0xc1, 0x38, 0x84, 0x7e, 0xfc]);
+    const ADDR: DeviceId = DeviceId::Mac([0xa4, 0xc1, 0x38, 0x84, 0x7e, 0xfc]);
 
     fn advert(payload: &[u8], received: SystemTime) -> Advert {
         Advert {
@@ -474,5 +474,40 @@ mod tests {
         assert_eq!(d.history()[1].source, Source::Log);
         // Live values stay those of the newest live advert.
         assert_eq!(d.temperature, Some(22.44));
+    }
+
+    /// A THB1 (THB2 firmware, CoreBluetooth UUID as on macOS) next to an ATC device:
+    /// both are tracked, and the THB1's reed-switch events don't break its readings.
+    #[test]
+    fn thb1_and_atc_side_by_side() {
+        let thb1_id: DeviceId = "5E2A3C1B-9F4D-4A6E-8B7C-0D1E2F3A4B5C"
+            .parse()
+            .expect("uuid");
+        let thb1 = |payload: &[u8], received| Advert {
+            address: thb1_id,
+            name: "THB1-26705B".to_owned(),
+            rssi: Some(-70),
+            payload: payload.to_vec(),
+            received,
+        };
+        let measurement = [
+            0x40, 0x00, 0x1c, 0x01, 0x57, 0x02, 0x29, 0x09, 0x03, 0xd4, 0x12, 0x0c, 0xab, 0x0b,
+        ];
+        let event = [0x40, 0x00, 0x1d, 0x11, 0x01, 0x3e, 0x2a, 0x00, 0x00, 0x00];
+        let mut devices = Devices::default();
+        let now = SystemTime::now();
+        devices.record(advert(&MEASUREMENT, now)).expect("valid");
+        assert!(
+            devices
+                .record(thb1(&measurement, now))
+                .expect("valid")
+                .is_some()
+        );
+        assert!(devices.record(thb1(&event, now)).expect("valid").is_none());
+        let thb = devices.get(thb1_id).expect("THB1 tracked");
+        assert_eq!(thb.temperature, Some(23.45));
+        assert_eq!(thb.humidity, Some(48.2));
+        assert_eq!(thb.voltage, Some(2.987));
+        assert_eq!(devices.get(ADDR).and_then(|d| d.temperature), Some(22.44));
     }
 }

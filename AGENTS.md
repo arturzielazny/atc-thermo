@@ -7,9 +7,11 @@ repository. Humans are welcome too.
 
 `thermo` is a terminal dashboard and calibration tool for BLE thermometers running the
 [pvvx ATC_MiThermometer](https://github.com/pvvx/ATC_MiThermometer) firmware (tested on
-Xiaomi LYWSD03MMC) with BTHome v2 advertising. It listens to adverts, charts them, stores
+Xiaomi LYWSD03MMC) or the [pvvx THB2](https://github.com/pvvx/THB2) firmware (THB1 etc.)
+with BTHome v2 advertising. It listens to adverts, charts them, stores
 history as CSV, downloads device logs, syncs clocks, changes settings and writes
-calibration coefficients over GATT. Linux only today (BlueZ via the `bluer` crate).
+calibration coefficients over GATT. Linux and macOS via the `btleplug` crate (BlueZ,
+CoreBluetooth; WinRT untested).
 
 ## Layout
 
@@ -17,16 +19,16 @@ calibration coefficients over GATT. Linux only today (BlueZ via the `bluer` crat
 |---|---|---|
 | `crates/bthome` | BTHome v2 payload decoder. No dependencies. | portable |
 | `crates/calibration` | Consensus calibration: binning, steady-state selection, Huber fit, outliers, anchoring. No dependencies. Algorithm described in `docs/calibration.md` §4. | portable |
-| `crates/atc` | Async client for the firmware's command characteristic `0x1F1F`: name, config, coefficients, clock and clock rate, LCD message, log download. `thermometer.rs` holds the transport; `clock.rs`, `config.rs`, `coefficients.rs`, `log.rs`, `screen.rs` are byte encodings and maths with no I/O. | `thermometer.rs` uses `bluer` (Linux) |
+| `crates/atc` | Async client for the firmware's command characteristic (`0x1F1F` on ATC, `0xFFF4` on THB2): name, config, coefficients, clock and clock rate, LCD message, log download. `firmware.rs` detects the family from the characteristic and the dev id reply and says which features exist; `device_id.rs` is `DeviceId` (MAC or CoreBluetooth UUID). `thermometer.rs` holds the transport; `clock.rs`, `config.rs`, `coefficients.rs`, `log.rs`, `screen.rs` are byte encodings and maths with no I/O. | `thermometer.rs` uses `btleplug` |
 | `crates/thermo/src/main.rs` | Event loop: keys, scan events, job events, chart frames, 1 s tick. | portable |
-| `crates/thermo/src/app.rs` | All state and key handling, no I/O, unit-tested. | portable (uses `bluer::Address`) |
-| `crates/thermo/src/scanner.rs` | BlueZ discovery → `ScanEvent::Advert`. | Linux |
+| `crates/thermo/src/app.rs` | All state and key handling, no I/O, unit-tested. | portable (uses `atc::DeviceId`) |
+| `crates/thermo/src/scanner.rs` | btleplug discovery of `0xFCD2` service data → `ScanEvent::Advert`. `ble.rs` caches the one shared adapter (CoreBluetooth makes a new central per `Manager::adapters()` call). | portable |
 | `crates/thermo/src/jobs.rs` | One-at-a-time device worker: connect, run an `Action`, report an `Outcome`. | uses `atc` |
 | `crates/thermo/src/devices.rs` | Per-device latest readings, history, RSSI median. | portable |
-| `crates/thermo/src/store.rs` | `~/.local/share/thermo/`: `YYYY-MM-DD.csv` readings, `calibrations.csv`, `clocks.csv`, `downloads.csv`. | XDG paths |
+| `crates/thermo/src/store.rs` | `~/.local/share/thermo/` (also on macOS; `XDG_DATA_HOME` wins): `YYYY-MM-DD.csv` readings, `calibrations.csv`, `clocks.csv`, `downloads.csv`. | XDG paths |
 | `crates/thermo/src/calibrate.rs` | Glue from history to `calibration`, and from fits to coefficients. | portable |
 | `crates/thermo/src/level.rs` | Signal levelling: per-device median RSSI and the TX power change towards a common target. | portable |
-| `crates/thermo/src/ui/` | ratatui widgets. `chart.rs` axes and layout, `plot.rs` tiny-skia rasterizer, `kitty.rs` kitty graphics protocol via `/dev/shm`, braille fallback in `chart.rs`. | `kitty.rs` assumes `/dev/shm` |
+| `crates/thermo/src/ui/` | ratatui widgets. `chart.rs` axes and layout, `plot.rs` tiny-skia rasterizer, `kitty.rs` kitty graphics protocol via `/dev/shm` (`t=s`) or, where that is missing (macOS), a temp file (`t=t`), braille fallback in `chart.rs`. | portable |
 | `android/` | Android app (Kotlin, Compose): ports of `bthome`, `calibration`, the `atc` encodings and `app.rs`, plus an Android GATT client and scanner. See `android/README.md`. | Android |
 | `scripts/` | The original Python prototypes (`dbus-python`). Not used by the app. | Linux |
 | `site/` | GitHub Pages site, deployed by `.github/workflows/pages.yml`. Static HTML, no build step. | — |
@@ -49,7 +51,7 @@ cd android && ./gradlew testDebugUnitTest      # JVM tests, no phone needed
 cd android && ./gradlew installDebug           # needs a phone with USB debugging
 ```
 
-Build dependencies: Rust ≥ 1.85, `pkg-config` and the libdbus headers (`libdbus-1-dev`
+Build dependencies: current stable Rust; on Linux also `pkg-config` and the libdbus headers (`libdbus-1-dev`
 on Debian/Ubuntu, `dbus-devel` on Fedora, `dbus` on Arch).
 
 ## Rules
@@ -85,28 +87,22 @@ on Debian/Ubuntu, `dbus-devel` on Fedora, `dbus` on Arch).
   timestamp without the measured offset (`clocks.csv`).
 - A connected thermometer stops advertising; BlueZ pauses discovery during connects.
   The scanner restarts discovery after jobs finish.
+- THB2 firmware (pvvx/THB2): command characteristic `0xFFF4`, write without response.
+  Dev id reply `[0x00, ver, device, hw…, services u32]`; `services` bit `0x20` screen,
+  `0x10` history, `0x1000` clock rate (not built, so `0x24` is absent). Config is 12
+  bytes with its own offsets and TX power codes (`config.rs`). Coefficient reply adds
+  mid, vid, I²C address and sensor type; AHT2x gains must stay ≤ 4095. `0x26` resets
+  coefficients only in RAM, so `atc` writes the defaults with `0x25` instead.
+- On macOS `DeviceId` is a per-host UUID, not the MAC. CSV rows keyed by a MAC (from
+  Linux) load as separate devices.
 
 ## Porting to another OS
 
-The code splits cleanly; port in this order and keep the tests passing at each step.
-
-1. **Own the address type.** `bluer::Address` is used throughout `thermo` as a map key.
-   Introduce `DeviceId` (a newtype) and convert at the edges. On macOS CoreBluetooth hides
-   MAC addresses and gives per-host UUIDs, so `DeviceId` must not assume 6 bytes, and
-   stored CSV keys need a migration or a name-based fallback.
-2. **Scanner.** Reimplement `scanner.rs` with
-   [`btleplug`](https://crates.io/crates/btleplug) (CoreBluetooth, WinRT, BlueZ): listen
-   for service data under UUID `0xFCD2`, pass the bytes to `bthome::parse`, emit the
-   same `ScanEvent`s. Keep RSSI.
-3. **GATT client.** Put a small trait or a cfg-switched module behind
-   `atc::Thermometer`'s transport: connect, find characteristic `0x1F1F`, write, and
-   read notifications with a timeout. Everything above that (`config.rs`, `clock.rs`, …)
-   is bytes and stays unchanged.
-4. **Chart images.** `kitty.rs` passes images through `/dev/shm`, which is Linux-only.
-   On macOS use direct transmission (`t=d`, base64 chunks) or a temp file (`t=t`).
-   Windows terminals generally lack the protocol, so the braille fallback is used.
-5. **Paths.** `Store::default_dir` uses XDG under `HOME`. On Windows use
-   `%LOCALAPPDATA%` (e.g. via the `dirs` crate).
+Done for macOS: `DeviceId` (MAC or UUID), a btleplug scanner and GATT transport, the
+kitty temp-file medium, and the XDG data dir on every OS. For Windows, check that
+btleplug's WinRT backend reports service data and use `%LOCALAPPDATA%` in
+`Store::default_dir`; terminals there generally lack the kitty protocol, so the braille
+fallback is used.
 
 ## Other common changes
 

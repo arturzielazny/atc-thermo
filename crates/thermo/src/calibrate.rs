@@ -5,7 +5,7 @@ use std::fmt::Write;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use atc::Correction;
-use bluer::Address;
+use atc::DeviceId;
 use calibration::{Fit, Options, Reading, Report, SensorReport};
 
 use crate::devices::{Devices, Source};
@@ -14,7 +14,7 @@ use crate::devices::{Devices, Source};
 #[derive(Debug, Clone)]
 pub struct Run {
     /// `(address, name)` per sensor, in [`Report::sensors`] order.
-    pub devices: Vec<(Address, String)>,
+    pub devices: Vec<(DeviceId, String)>,
     pub since: SystemTime,
     pub until: SystemTime,
     pub report: Report,
@@ -24,8 +24,8 @@ pub struct Run {
 /// participating device, since older data was recorded with other coefficients.
 pub fn window_start(
     requested: SystemTime,
-    devices: &[Address],
-    last_calibrations: &HashMap<Address, SystemTime>,
+    devices: &[DeviceId],
+    last_calibrations: &HashMap<DeviceId, SystemTime>,
 ) -> SystemTime {
     devices
         .iter()
@@ -40,7 +40,7 @@ pub fn window_start(
 /// Fails if there are too few devices or too little steady data.
 pub fn run(
     devices: &Devices,
-    addresses: &[Address],
+    addresses: &[DeviceId],
     since: SystemTime,
     until: SystemTime,
 ) -> Result<Run, calibration::Error> {
@@ -228,8 +228,8 @@ mod tests {
     #[test]
     fn window_starts_after_last_calibration() {
         let now = UNIX_EPOCH + Duration::from_secs(1_793_000_000);
-        let a = Address([1; 6]);
-        let b = Address([2; 6]);
+        let a = DeviceId::Mac([1; 6]);
+        let b = DeviceId::Mac([2; 6]);
         let mut changes = HashMap::new();
         changes.insert(b, now - Duration::from_secs(3600));
         assert_eq!(

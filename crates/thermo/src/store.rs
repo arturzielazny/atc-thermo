@@ -11,8 +11,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
+use atc::DeviceId;
 use atc::{Coefficients, Correction};
-use bluer::Address;
 
 use crate::devices::{Measurement, Sample, Source};
 
@@ -43,7 +43,8 @@ pub struct Store {
 }
 
 impl Store {
-    /// `$XDG_DATA_HOME/thermo`, falling back to `~/.local/share/thermo`.
+    /// `$XDG_DATA_HOME/thermo`, falling back to `~/.local/share/thermo` on every OS,
+    /// macOS included, so history can be copied between machines as is.
     pub fn default_dir() -> Option<PathBuf> {
         let data_home = env::var_os("XDG_DATA_HOME")
             .map(PathBuf::from)
@@ -153,7 +154,7 @@ impl Store {
     /// # Errors
     ///
     /// Fails if `calibrations.csv` exists but cannot be read.
-    pub fn last_calibrations(&self) -> Result<HashMap<Address, SystemTime>> {
+    pub fn last_calibrations(&self) -> Result<HashMap<DeviceId, SystemTime>> {
         latest_per_address(&self.dir.join(CALIBRATION_FILE))
     }
 
@@ -162,7 +163,7 @@ impl Store {
     /// # Errors
     ///
     /// Fails if `downloads.csv` cannot be opened or written.
-    pub fn record_download(&self, address: Address, at: SystemTime) -> Result<()> {
+    pub fn record_download(&self, address: DeviceId, at: SystemTime) -> Result<()> {
         let path = self.dir.join(DOWNLOAD_FILE);
         let mut file = open_for_append(&path, DOWNLOAD_HEADER)?;
         file.write_all(format!("{},{address}\n", millis(at)).as_bytes())
@@ -174,7 +175,7 @@ impl Store {
     /// # Errors
     ///
     /// Fails if `downloads.csv` exists but cannot be read.
-    pub fn last_downloads(&self) -> Result<HashMap<Address, SystemTime>> {
+    pub fn last_downloads(&self) -> Result<HashMap<DeviceId, SystemTime>> {
         latest_per_address(&self.dir.join(DOWNLOAD_FILE))
     }
 
@@ -183,7 +184,12 @@ impl Store {
     /// # Errors
     ///
     /// Fails if `clocks.csv` cannot be opened or written.
-    pub fn record_clock_offset(&self, address: Address, at: SystemTime, offset: f64) -> Result<()> {
+    pub fn record_clock_offset(
+        &self,
+        address: DeviceId,
+        at: SystemTime,
+        offset: f64,
+    ) -> Result<()> {
         let path = self.dir.join(CLOCK_FILE);
         let mut file = open_for_append(&path, CLOCK_HEADER)?;
         file.write_all(format!("{},{address},{offset:.1}\n", millis(at)).as_bytes())
@@ -195,7 +201,7 @@ impl Store {
     /// # Errors
     ///
     /// Fails if `clocks.csv` exists but cannot be read.
-    pub fn last_clock_offsets(&self) -> Result<HashMap<Address, f64>> {
+    pub fn last_clock_offsets(&self) -> Result<HashMap<DeviceId, f64>> {
         Ok(latest_rows(&self.dir.join(CLOCK_FILE))?
             .into_iter()
             .filter_map(|(address, (_, rest))| Some((address, rest.parse().ok()?)))
@@ -204,7 +210,7 @@ impl Store {
 }
 
 /// Reads a CSV whose first two columns are `time_ms,address`; returns the newest time per address.
-fn latest_per_address(path: &Path) -> Result<HashMap<Address, SystemTime>> {
+fn latest_per_address(path: &Path) -> Result<HashMap<DeviceId, SystemTime>> {
     Ok(latest_rows(path)?
         .into_iter()
         .map(|(address, (at, _))| (address, at))
@@ -213,19 +219,19 @@ fn latest_per_address(path: &Path) -> Result<HashMap<Address, SystemTime>> {
 
 /// Reads a CSV whose first two columns are `time_ms,address`; returns the newest line
 /// per address as its time and the columns after the address.
-fn latest_rows(path: &Path) -> Result<HashMap<Address, (SystemTime, String)>> {
+fn latest_rows(path: &Path) -> Result<HashMap<DeviceId, (SystemTime, String)>> {
     let file = match File::open(path) {
         Ok(file) => file,
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(HashMap::new()),
         Err(err) => return Err(err).with_context(|| format!("opening {}", path.display())),
     };
-    let mut latest: HashMap<Address, (SystemTime, String)> = HashMap::new();
+    let mut latest: HashMap<DeviceId, (SystemTime, String)> = HashMap::new();
     for line in BufReader::new(file).lines() {
         let line = line.with_context(|| format!("reading {}", path.display()))?;
         let mut fields = line.splitn(3, ',');
         let (Some(Ok(ms)), Some(Ok(address))) = (
             fields.next().map(str::parse::<u64>),
-            fields.next().map(str::parse::<Address>),
+            fields.next().map(str::parse::<DeviceId>),
         ) else {
             continue;
         };
@@ -242,7 +248,7 @@ fn latest_rows(path: &Path) -> Result<HashMap<Address, (SystemTime, String)>> {
 #[derive(Debug, Clone, PartialEq)]
 pub struct CalibrationRecord {
     pub at: SystemTime,
-    pub address: Address,
+    pub address: DeviceId,
     pub name: String,
     /// The applied `(temperature, humidity)` corrections; `None` for a factory reset.
     pub corrections: Option<(Correction, Correction)>,
@@ -336,7 +342,7 @@ fn parse_line(line: &str) -> Option<Measurement> {
     let mut fields = line.split(',');
     let mut next = || fields.next();
     let ms: u64 = next()?.parse().ok()?;
-    let address: Address = next()?.parse().ok()?;
+    let address: DeviceId = next()?.parse().ok()?;
     let name = next()?.to_owned();
     let temperature: f32 = next()?.parse().ok()?;
     let humidity: f32 = next()?.parse().ok()?;
@@ -412,7 +418,7 @@ mod tests {
 
     fn measurement(at: SystemTime, temperature: f32) -> Measurement {
         Measurement {
-            address: Address([0xa4, 0xc1, 0x38, 0x84, 0x7e, 0xfc]),
+            address: DeviceId::Mac([0xa4, 0xc1, 0x38, 0x84, 0x7e, 0xfc]),
             name: "Living, room".to_owned(),
             sample: Sample {
                 at,
@@ -519,7 +525,7 @@ mod tests {
     fn calibration_log() {
         let dir = env::temp_dir().join(format!("thermo-calibration-test-{}", std::process::id()));
         let store = Store::open(dir.clone()).expect("temp dir");
-        let address = Address([0xa4, 0xc1, 0x38, 0x84, 0x7e, 0xfc]);
+        let address = DeviceId::Mac([0xa4, 0xc1, 0x38, 0x84, 0x7e, 0xfc]);
         let coefficients = Coefficients {
             temperature_gain: 17_500,
             humidity_gain: 12_500,
@@ -549,7 +555,7 @@ mod tests {
     fn clock_offsets_keep_the_newest() {
         let dir = env::temp_dir().join(format!("thermo-clock-test-{}", std::process::id()));
         let store = Store::open(dir.clone()).expect("temp dir");
-        let address = Address([0xa4, 0xc1, 0x38, 0x84, 0x7e, 0xfc]);
+        let address = DeviceId::Mac([0xa4, 0xc1, 0x38, 0x84, 0x7e, 0xfc]);
         let early = UNIX_EPOCH + Duration::from_secs(1_793_000_000);
         let late = early + Duration::from_secs(3600);
         store
@@ -561,5 +567,24 @@ mod tests {
         let offsets = store.last_clock_offsets().expect("read");
         fs::remove_dir_all(&dir).expect("cleanup");
         assert_eq!(offsets.get(&address), Some(&31.0));
+    }
+
+    #[test]
+    fn mac_and_uuid_keys_live_side_by_side() {
+        // A history copied from Linux (MAC keys) next to rows written on macOS
+        // (CoreBluetooth UUIDs): both load, as separate devices.
+        let dir = env::temp_dir().join(format!("thermo-ids-test-{}", std::process::id()));
+        let store = Store::open(dir.clone()).expect("temp dir");
+        let mac = DeviceId::Mac([0xa4, 0xc1, 0x38, 0x27, 0xc6, 0x22]);
+        let uuid: DeviceId = "5E2A3C1B-9F4D-4A6E-8B7C-0D1E2F3A4B5C"
+            .parse()
+            .expect("uuid");
+        let at = UNIX_EPOCH + Duration::from_secs(1_793_000_000);
+        store.record_clock_offset(mac, at, 1.0).expect("write");
+        store.record_clock_offset(uuid, at, 2.0).expect("write");
+        let offsets = store.last_clock_offsets().expect("read");
+        fs::remove_dir_all(&dir).expect("cleanup");
+        assert_eq!(offsets.get(&mac), Some(&1.0));
+        assert_eq!(offsets.get(&uuid), Some(&2.0));
     }
 }

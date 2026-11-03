@@ -1,6 +1,6 @@
 //! Dialogs drawn over the main screen.
 
-use bluer::Address;
+use atc::DeviceId;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Flex, Layout, Rect};
 use ratatui::style::{Style, Stylize};
@@ -10,7 +10,7 @@ use ratatui::widgets::{Block, Clear, Paragraph};
 use crate::app::App;
 use crate::forms::{Field, SettingsForm};
 
-pub fn rename(frame: &mut Frame, app: &App, address: Address, input: &str) {
+pub fn rename(frame: &mut Frame, app: &App, address: DeviceId, input: &str) {
     let current = app
         .devices
         .get(address)

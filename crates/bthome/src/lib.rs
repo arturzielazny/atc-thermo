@@ -273,6 +273,39 @@ mod tests {
         );
     }
 
+    /// pvvx THB2 on a THB1, unencrypted (`bthome_beacon.c` `adv_set_data`): packet id,
+    /// battery, temperature, humidity, voltage in one packet.
+    #[test]
+    fn thb1_measurement_packet() {
+        assert_eq!(
+            objects("40001c015702290903d4120cab0b"),
+            [
+                Object::PacketId(0x1c),
+                Object::Battery(87),
+                Object::Temperature(23.45),
+                Object::Humidity(48.2),
+                Object::Voltage(2.987),
+            ]
+        );
+    }
+
+    /// THB2 reed-switch event (`adv_set_event`, `SERVICE_RDS` on THB1): opened flag and
+    /// a 32-bit counter, no temperature.
+    #[test]
+    fn thb1_event_packet() {
+        assert_eq!(
+            objects("40001d11013e2a000000"),
+            [
+                Object::PacketId(0x1d),
+                Object::Opening(true),
+                Object::Other {
+                    id: 0x3e,
+                    raw: vec![0x2a, 0, 0, 0]
+                },
+            ]
+        );
+    }
+
     #[test]
     fn negative_temperature() {
         // -5.25 °C = -525 = 0xfdf3

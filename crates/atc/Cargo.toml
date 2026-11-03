@@ -1,21 +1,22 @@
 [package]
 name = "atc"
 version = "0.1.0"
-description = "Client for the pvvx ATC_MiThermometer firmware's BLE command interface"
+description = "Client for the BLE command interface of the pvvx ATC_MiThermometer and THB2 firmwares"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
-keywords = ["ble","bluetooth","thermometer","lywsd03mmc","pvvx"]
+keywords = ["ble","bluetooth","thermometer","lywsd03mmc","pvvx","thb2"]
 categories = ["hardware-support"]
 readme = "../../README.md"
 
 [dependencies]
-bluer.workspace = true
+btleplug.workspace = true
 futures.workspace = true
 tokio.workspace = true
+uuid.workspace = true
 
 [lints]
 workspace = true

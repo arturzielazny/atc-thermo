@@ -4,6 +4,7 @@
 //! proposal from recorded history without touching any device.
 
 mod app;
+mod ble;
 mod calibrate;
 mod devices;
 mod forms;
@@ -90,9 +91,10 @@ async fn dashboard() -> Result<()> {
 async fn run(terminal: &mut DefaultTerminal, picker: Option<Picker>) -> Result<()> {
     let (scan_tx, mut scan_rx) = mpsc::unbounded_channel();
     let (control_tx, control_rx) = mpsc::unbounded_channel();
-    tokio::spawn(scanner::run(scan_tx, control_rx));
+    let ble = ble::Ble::default();
+    tokio::spawn(scanner::run(ble.clone(), scan_tx, control_rx));
     let (job_events_tx, mut job_events) = mpsc::unbounded_channel();
-    let jobs = jobs::spawn(job_events_tx);
+    let jobs = jobs::spawn(ble, job_events_tx);
 
     let mut app = App::new(Some(jobs), Some(control_tx));
     match open_store() {

@@ -10,6 +10,7 @@ import dev.artur.thermo.atc.ClockReading
 import dev.artur.thermo.atc.CommandTimeout
 import dev.artur.thermo.atc.Config
 import dev.artur.thermo.atc.InvalidValue
+import dev.artur.thermo.atc.LogRecord
 import dev.artur.thermo.atc.Thermometer
 import dev.artur.thermo.atc.TxPower
 import dev.artur.thermo.atc.trimmedSecondTicks
@@ -136,12 +137,30 @@ private suspend fun trimRate(t: Thermometer, clock: ClockReading): RateTrim {
     return RateTrim.Trimmed(drift)
 }
 
+/**
+ * The [Thermometer.readLog] filter of [readSamples]: records newer than [since], up to
+ * the first one stamped before the clock was set back.
+ *
+ * Records arrive newest first, so their device times only go down; one that goes up
+ * was logged under an older time base, and so is everything before it. Without this,
+ * a device that does not report when its clock was set (pvvx THB2) would have records
+ * logged up to a whole clock offset ago dated that much too late.
+ */
+internal fun wantedRecords(clock: ClockReading, since: Long): (LogRecord) -> Boolean {
+    var newer: Long? = null
+    return { r ->
+        val sameBase = newer.let { it == null || r.deviceTime <= it }
+        newer = r.deviceTime
+        sameBase && (clock.toHostMs(r.deviceTime)?.let { it >= since } ?: false)
+    }
+}
+
 /** Log records newer than [since], dated with [clock]; empty if logging is off. */
 private suspend fun readSamples(t: Thermometer, clock: ClockReading, since: Long): List<LoggedSample> {
     val period = t.config().logPeriod ?: return emptyList()
     val wantedSpan = (System.currentTimeMillis() - since).coerceAtLeast(0) / 1000.0
     val maxRecords = (ceil(wantedSpan / period) + 5).coerceIn(0.0, 65_535.0).toInt()
-    val records = t.readLog(maxRecords) { r -> clock.toHostMs(r.deviceTime)?.let { it >= since } ?: false }
+    val records = t.readLog(maxRecords, wantedRecords(clock, since))
     val periodMs = (period * 1000).toLong()
     return records.mapNotNull { r ->
         val end = clock.toHostMs(r.deviceTime) ?: return@mapNotNull null

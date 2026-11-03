@@ -3,7 +3,8 @@
 use std::time::{Duration, SystemTime};
 
 use atc::{
-    ClockReading, Coefficients, Config, Correction, ScreenMessage, Smiley, Thermometer, TxPower,
+    ClockReading, Coefficients, Config, Correction, LogRecord, ScreenMessage, Smiley, Thermometer,
+    TxPower,
 };
 use bluer::{Adapter, Address};
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
@@ -367,9 +368,7 @@ async fn read_samples(
     let max_records = (wanted_span.as_secs_f64() / period.as_secs_f64()).ceil() + 5.0;
     let max_records = u16::try_from(clamp_to_u16(max_records)).unwrap_or(u16::MAX);
     let records = t
-        .read_log(max_records, |r| {
-            clock.to_host(r.device_time).is_some_and(|at| at >= since)
-        })
+        .read_log(max_records, wanted_records(*clock, since))
         .await?;
     Ok(records
         .iter()
@@ -384,6 +383,22 @@ async fn read_samples(
             })
         })
         .collect())
+}
+
+/// The [`Thermometer::read_log`] filter of [`read_samples`]: records newer than
+/// `since`, up to the first one stamped before the clock was set back.
+///
+/// Records arrive newest first, so their device times only go down; one that goes up
+/// was logged under an older time base, and so is everything before it. Without this,
+/// a device that does not report when its clock was set (pvvx THB2) would have
+/// records logged up to a whole clock offset ago dated that much too late.
+fn wanted_records(clock: ClockReading, since: SystemTime) -> impl FnMut(&LogRecord) -> bool {
+    let mut newer: Option<u32> = None;
+    move |r| {
+        let same_base = newer.is_none_or(|newer| r.device_time <= newer);
+        newer = Some(r.device_time);
+        same_base && clock.to_host(r.device_time).is_some_and(|at| at >= since)
+    }
 }
 
 #[expect(
@@ -417,6 +432,8 @@ fn apply_settings(config: &mut Config, settings: &Settings) -> Result<(), atc::E
 
 #[cfg(test)]
 mod tests {
+    use std::time::UNIX_EPOCH;
+
     use super::*;
 
     #[test]
@@ -428,5 +445,38 @@ mod tests {
         assert_eq!(identify_message(3).small, 3);
         assert_eq!(identify_message(200).small, 99);
         assert_eq!(identify_message(200).duration, IDENTIFY_DURATION);
+    }
+
+    #[test]
+    fn log_download_stops_where_the_clock_was_set_back() {
+        // A THB1 ran 1 h ahead until its clock was set 2 h ago; records come every
+        // 30 min. The ones logged before the set still carry the ahead time.
+        const NOW: u32 = 1_793_703_000;
+        const AHEAD: u32 = 3600;
+        let clock = ClockReading {
+            device_now: NOW + 1,
+            last_set: None,
+            host_now: UNIX_EPOCH + Duration::from_secs(NOW.into()),
+        };
+        let record = |device_time| LogRecord {
+            device_time,
+            temperature: 18.7,
+            humidity: 55.0,
+            voltage: 2.6,
+        };
+        // Newest first: four since the set, then two from before it, which would land
+        // an hour late, among the newer ones.
+        let log = [
+            record(NOW - 300),
+            record(NOW - 2100),
+            record(NOW - 3900),
+            record(NOW - 5700),
+            record(NOW - 7500 + AHEAD),
+            record(NOW - 9300 + AHEAD),
+        ];
+        let since = UNIX_EPOCH + Duration::from_secs((NOW - 86_400).into());
+        let mut wanted = wanted_records(clock, since);
+        let kept: Vec<_> = log.iter().take_while(|&r| wanted(r)).collect();
+        assert_eq!(kept.len(), 4);
     }
 }

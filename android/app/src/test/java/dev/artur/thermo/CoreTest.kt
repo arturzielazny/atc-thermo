@@ -22,6 +22,7 @@ import dev.artur.thermo.bthome.BtObject
 import dev.artur.thermo.bthome.ParseError
 import dev.artur.thermo.bthome.Payload
 import dev.artur.thermo.bthome.parse
+import dev.artur.thermo.ble.wantedRecords
 import dev.artur.thermo.model.identifyMessage
 import kotlin.math.abs
 import kotlin.test.Test
@@ -204,6 +205,34 @@ class ClockTest {
     fun recentSetUsesConstantOffset() {
         val clock = ClockReading(hostNow + 5, hostNow - 100, hostNow * 1000)
         assertEquals((hostNow - 55) * 1000, clock.toHostMs(hostNow - 50))
+    }
+
+    @Test
+    fun recordsNewerThanTheReadingAreFromAnOlderTimeBase() {
+        // Set back by 3 h without saying so, the device still holds records stamped
+        // with the old, ahead clock: they map into the future.
+        val clock = ClockReading(hostNow + 2, null, hostNow * 1000)
+        assertNull(clock.toHostMs(hostNow + 10_757))
+        // A record logged while the download runs is a little newer than the reading.
+        assertEquals((hostNow + 60) * 1000, clock.toHostMs(hostNow + 62))
+    }
+
+    @Test
+    fun logDownloadStopsWhereTheClockWasSetBack() {
+        // A device ran 1 h ahead until its clock was set 2 h ago; records come every
+        // 30 min. The ones logged before the set still carry the ahead time.
+        val now = 1_793_703_000L
+        val ahead = 3600L
+        val clock = ClockReading(now + 1, null, now * 1000)
+        fun record(deviceTime: Long) = LogRecord(deviceTime, 18.7f, 55f, 2.6f)
+        // Newest first: four since the set, then two from before it, which would land
+        // an hour late, among the newer ones.
+        val log = listOf(
+            record(now - 300), record(now - 2100), record(now - 3900), record(now - 5700),
+            record(now - 7500 + ahead), record(now - 9300 + ahead),
+        )
+        val wanted = wantedRecords(clock, (now - 86_400) * 1000)
+        assertEquals(4, log.takeWhile(wanted).size)
     }
 }
 

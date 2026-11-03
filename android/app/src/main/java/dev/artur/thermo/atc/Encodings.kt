@@ -201,6 +201,11 @@ private fun applyCorrection(gain: Long, offset: Int, c: Correction): Pair<Long, 
 private const val PLAUSIBLE_SET_TIME = 1_600_000_000L // 2020-09-13
 /** Shorter spans since the last set are too short to estimate drift from. */
 private const val MIN_DRIFT_SPAN = 3600L
+/**
+ * A log record can be newer than the clock reading only by the time a download takes
+ * after it; one further ahead was stamped before the clock was set back.
+ */
+private const val MAX_RECORD_AHEAD = 300L
 /** Offsets have a resolution of about a second, which over 12 h is 3 s/day. */
 private const val MIN_RATE_SPAN = 12.0 * 3600.0
 
@@ -231,9 +236,11 @@ data class ClockReading(
      * Converts a device timestamp to host milliseconds. If the clock was set to real time,
      * the offset grew linearly from zero then to [offsetSecs] now (constant drift);
      * otherwise the current offset applies. `null` for timestamps from before the last
-     * set, which belong to an older, unrelated time base.
+     * set, which belong to an older, unrelated time base, and for those well ahead of
+     * the reading: stamped by a clock that was later set back.
      */
     fun toHostMs(deviceTime: Long): Long? {
+        if (deviceTime > deviceNow + MAX_RECORD_AHEAD) return null
         val set = realSet
         val offset = if (set != null) {
             if (deviceTime < set) return null

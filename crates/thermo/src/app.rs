@@ -921,7 +921,7 @@ impl App {
             .filter(|&address| {
                 self.state(address)
                     .and_then(|s| s.config)
-                    .is_none_or(|c| c.tx_power() != atc::TxPower::FACTORY)
+                    .is_none_or(|c| !c.tx_power().is_factory())
             })
             .collect()
     }
@@ -1307,7 +1307,7 @@ mod tests {
         press(&mut app, KeyCode::Char('y'));
         assert_eq!(drain(&mut rx), Vec::<Job>::new());
 
-        let before = atc::TxPower::FACTORY;
+        let before = atc::TxPower::factory(atc::Firmware::Atc);
         let config = config_with_power(150);
         finish(&mut app, A, Ok(Outcome::TxPowerSet { before, config }));
         assert_eq!(

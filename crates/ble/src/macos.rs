@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, SystemTime};
 
-use atc::{COMMAND_UUID, DeviceId, Notifications, Transport};
+use atc::{DeviceId, Firmware, Notifications, Transport};
 use btleplug::api::{
     Central as _, CentralEvent, CentralState, CharPropFlags, Characteristic, Manager as _,
     Peripheral as _, ScanFilter, WriteType,
@@ -329,17 +329,18 @@ async fn set_up(shared: &Arc<Shared>, peripheral: &Peripheral) -> Result<Thermom
         peripheral.discover_services().await.map_err(bluetooth)
     })
     .await?;
-    let command = peripheral
+    let (family, command) = peripheral
         .characteristics()
         .into_iter()
-        .find(|c| c.uuid == COMMAND_UUID)
+        .find_map(|c| Firmware::from_command_uuid(c.uuid).map(|family| (family, c)))
         .ok_or(atc::Error::NotPvvx)?;
+    let uuid = command.uuid;
     let notifications: Notifications = Box::pin(
         peripheral
             .notifications()
             .await
             .map_err(bluetooth)?
-            .filter_map(|n| futures::future::ready((n.uuid == COMMAND_UUID).then_some(n.value))),
+            .filter_map(move |n| futures::future::ready((n.uuid == uuid).then_some(n.value))),
     );
     step("subscribing to notifications", SUBSCRIBE_TIMEOUT, async {
         peripheral.subscribe(&command).await.map_err(bluetooth)
@@ -351,11 +352,11 @@ async fn set_up(shared: &Arc<Shared>, peripheral: &Peripheral) -> Result<Thermom
         write_type: write_type_for(command.properties),
         command,
     };
-    Thermometer::open(link, notifications).await
+    Thermometer::open(link, notifications, family).await
 }
 
-/// Writing without response is quicker and is what the pvvx web tools use; the
-/// firmware accepts both.
+/// Writing without response is quicker and is what the pvvx web tools use; ATC
+/// accepts both, THB2 declares only that.
 fn write_type_for(properties: CharPropFlags) -> WriteType {
     if properties.contains(CharPropFlags::WRITE_WITHOUT_RESPONSE) {
         WriteType::WithoutResponse

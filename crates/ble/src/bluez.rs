@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::time::{Duration, SystemTime};
 
-use atc::{COMMAND_UUID, DeviceId, Notifications, Transport};
+use atc::{DeviceId, Firmware, Notifications, Transport};
 use bluer::gatt::remote::Characteristic;
 use bluer::{
     Adapter, AdapterEvent, Address, Device, DeviceEvent, DeviceProperty, DiscoveryFilter,
@@ -154,14 +154,16 @@ async fn connect(adapter: &Adapter, address: Address) -> Result<Thermometer, atc
     let mut command = None;
     for service in device.services().await.map_err(bluetooth)? {
         for characteristic in service.characteristics().await.map_err(bluetooth)? {
-            if characteristic.uuid().await.map_err(bluetooth)? == COMMAND_UUID {
-                command = Some(characteristic);
+            let uuid = characteristic.uuid().await.map_err(bluetooth)?;
+            if let Some(family) = Firmware::from_command_uuid(uuid) {
+                command = Some((family, characteristic));
             }
         }
     }
-    let command = command.ok_or(atc::Error::NotPvvx)?;
+    let (family, command) = command.ok_or(atc::Error::NotPvvx)?;
     let notifications: Notifications = Box::pin(command.notify().await.map_err(bluetooth)?);
-    Thermometer::open(Link { device, command }, notifications).await
+    // `write` sends without response, which both firmwares take (THB2 declares only that).
+    Thermometer::open(Link { device, command }, notifications, family).await
 }
 
 /// Waits for BlueZ to list the device. It drops devices it has not heard from in a

@@ -77,9 +77,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App, screen: &LevelingScreen)
                 (None, Some(_), None) => Span::from("ok").green(),
                 (None, Some(_), Some(change)) => {
                     let planned = config
-                        .map(|c| c.tx_power())
-                        .and_then(TxPower::dbm)
-                        .map(|dbm| planned_power(dbm, change))
+                        .map(|c| planned_power(c.tx_power(), change))
                         .unwrap_or_default();
                     Span::from(format!("{change:+} dB{planned}")).bold()
                 }
@@ -145,10 +143,14 @@ fn target_line(screen: &LevelingScreen) -> Line<'static> {
     ])
 }
 
-/// ` → -9.9 dBm`, with `(limit)` if the radio cannot go as far as `change` asks.
-fn planned_power(dbm: f32, change: i16) -> String {
+/// ` → -9.9 dBm`, with `(limit)` if the radio cannot go as far as `change` asks;
+/// empty if the current power is not a documented level.
+fn planned_power(power: TxPower, change: i16) -> String {
+    let Some(dbm) = power.dbm() else {
+        return String::new();
+    };
     let wanted = dbm + f32::from(change);
-    let planned = TxPower::nearest(wanted);
+    let planned = TxPower::nearest(power.firmware(), wanted);
     let limit = planned
         .dbm()
         .is_some_and(|p| (p - wanted).abs() > CLAMPED_DB);
@@ -171,11 +173,11 @@ fn footer(app: &App, screen: &LevelingScreen) -> Line<'static> {
         )),
         Some(Confirm::Reset) => ask(format!(
             "Restore the factory TX power, {}, on {} devices",
-            TxPower::FACTORY,
+            TxPower::factory(atc::Firmware::Atc),
             app.factory_resets().len()
         )),
         None => Line::from(format!(
-            "A median needs {} adverts; changes under {} dB are skipped. TX power goes from −25 to +10 dBm.",
+            "A median needs {} adverts; changes under {} dB are skipped. TX power goes from −25 to +10 dBm (THB2: −20 to +5 dBm).",
             level::MIN_ADVERTS,
             level::TOLERANCE_DB
         ))

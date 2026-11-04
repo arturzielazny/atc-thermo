@@ -22,7 +22,8 @@ pub const IDENTIFY_DURATION: Duration = Duration::from_secs(30 * 60);
 pub struct Settings {
     pub advertising_interval: Option<Duration>,
     pub measure_interval: Option<u8>,
-    pub tx_power: Option<TxPower>,
+    /// Wanted output in dBm; each device takes its firmware's nearest level.
+    pub tx_power: Option<f32>,
     /// Desired time per on-device log record.
     pub log_period: Option<Duration>,
 }
@@ -57,7 +58,7 @@ pub enum Action {
     AdjustTxPower {
         change_db: f32,
     },
-    /// Set the TX power the firmware starts with, [`TxPower::FACTORY`].
+    /// Set the TX power the firmware starts with, [`TxPower::factory`].
     ResetTxPower,
     /// Compose a correction onto the device's current coefficients.
     Calibrate {
@@ -232,20 +233,22 @@ async fn perform(t: &mut Thermometer, action: Action) -> Result<Outcome, atc::Er
         Action::ReadConfig => Ok(Outcome::ConfigRead(t.config().await?)),
         Action::AdjustTxPower { change_db } => {
             set_tx_power(t, |before| {
-                let dbm = before.dbm().ok_or_else(|| {
-                    atc::Error::InvalidValue(format!("unknown TX power {before}"))
-                })?;
-                Ok(TxPower::nearest(dbm + change_db))
+                before
+                    .changed_by(change_db)
+                    .ok_or_else(|| atc::Error::InvalidValue(format!("unknown TX power {before}")))
             })
             .await
         }
-        Action::ResetTxPower => set_tx_power(t, |_| Ok(TxPower::FACTORY)).await,
+        Action::ResetTxPower => {
+            set_tx_power(t, |before| Ok(TxPower::factory(before.firmware()))).await
+        }
         Action::Calibrate {
             temperature,
             humidity,
         } => {
             let before = t.coefficients().await?;
-            let wanted = before.corrected(temperature, humidity)?;
+            let max_gain = t.max_gain().await?;
+            let wanted = before.corrected_within(temperature, humidity, max_gain)?;
             let after = t.set_coefficients(&wanted).await?;
             if after != wanted {
                 return Err(atc::Error::InvalidValue(format!(
@@ -307,6 +310,9 @@ async fn set_tx_power(
 }
 
 async fn trim_rate(t: &mut Thermometer, clock: &ClockReading) -> Result<RateTrim, atc::Error> {
+    if !t.info().has_clock_rate() {
+        return Ok(RateTrim::Unsupported);
+    }
     let Some(drift) = clock.drift() else {
         return Ok(RateTrim::Unknown);
     };
@@ -398,8 +404,8 @@ fn apply_settings(config: &mut Config, settings: &Settings) -> Result<(), atc::E
     if let Some(adverts) = settings.measure_interval {
         config.set_measure_interval(adverts)?;
     }
-    if let Some(power) = settings.tx_power {
-        config.set_tx_power(power);
+    if let Some(dbm) = settings.tx_power {
+        config.set_tx_power(TxPower::nearest(config.firmware(), dbm));
     }
     // After the other changes, since the log period counts measurements.
     if let Some(period) = settings.log_period {

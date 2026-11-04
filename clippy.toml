@@ -1,1 +1,1 @@
-doc-valid-idents = ["BTHome", "BlueZ", "CoreBluetooth", "WinRT", ".."]
+doc-valid-idents = ["BTHome", "BlueZ", "CoreBluetooth", "WinRT", "AHT2x", "CHT8305", "CHT8215", "CHT832x", "PHY62x2", "PHY62xx", ".."]

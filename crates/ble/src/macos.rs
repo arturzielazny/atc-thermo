@@ -117,7 +117,7 @@ impl Bluetooth {
     pub async fn connect(&self, id: DeviceId) -> Result<Thermometer, atc::Error> {
         let uuid = self.shared.uuid(id)?;
         let _connecting = self.shared.connecting.lock().await;
-        open(&self.shared, uuid).await
+        open(&self.shared, uuid, id).await
     }
 
     /// Drops a connection to `id`, or a connect still pending, that a cancelled job
@@ -252,14 +252,14 @@ async fn close(shared: &Shared, peripheral: &Peripheral) -> Result<(), atc::Erro
     result
 }
 
-/// Connects to `uuid` and opens its command characteristic. The caller holds
-/// [`Shared::connecting`].
-async fn open(shared: &Arc<Shared>, uuid: Uuid) -> Result<Thermometer, atc::Error> {
+/// Connects to `uuid` and opens its command characteristic. Errors name the device as
+/// `id`, the way the caller asked for it. The caller holds [`Shared::connecting`].
+async fn open(shared: &Arc<Shared>, uuid: Uuid, id: DeviceId) -> Result<Thermometer, atc::Error> {
     let adapter = shared.adapter().await?;
     let mut attempt = 0;
     let peripheral = loop {
         attempt += 1;
-        let peripheral = wait_until_heard(shared, &adapter, uuid).await?;
+        let peripheral = wait_until_heard(shared, &adapter, uuid, id).await?;
         let result = timeout(CONNECT_TIMEOUT, peripheral.connect()).await;
         let error = match result {
             Ok(Ok(())) => break peripheral,
@@ -286,6 +286,7 @@ async fn wait_until_heard(
     shared: &Shared,
     adapter: &Adapter,
     uuid: Uuid,
+    id: DeviceId,
 ) -> Result<Peripheral, atc::Error> {
     let deadline = Instant::now() + DEVICE_APPEAR_TIMEOUT;
     loop {
@@ -295,7 +296,7 @@ async fn wait_until_heard(
             return Ok(peripheral);
         }
         if Instant::now() >= deadline {
-            return Err(atc::Error::NotInRange(DeviceId::Uuid(uuid)));
+            return Err(atc::Error::NotInRange(id));
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
@@ -548,7 +549,7 @@ impl Identifier {
 /// Connects to `uuid` and reads its MAC, holding the connection lock throughout.
 async fn identify(shared: &Arc<Shared>, uuid: Uuid) -> Result<[u8; 6], atc::Error> {
     let _connecting = shared.connecting.lock().await;
-    let mut thermometer = open(shared, uuid).await?;
+    let mut thermometer = open(shared, uuid, DeviceId::Uuid(uuid)).await?;
     let mac = thermometer.mac().await;
     let _ = thermometer.disconnect().await;
     match mac? {

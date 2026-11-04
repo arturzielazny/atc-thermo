@@ -76,8 +76,9 @@ pub fn delete(id: u32) -> String {
 
 /// Fills `area` with placeholders for image `id`, which must be below 2²⁴.
 ///
-/// The id travels in the foreground color; the first cell of each row names its row
-/// and column, and the terminal counts columns from there.
+/// The id travels in the foreground color, and every cell names its row and column.
+/// A cell without them would take its place from the cell to its left, and a popup
+/// drawn over that cell would leave the rest of the row showing the image's first row.
 pub fn place(buf: &mut Buffer, area: Rect, id: u32) {
     let [_, r, g, b] = id.to_be_bytes();
     let rows = area.height.min(diacritic_count());
@@ -87,9 +88,10 @@ pub fn place(buf: &mut Buffer, area: Rect, id: u32) {
                 continue;
             };
             let mut symbol = String::from(PLACEHOLDER);
-            if col == 0 {
+            // Columns past the table are counted on from the cell to the left.
+            if let Some(&column) = DIACRITICS.get(usize::from(col)) {
                 symbol.push(DIACRITICS[usize::from(row)]);
-                symbol.push(DIACRITICS[0]);
+                symbol.push(column);
             }
             cell.set_symbol(&symbol)
                 .set_fg(Color::Rgb(r, g, b))
@@ -265,7 +267,17 @@ mod tests {
         let cell = &buf[(0, 1)];
         assert_eq!(cell.symbol(), "\u{10EEEE}\u{30D}\u{305}");
         assert_eq!(cell.fg, Color::Rgb(0x12, 0x34, 0x56));
-        assert_eq!(buf[(2, 1)].symbol(), "\u{10EEEE}");
+        assert_eq!(buf[(2, 1)].symbol(), "\u{10EEEE}\u{30D}\u{30E}");
+    }
+
+    #[test]
+    fn cells_right_of_a_popup_keep_their_place() {
+        let area = Rect::new(0, 0, 400, 2);
+        let mut buf = Buffer::empty(area);
+        place(&mut buf, area, 1);
+        // A popup covering columns 0..10 leaves column 10 to stand on its own.
+        assert_eq!(buf[(10, 1)].symbol(), "\u{10EEEE}\u{30D}\u{34B}");
+        assert_eq!(buf[(399, 1)].symbol(), "\u{10EEEE}");
     }
 
     #[test]

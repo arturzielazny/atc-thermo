@@ -125,6 +125,8 @@ pub struct DeviceState {
     pub busy: Option<&'static str>,
     /// Message of the last finished job.
     pub last: Option<Result<String, String>>,
+    /// When that job finished.
+    pub last_at: Option<SystemTime>,
     /// Device minus host clock, in seconds, when last measured.
     pub clock_offset: Option<f64>,
     /// Settings last read from or written to the device.
@@ -364,6 +366,7 @@ impl App {
                 state.queued = state.queued.saturating_sub(1);
                 state.busy = None;
                 state.last = Some(message);
+                state.last_at = Some(SystemTime::now());
                 if self.states.values().all(|s| s.queued == 0) {
                     self.restart_scan_at = Some(Instant::now() + SCAN_RESTART_DELAY);
                 }
@@ -1409,6 +1412,7 @@ mod tests {
         assert_eq!(state.clock_offset, Some(-5.0));
         assert_eq!(state.busy, None);
         assert_eq!(state.last, Some(Ok("1 of 1 log records added".to_owned())));
+        assert!(state.last_at.is_some_and(|at| at <= SystemTime::now()));
         // Later downloads start from now, not a day back.
         assert!(app.download_since(A) > at);
     }

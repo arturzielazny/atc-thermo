@@ -129,7 +129,7 @@ impl Bluetooth {
         {
             // Also cancels a pending request, which would otherwise connect on the
             // next advert and leave the device silent.
-            let _ = close(&peripheral).await;
+            let _ = close(&self.shared, &peripheral).await;
         }
     }
 }
@@ -180,6 +180,14 @@ impl Shared {
         }
     }
 
+    /// CoreBluetooth forgets a peripheral when it disconnects, and a connect to the old
+    /// object fails ("peripheral no longer available") until a scan sees it again.
+    fn forget(&self, uuid: Uuid) {
+        if let Ok(mut heard) = self.heard.lock() {
+            heard.remove(&uuid);
+        }
+    }
+
     fn heard_within(&self, uuid: Uuid, window: Duration) -> bool {
         self.heard
             .lock()
@@ -191,6 +199,7 @@ impl Shared {
 
 /// A connection's command characteristic.
 pub struct Link {
+    shared: Arc<Shared>,
     peripheral: Peripheral,
     command: Characteristic,
     write_type: WriteType,
@@ -209,7 +218,7 @@ impl Transport for Link {
     }
 
     async fn disconnect(self) -> Result<(), atc::Error> {
-        close(&self.peripheral).await
+        close(&self.shared, &self.peripheral).await
     }
 }
 
@@ -230,17 +239,22 @@ async fn step<T>(
     })
 }
 
-/// Cancels a connection or a pending connect.
-async fn close(peripheral: &Peripheral) -> Result<(), atc::Error> {
-    step("disconnecting", DISCONNECT_TIMEOUT, async {
+/// Cancels a connection or a pending connect. The next connect then waits for an
+/// advert (see [`Shared::forget`]).
+async fn close(shared: &Shared, peripheral: &Peripheral) -> Result<(), atc::Error> {
+    let result = step("disconnecting", DISCONNECT_TIMEOUT, async {
         peripheral.disconnect().await.map_err(bluetooth)
     })
-    .await
+    .await;
+    if let Some(uuid) = uuid_of(&peripheral.id()) {
+        shared.forget(uuid);
+    }
+    result
 }
 
 /// Connects to `uuid` and opens its command characteristic. The caller holds
 /// [`Shared::connecting`].
-async fn open(shared: &Shared, uuid: Uuid) -> Result<Thermometer, atc::Error> {
+async fn open(shared: &Arc<Shared>, uuid: Uuid) -> Result<Thermometer, atc::Error> {
     let adapter = shared.adapter().await?;
     let mut attempt = 0;
     let peripheral = loop {
@@ -254,14 +268,14 @@ async fn open(shared: &Shared, uuid: Uuid) -> Result<Thermometer, atc::Error> {
         };
         // The request is still pending inside CoreBluetooth; cancel it, or the device
         // connects later with nobody using the connection.
-        let _ = close(&peripheral).await;
+        let _ = close(shared, &peripheral).await;
         if attempt >= CONNECT_ATTEMPTS {
             return Err(error);
         }
     };
-    let result = set_up(&peripheral).await;
+    let result = set_up(shared, &peripheral).await;
     if result.is_err() {
-        let _ = close(&peripheral).await;
+        let _ = close(shared, &peripheral).await;
     }
     result
 }
@@ -289,7 +303,7 @@ async fn wait_until_heard(
 
 /// Finds the command characteristic, subscribes to it (before any write, so no reply
 /// is missed) and reads the device id.
-async fn set_up(peripheral: &Peripheral) -> Result<Thermometer, atc::Error> {
+async fn set_up(shared: &Arc<Shared>, peripheral: &Peripheral) -> Result<Thermometer, atc::Error> {
     step("discovering services", DISCOVER_TIMEOUT, async {
         peripheral.discover_services().await.map_err(bluetooth)
     })
@@ -311,6 +325,7 @@ async fn set_up(peripheral: &Peripheral) -> Result<Thermometer, atc::Error> {
     })
     .await?;
     let link = Link {
+        shared: Arc::clone(shared),
         peripheral: peripheral.clone(),
         write_type: write_type_for(command.properties),
         command,
@@ -401,6 +416,7 @@ async fn scan(
                     // A connection may have changed the name; read it again.
                     if let Some(uuid) = uuid_of(&id) {
                         known.remove(&uuid);
+                        shared.forget(uuid);
                     }
                 }
                 Some(CentralEvent::ServiceDataAdvertisement { id, mut service_data }) => {
@@ -530,7 +546,7 @@ impl Identifier {
 }
 
 /// Connects to `uuid` and reads its MAC, holding the connection lock throughout.
-async fn identify(shared: &Shared, uuid: Uuid) -> Result<[u8; 6], atc::Error> {
+async fn identify(shared: &Arc<Shared>, uuid: Uuid) -> Result<[u8; 6], atc::Error> {
     let _connecting = shared.connecting.lock().await;
     let mut thermometer = open(shared, uuid).await?;
     let mac = thermometer.mac().await;

@@ -3,7 +3,14 @@
 The `thermo` dashboard and calibration tool as an Android app, for the same BLE
 thermometers: pvvx [ATC_MiThermometer](https://github.com/pvvx/ATC_MiThermometer)
 firmware with BTHome v2 advertising (tested on Xiaomi LYWSD03MMC, firmware v5.9, on a
-Samsung Galaxy S21 with Android 15). Kotlin and Jetpack Compose (Material 3), no other
+Samsung Galaxy S21 with Android 15).
+
+The terminal app also supports pvvx [THB2](https://github.com/pvvx/THB2) firmware (THB1,
+THB2, BTH01, TH05, …); this app doesn't yet. THB2 devices show their readings, which are
+plain BTHome, but commands (identify, sync, download, settings, calibration, levelling)
+fail with "not a pvvx ATC firmware device": the app only looks for the ATC command
+characteristic `0x1F1F`, and THB2 uses `0xFFF4` with its own config and coefficient
+layouts. `crates/atc/src/firmware.rs` lists what a port needs. Kotlin and Jetpack Compose (Material 3), no other
 dependencies. Android 8 and newer.
 
 **Install:** download the APK from the [Android release](https://github.com/arturzielazny/atc-thermo/releases/tag/android-v0.1.0) and open it on

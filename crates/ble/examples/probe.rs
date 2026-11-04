@@ -6,16 +6,20 @@ use atc::DeviceId;
 use ble::{Bluetooth, ScanControl, ScanEvent};
 use tokio::sync::mpsc;
 
+const HEAR_TIMEOUT: Duration = Duration::from_secs(90);
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let id: DeviceId = std::env::args().nth(1).ok_or("usage: probe MAC")?.parse()?;
     let bluetooth = Bluetooth::default();
 
-    // The BLE stack must have heard the device; scan until it advertises.
+    // The BLE stack must have heard the device; scan until it advertises. On macOS a
+    // device's first adverts wait for the backend to read its MAC, which can take two
+    // 30 s connect attempts.
     let (events_tx, mut events) = mpsc::unbounded_channel();
     let (controls, controls_rx) = mpsc::unbounded_channel();
     tokio::spawn(bluetooth.clone().scan(events_tx, controls_rx));
-    tokio::time::timeout(Duration::from_secs(30), async {
+    tokio::time::timeout(HEAR_TIMEOUT, async {
         while let Some(event) = events.recv().await {
             if matches!(&event, ScanEvent::Advert(advert) if advert.address == id) {
                 break;
@@ -23,7 +27,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     })
     .await
-    .map_err(|_| format!("{id} not heard in 30 s"))?;
+    .map_err(|_| format!("{id} not heard in {} s", HEAR_TIMEOUT.as_secs()))?;
     controls.send(ScanControl::Pause)?;
 
     let mut thermometer = bluetooth.connect(id).await?;

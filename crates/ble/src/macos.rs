@@ -12,7 +12,7 @@
 //!   to the device's MAC by connecting once and reading it ([`Thermometer::mac`]), and
 //!   from then on reports the MAC, as BlueZ does (AGENTS.md, "Porting to another OS").
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -27,6 +27,7 @@ use btleplug::api::{
 use btleplug::platform::{Adapter, Manager, Peripheral, PeripheralId};
 use futures::StreamExt;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
+use tokio::sync::oneshot;
 use tokio::time::{Instant, timeout};
 use uuid::Uuid;
 
@@ -52,7 +53,7 @@ const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 /// that is not connected.
 const DISCONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 /// Longest an identification may hold the connection lock: two connect attempts and
-/// one command.
+/// one command. Cut short as soon as a job is queued ([`ScanControl::Pause`]).
 const IDENTIFY_TIMEOUT: Duration = Duration::from_secs(120);
 /// Waits before identifying a device again after a failure, growing with each one.
 const IDENTIFY_RETRY: [Duration; 3] = [
@@ -60,7 +61,8 @@ const IDENTIFY_RETRY: [Duration; 3] = [
     Duration::from_secs(5 * 60),
     Duration::from_secs(30 * 60),
 ];
-/// The UUID → MAC map, under `$HOME`. Losing it only costs one connection per device.
+/// The UUID → MAC map, under `$HOME`, which also lists devices that aren't pvvx
+/// thermometers (`uuid,` with no MAC). Losing it only costs one connection per device.
 const IDS_FILE: &str = "Library/Caches/thermo/macos-ids.csv";
 const IDS_HEADER: &str = "uuid,mac";
 
@@ -89,7 +91,8 @@ impl Bluetooth {
     /// and scanning starts over with a new central after [`RETRY_PAUSE`].
     ///
     /// Scanning goes on during [`ScanControl::Pause`], since CoreBluetooth connects on
-    /// adverts; the pause only keeps identifications from starting.
+    /// adverts; the pause cancels a running identification and keeps new ones from
+    /// starting, so the job gets the connection at once.
     pub async fn scan(
         self,
         events: UnboundedSender<ScanEvent>,
@@ -159,6 +162,23 @@ impl Shared {
 
     fn mac(&self, uuid: Uuid) -> Option<[u8; 6]> {
         self.ids().lock().ok()?.mac(uuid)
+    }
+
+    /// Whether `uuid` was found not to be a pvvx thermometer.
+    fn is_other(&self, uuid: Uuid) -> bool {
+        self.ids()
+            .lock()
+            .is_ok_and(|ids| ids.others.contains(&uuid))
+    }
+
+    /// Applies `change` to the ids, and saves them if it changed anything. Losing the
+    /// file only costs another identification, so a failed save is ignored.
+    fn record(&self, change: impl FnOnce(&mut Ids) -> bool) {
+        if let Ok(mut ids) = self.ids().lock()
+            && change(&mut ids)
+        {
+            let _ = ids.save();
+        }
     }
 
     /// The peripheral behind `id`.
@@ -402,11 +422,11 @@ async fn scan(
         tokio::select! {
             control = controls.recv() => match control {
                 None => return Ok(()),
-                Some(ScanControl::Pause) => identifier.paused = true,
+                Some(ScanControl::Pause) => identifier.pause(),
                 Some(ScanControl::Resume) => identifier.paused = false,
             },
-            Some((uuid, result)) = identifier.results.recv() => {
-                identifier.finished(shared, uuid, result, Instant::now());
+            Some((uuid, outcome)) = identifier.results.recv() => {
+                identifier.finished(shared, uuid, outcome, Instant::now());
             }
             event = central_events.next() => match event {
                 None => return Err(Failure("CoreBluetooth stopped sending events".into())),
@@ -475,12 +495,28 @@ struct Known {
 struct Identifier {
     /// Unmapped peripherals heard since the scan started.
     states: HashMap<Uuid, Identification>,
-    /// The peripheral being identified now.
-    running: Option<Uuid>,
+    /// The identification running now.
+    running: Option<Running>,
     /// Set while jobs run; no identification starts then.
     paused: bool,
-    results_tx: UnboundedSender<(Uuid, Result<[u8; 6], atc::Error>)>,
-    results: UnboundedReceiver<(Uuid, Result<[u8; 6], atc::Error>)>,
+    results_tx: UnboundedSender<(Uuid, Outcome)>,
+    results: UnboundedReceiver<(Uuid, Outcome)>,
+}
+
+/// The identification in progress.
+struct Running {
+    uuid: Uuid,
+    /// Asks it to stop; taken when sent.
+    cancel: Option<oneshot::Sender<()>>,
+}
+
+/// How an identification ended.
+#[derive(Debug)]
+enum Outcome {
+    Mac([u8; 6]),
+    Failed(atc::Error),
+    /// Stopped for a job; it counts as not tried.
+    Cancelled,
 }
 
 impl Identifier {
@@ -498,19 +534,41 @@ impl Identifier {
     /// An unmapped peripheral advertised: identify it if it is due and nothing else
     /// is being identified.
     fn heard(&mut self, shared: &Arc<Shared>, uuid: Uuid, now: Instant) {
-        let state = self.states.entry(uuid).or_insert(Identification::Untried);
+        let state = self.states.entry(uuid).or_insert_with(|| {
+            if shared.is_other(uuid) {
+                Identification::Never
+            } else {
+                Identification::Untried
+            }
+        });
         if self.paused || self.running.is_some() || !state.due(now) {
             return;
         }
         *state = state.started();
-        self.running = Some(uuid);
+        let (cancel, cancelled) = oneshot::channel();
+        self.running = Some(Running {
+            uuid,
+            cancel: Some(cancel),
+        });
         let (shared, results) = (Arc::clone(shared), self.results_tx.clone());
         tokio::spawn(async move {
-            let result = timeout(IDENTIFY_TIMEOUT, identify(&shared, uuid))
-                .await
-                .unwrap_or(Err(atc::Error::ConnectTimeout));
-            let _ = results.send((uuid, result));
+            let outcome = identify(&shared, uuid, cancelled).await;
+            let _ = results.send((uuid, outcome));
         });
+    }
+
+    /// A job was queued: start no identification until [`ScanControl::Resume`], and
+    /// stop the running one, which would otherwise hold the connection for up to
+    /// [`IDENTIFY_TIMEOUT`] and make the job time out.
+    fn pause(&mut self) {
+        self.paused = true;
+        if let Some(cancel) = self
+            .running
+            .as_mut()
+            .and_then(|running| running.cancel.take())
+        {
+            let _ = cancel.send(());
+        }
     }
 
     fn sends_adverts(&self, uuid: Uuid) -> bool {
@@ -519,36 +577,63 @@ impl Identifier {
             .is_some_and(|state| state.sends_adverts())
     }
 
-    fn finished(
-        &mut self,
-        shared: &Shared,
-        uuid: Uuid,
-        result: Result<[u8; 6], atc::Error>,
-        now: Instant,
-    ) {
-        self.running = None;
-        match result {
-            Ok(mac) => {
-                self.states.remove(&uuid);
-                if let Ok(mut ids) = shared.ids().lock()
-                    && ids.insert(uuid, mac)
-                {
-                    // Losing the file only costs another identification.
-                    let _ = ids.save();
-                }
-            }
-            Err(err) => {
-                if let Some(state) = self.states.get_mut(&uuid) {
-                    *state = state.failed(can_retry(&err), now);
-                }
-            }
+    fn finished(&mut self, shared: &Shared, uuid: Uuid, outcome: Outcome, now: Instant) {
+        if self
+            .running
+            .as_ref()
+            .is_some_and(|running| running.uuid == uuid)
+        {
+            self.running = None;
+        }
+        if let Outcome::Mac(mac) = outcome {
+            self.states.remove(&uuid);
+            shared.record(|ids| ids.insert(uuid, mac));
+            return;
+        }
+        let Some(state) = self.states.get_mut(&uuid) else {
+            return;
+        };
+        *state = match outcome {
+            Outcome::Failed(err) => state.failed(can_retry(&err), now),
+            _ => state.cancelled(now),
+        };
+        if *state == Identification::Never {
+            shared.record(|ids| ids.insert_other(uuid));
         }
     }
 }
 
-/// Connects to `uuid` and reads its MAC, holding the connection lock throughout.
-async fn identify(shared: &Arc<Shared>, uuid: Uuid) -> Result<[u8; 6], atc::Error> {
-    let _connecting = shared.connecting.lock().await;
+/// Connects to `uuid` and reads its MAC, holding the connection lock throughout. When
+/// `cancelled` fires or [`IDENTIFY_TIMEOUT`] passes, drops the connection or the
+/// pending connect request before letting go of the lock, as [`Bluetooth::release`]
+/// does, so CoreBluetooth doesn't connect later with nobody using the connection.
+async fn identify(
+    shared: &Arc<Shared>,
+    uuid: Uuid,
+    mut cancelled: oneshot::Receiver<()>,
+) -> Outcome {
+    // A dropped sender (the scan ended) also cancels.
+    let _connecting = tokio::select! {
+        guard = shared.connecting.lock() => guard,
+        _ = &mut cancelled => return Outcome::Cancelled,
+    };
+    let outcome = tokio::select! {
+        result = read_mac(shared, uuid) => {
+            return result.map_or_else(Outcome::Failed, Outcome::Mac);
+        }
+        _ = cancelled => Outcome::Cancelled,
+        () = tokio::time::sleep(IDENTIFY_TIMEOUT) => Outcome::Failed(atc::Error::ConnectTimeout),
+    };
+    if let Ok(adapter) = shared.adapter().await
+        && let Ok(peripheral) = adapter.peripheral(&PeripheralId::from(uuid)).await
+    {
+        let _ = close(shared, &peripheral).await;
+    }
+    outcome
+}
+
+/// Connects to `uuid` and reads its MAC. The caller holds [`Shared::connecting`].
+async fn read_mac(shared: &Arc<Shared>, uuid: Uuid) -> Result<[u8; 6], atc::Error> {
     let mut thermometer = open(shared, uuid, DeviceId::Uuid(uuid)).await?;
     let mac = thermometer.mac().await;
     let _ = thermometer.disconnect().await;
@@ -581,7 +666,7 @@ enum Identification {
     /// Failed `failures` times; adverts go out under the UUID until it works.
     Failed { failures: usize, retry_at: Instant },
     /// The device can't be asked for its MAC (e.g. other firmware); adverts go out
-    /// under the UUID.
+    /// under the UUID. Kept in the ids file, so it isn't asked again after a restart.
     Never,
 }
 
@@ -616,27 +701,44 @@ impl Identification {
         }
     }
 
+    /// The running attempt was stopped for a job: back to where it was before, without
+    /// counting a failure, and due again at once.
+    fn cancelled(self, now: Instant) -> Self {
+        match self {
+            Self::First => Self::Untried,
+            Self::Again { failures } => Self::Failed {
+                failures,
+                retry_at: now,
+            },
+            other => other,
+        }
+    }
+
     fn sends_adverts(self) -> bool {
         !matches!(self, Self::Untried | Self::First)
     }
 }
 
-/// UUID → MAC pairs, with the file they are kept in.
+/// UUID → MAC pairs and the UUIDs of other devices, with the file they are kept in.
 #[derive(Debug, Default)]
 struct Ids {
     macs: HashMap<Uuid, [u8; 6]>,
+    /// BTHome devices that aren't pvvx thermometers (e.g. a neighbour's sensor), so
+    /// they aren't connected to on every start.
+    others: HashSet<Uuid>,
     path: Option<PathBuf>,
 }
 
 impl Ids {
     /// Reads `path`; a missing or unreadable file gives an empty map.
     fn load(path: Option<&Path>) -> Self {
-        let macs = path
+        let (macs, others) = path
             .and_then(|path| fs::read_to_string(path).ok())
             .map(|text| parse_ids(&text))
             .unwrap_or_default();
         Self {
             macs,
+            others,
             path: path.map(Path::to_path_buf),
         }
     }
@@ -654,12 +756,23 @@ impl Ids {
     /// Records that `uuid` is `mac`, dropping any other UUID for that MAC (macOS hands
     /// out a new one after a Bluetooth reset). Returns whether anything changed.
     fn insert(&mut self, uuid: Uuid, mac: [u8; 6]) -> bool {
-        if self.mac(uuid) == Some(mac) && self.macs.values().filter(|m| **m == mac).count() == 1 {
+        let other = self.others.remove(&uuid);
+        if !other
+            && self.mac(uuid) == Some(mac)
+            && self.macs.values().filter(|m| **m == mac).count() == 1
+        {
             return false;
         }
         self.macs.retain(|_, m| *m != mac);
         self.macs.insert(uuid, mac);
         true
+    }
+
+    /// Records that `uuid` is not a pvvx thermometer (e.g. after it was flashed with
+    /// other firmware). Returns whether anything changed.
+    fn insert_other(&mut self, uuid: Uuid) -> bool {
+        let mapped = self.macs.remove(&uuid).is_some();
+        self.others.insert(uuid) || mapped
     }
 
     /// Writes the file whole, through a temporary file so a crash can't truncate it.
@@ -671,7 +784,7 @@ impl Ids {
             fs::create_dir_all(dir)?;
         }
         let temporary = path.with_extension("csv.new");
-        fs::write(&temporary, format_ids(&self.macs))?;
+        fs::write(&temporary, format_ids(&self.macs, &self.others))?;
         fs::rename(temporary, path)
     }
 }
@@ -681,27 +794,38 @@ fn ids_path() -> Option<PathBuf> {
     std::env::var_os("HOME").map(|home| PathBuf::from(home).join(IDS_FILE))
 }
 
-/// Reads `uuid,mac` lines after the header, skipping any it can't parse.
-fn parse_ids(text: &str) -> HashMap<Uuid, [u8; 6]> {
-    text.lines()
-        .skip_while(|line| line.trim() == IDS_HEADER)
-        .filter_map(|line| {
-            let (uuid, mac) = line.split_once(',')?;
-            let uuid = Uuid::parse_str(uuid.trim()).ok()?;
-            match mac.parse() {
-                Ok(DeviceId::Mac(mac)) => Some((uuid, mac)),
-                _ => None,
-            }
-        })
-        .collect()
+/// Reads `uuid,mac` lines after the header, and `uuid,` lines for devices that aren't
+/// pvvx thermometers, skipping any it can't parse.
+fn parse_ids(text: &str) -> (HashMap<Uuid, [u8; 6]>, HashSet<Uuid>) {
+    let mut macs = HashMap::new();
+    let mut others = HashSet::new();
+    for line in text.lines().skip_while(|line| line.trim() == IDS_HEADER) {
+        let Some((uuid, mac)) = line.split_once(',') else {
+            continue;
+        };
+        let Ok(uuid) = Uuid::parse_str(uuid.trim()) else {
+            continue;
+        };
+        if mac.trim().is_empty() {
+            others.insert(uuid);
+        } else if let Ok(DeviceId::Mac(mac)) = mac.parse() {
+            macs.insert(uuid, mac);
+        }
+    }
+    (macs, others)
 }
 
-/// The map as `uuid,mac` lines under a header, sorted so the file only changes when
-/// the map does.
-fn format_ids(macs: &HashMap<Uuid, [u8; 6]>) -> String {
+/// The map as `uuid,mac` and `uuid,` lines under a header, sorted so the file only
+/// changes when the map does.
+fn format_ids(macs: &HashMap<Uuid, [u8; 6]>, others: &HashSet<Uuid>) -> String {
     let mut lines: Vec<String> = macs
         .iter()
         .map(|(uuid, mac)| format!("{},{}", DeviceId::Uuid(*uuid), DeviceId::Mac(*mac)))
+        .chain(
+            others
+                .iter()
+                .map(|uuid| format!("{},", DeviceId::Uuid(*uuid))),
+        )
         .collect();
     lines.sort();
     let mut text = format!("{IDS_HEADER}\n");
@@ -718,19 +842,22 @@ mod tests {
 
     const A: Uuid = Uuid::from_u128(0xa42d_df15_06d6_3a4c_f547_da9b_e9d8_ebb7);
     const B: Uuid = Uuid::from_u128(0xffbc_2e88_a02d_4a7e_2cbf_0754_f80b_1bf6);
+    const C: Uuid = Uuid::from_u128(0xc0ff_ee00_0000_4000_8000_0000_0000_0001);
     const MAC: [u8; 6] = [0xa4, 0xc1, 0x38, 0x27, 0xc6, 0x22];
 
     #[test]
     fn ids_file_round_trips() {
         let macs = HashMap::from([(A, MAC), (B, [1, 2, 3, 4, 5, 6])]);
-        let text = format_ids(&macs);
+        let others = HashSet::from([C]);
+        let text = format_ids(&macs, &others);
         assert_eq!(
             text,
             "uuid,mac\n\
              A42DDF15-06D6-3A4C-F547-DA9BE9D8EBB7,A4:C1:38:27:C6:22\n\
+             C0FFEE00-0000-4000-8000-000000000001,\n\
              FFBC2E88-A02D-4A7E-2CBF-0754F80B1BF6,01:02:03:04:05:06\n"
         );
-        assert_eq!(parse_ids(&text), macs);
+        assert_eq!(parse_ids(&text), (macs, others));
     }
 
     #[test]
@@ -738,9 +865,14 @@ mod tests {
         let text = "uuid,mac\n\
                     garbage\n\
                     A42DDF15-06D6-3A4C-F547-DA9BE9D8EBB7,A4:C1:38:27:C6:22\n\
-                    FFBC2E88-A02D-4A7E-2CBF-0754F80B1BF6,FFBC2E88-A02D-4A7E-2CBF-0754F80B1BF6\n";
-        assert_eq!(parse_ids(text), HashMap::from([(A, MAC)]));
-        assert!(parse_ids("").is_empty());
+                    FFBC2E88-A02D-4A7E-2CBF-0754F80B1BF6,FFBC2E88-A02D-4A7E-2CBF-0754F80B1BF6\n\
+                    not-a-uuid,\n\
+                    C0FFEE00-0000-4000-8000-000000000001, \n";
+        assert_eq!(
+            parse_ids(text),
+            (HashMap::from([(A, MAC)]), HashSet::from([C]))
+        );
+        assert_eq!(parse_ids(""), (HashMap::new(), HashSet::new()));
     }
 
     #[test]
@@ -764,7 +896,11 @@ mod tests {
         assert!(ids.macs.is_empty());
         ids.insert(A, MAC);
         ids.save().expect("temp dir is writable");
-        assert_eq!(Ids::load(Some(&path)).mac(A), Some(MAC));
+        ids.insert_other(C);
+        ids.save().expect("temp dir is writable");
+        let loaded = Ids::load(Some(&path));
+        assert_eq!(loaded.mac(A), Some(MAC));
+        assert!(loaded.others.contains(&C));
         let _ = fs::remove_dir_all(dir);
     }
 
@@ -799,5 +935,64 @@ mod tests {
         assert!(state.sends_adverts());
         assert!(!state.due(now + Duration::from_secs(86_400)));
         assert!(can_retry(&atc::Error::ConnectTimeout));
+    }
+
+    #[test]
+    fn a_device_is_either_mapped_or_other() {
+        let mut ids = Ids::default();
+        assert!(ids.insert_other(A));
+        assert!(!ids.insert_other(A));
+        // Reflashed with pvvx firmware.
+        assert!(ids.insert(A, MAC));
+        assert!(ids.others.is_empty());
+        // Reflashed with something else.
+        assert!(ids.insert_other(A));
+        assert_eq!(ids.mac(A), None);
+    }
+
+    #[test]
+    fn a_cancelled_attempt_is_not_a_failure() {
+        let now = Instant::now();
+        let later = now + Duration::from_secs(10);
+        // A first attempt goes back to untried: adverts still held back, due at once.
+        let state = Identification::Untried.started().cancelled(later);
+        assert_eq!(state, Identification::Untried);
+        assert!(!state.sends_adverts());
+        assert!(state.due(later));
+        // A later attempt keeps its failure count and is due at once, not after a wait.
+        let failed = Identification::Untried.started().failed(true, now);
+        let state = failed.started().cancelled(later);
+        assert_eq!(
+            state,
+            Identification::Failed {
+                failures: 1,
+                retry_at: later
+            }
+        );
+        assert!(state.due(later));
+        assert_eq!(
+            state.started().failed(true, later),
+            failed.started().failed(true, later)
+        );
+    }
+
+    #[test]
+    fn a_pause_cancels_the_running_identification() {
+        let mut identifier = Identifier::new();
+        let (cancel, mut cancelled) = oneshot::channel();
+        identifier.states.insert(A, Identification::First);
+        identifier.running = Some(Running {
+            uuid: A,
+            cancel: Some(cancel),
+        });
+        identifier.pause();
+        assert!(identifier.paused);
+        assert_eq!(cancelled.try_recv(), Ok(()));
+        // A second pause has nothing more to cancel.
+        identifier.pause();
+
+        identifier.finished(&Shared::default(), A, Outcome::Cancelled, Instant::now());
+        assert!(identifier.running.is_none());
+        assert_eq!(identifier.states[&A], Identification::Untried);
     }
 }

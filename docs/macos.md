@@ -47,10 +47,15 @@ CoreBluetooth hides MAC addresses and names each device by a UUID that differs f
 Mac to Mac. So that history and `calibrations.csv` match those from Linux and Android,
 `thermo` connects once to each new thermometer, reads its MAC (a read-only command)
 and shows the MAC from then on. The UUID → MAC pairs are kept in
-`~/Library/Caches/thermo/macos-ids.csv`; deleting that file only means each device is
-asked again.
+`~/Library/Caches/thermo/macos-ids.csv`, along with BTHome devices that turned out not
+to be pvvx thermometers (a line with no MAC), so those aren't connected to again.
+Deleting that file only means each device is checked again; do that after reflashing a
+device with pvvx firmware, or after updating `thermo` to a version that supports more
+firmware.
 
 A new device's readings appear once it has been identified, usually within a minute.
+A job (a log download, a calibration) goes first: it stops an identification in
+progress, which starts over afterwards.
 A device that can't be reached keeps its UUID until a later attempt works (after 1, 5,
 then every 30 minutes). Devices whose firmware `thermo` can't talk to keep their UUID.
 

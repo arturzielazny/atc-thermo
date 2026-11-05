@@ -97,8 +97,8 @@ Linux also `pkg-config` and the libdbus headers (`libdbus-1-dev` on Debian/Ubunt
 - CoreBluetooth only connects peripherals its own central has scanned, forgets them on
   disconnect until the next advert, and keeps a connect request pending until the
   device's next connectable advert. So the macOS backend shares one central between
-  scan and connect, keeps scanning during jobs (`ScanControl::Pause` only stops
-  identifications), waits for an advert in the last 60 s before connecting, and cancels
+  scan and connect, keeps scanning during jobs (`ScanControl::Pause` only stops and
+  cancels identifications), waits for an advert in the last 60 s before connecting, and cancels
   a connect request it gives up on. Every btleplug call has its own timeout
   (`disconnect` can otherwise wait forever for a callback).
 
@@ -119,14 +119,17 @@ these steps and is the closest example for another btleplug platform.
    per-host UUIDs instead; the macOS backend maps each UUID back to a MAC by connecting
    once and reading `Thermometer::mac` (command `0x10`, read-only), then:
    - keeps the UUID → MAC map in a cache file of its own (e.g.
-     `$HOME/Library/Caches/thermo/macos-ids.csv`); losing it only costs a re-read;
+     `$HOME/Library/Caches/thermo/macos-ids.csv`), together with the UUIDs of BTHome
+     devices that aren't pvvx thermometers, so those aren't connected to on every
+     start; losing it only costs a re-read;
    - sends adverts from mapped UUIDs as `DeviceId::Mac`, and `connect(DeviceId::Mac)`
      looks the UUID up in the map;
    - holds back adverts from an unmapped UUID until its first identification attempt
      ends; if that fails (weak signal), sends them as `DeviceId::Uuid` so the readings
      still show, and retries now and then;
    - identifies only while scanning is not paused, one device at a time, and shares a
-     lock with `connect` so a job never connects alongside an identification.
+     lock with `connect` so a job never connects alongside an identification; a pause
+     cancels a running identification, so a queued job doesn't wait for it.
 
    All of this stays inside the backend: the app and `jobs.rs` see the same ids as on
    Linux. A device in range of the Mac but never identified keeps its `DeviceId::Uuid`.

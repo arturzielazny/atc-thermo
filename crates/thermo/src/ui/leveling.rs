@@ -1,6 +1,6 @@
 //! The signal levelling panel: each device's median signal, settings and TX power change.
 
-use atc::TxPower;
+use atc::{Firmware, TxPower};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style, Stylize};
@@ -171,16 +171,75 @@ fn footer(app: &App, screen: &LevelingScreen) -> Line<'static> {
             "Change the TX power of {} devices",
             app.leveling_changes(screen).len()
         )),
-        Some(Confirm::Reset) => ask(format!(
-            "Restore the factory TX power, {}, on {} devices",
-            TxPower::factory(atc::Firmware::Atc),
-            app.factory_resets().len()
-        )),
+        Some(Confirm::Reset) => {
+            let resets = app.factory_resets();
+            let families = resets.iter().map(|&address| {
+                app.state(address)
+                    .and_then(|s| s.config)
+                    .map(|c| c.firmware())
+            });
+            ask(format!(
+                "Restore the factory TX power, {}, on {} devices",
+                factory_power(families),
+                resets.len()
+            ))
+        }
         None => Line::from(format!(
             "A median needs {} adverts; changes under {} dB are skipped. TX power goes from −25 to +10 dBm (THB2: −20 to +5 dBm).",
             level::MIN_ADVERTS,
             level::TOLERANCE_DB
         ))
         .dark_gray(),
+    }
+}
+
+/// Each family's factory TX power, `+0.0 dBm` or `ATC +0.0 dBm, THB +0.0 dBm`, for
+/// devices of the given firmware (`None` where it isn't known yet, so it could be
+/// either).
+fn factory_power(families: impl IntoIterator<Item = Option<Firmware>>) -> String {
+    let mut known = Vec::new();
+    let mut unknown = false;
+    for family in families {
+        match family {
+            Some(family) if !known.contains(&family) => known.push(family),
+            Some(_) => {}
+            None => unknown = true,
+        }
+    }
+    if unknown {
+        known = vec![Firmware::Atc, Firmware::Thb];
+    }
+    known.sort();
+    match known.as_slice() {
+        [family] => TxPower::factory(*family).to_string(),
+        families => families
+            .iter()
+            .map(|&family| format!("{family} {}", TxPower::factory(family)))
+            .collect::<Vec<_>>()
+            .join(", "),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_factory_power_is_named_per_family() {
+        let atc = TxPower::factory(Firmware::Atc).to_string();
+        let thb = TxPower::factory(Firmware::Thb).to_string();
+        let both = format!("ATC {atc}, THB {thb}");
+        assert_eq!(factory_power([Some(Firmware::Atc)]), atc);
+        assert_eq!(
+            factory_power([Some(Firmware::Thb), Some(Firmware::Thb)]),
+            thb
+        );
+        assert_eq!(
+            factory_power([Some(Firmware::Thb), Some(Firmware::Atc)]),
+            both
+        );
+        // A device whose settings weren't read yet could be either.
+        assert_eq!(factory_power([Some(Firmware::Thb), None]), both);
+        assert_eq!(factory_power([None]), both);
     }
 }

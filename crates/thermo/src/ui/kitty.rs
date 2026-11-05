@@ -96,7 +96,7 @@ impl Medium {
 /// An image written to shared memory or a temporary file, waiting for the terminal to
 /// pick it up.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Shared {
+pub struct Handoff {
     medium: Medium,
     /// Shared memory object name, or the file's path.
     name: String,
@@ -105,7 +105,7 @@ pub struct Shared {
     len: usize,
 }
 
-impl Shared {
+impl Handoff {
     /// Escape sequences that load the image as `id` and stretch it over `cols` × `rows`
     /// placeholder cells.
     ///
@@ -161,13 +161,13 @@ fn diacritic_count() -> u16 {
 
 /// Writes images to `/dev/shm` or the temporary directory under names unique to this
 /// process.
-pub struct SharedMemory {
+pub struct ImageFiles {
     medium: Medium,
     next: u64,
     written: Vec<(PathBuf, Instant)>,
 }
 
-impl SharedMemory {
+impl ImageFiles {
     /// Also removes objects left behind by earlier runs that have since exited.
     pub fn new() -> Self {
         let medium = Medium::detect();
@@ -182,7 +182,7 @@ impl SharedMemory {
     /// # Errors
     ///
     /// Fails if the directory is missing or full.
-    pub fn write(&mut self, image: &Rgba) -> io::Result<Shared> {
+    pub fn write(&mut self, image: &Rgba) -> io::Result<Handoff> {
         self.remove_abandoned();
         let name = format!(
             "{}{}-{}",
@@ -198,7 +198,7 @@ impl SharedMemory {
             Medium::TempFile => path.to_string_lossy().into_owned(),
         };
         self.written.push((path, Instant::now()));
-        Ok(Shared {
+        Ok(Handoff {
             medium: self.medium,
             name,
             width: image.width,
@@ -219,7 +219,7 @@ impl SharedMemory {
     }
 }
 
-impl Drop for SharedMemory {
+impl Drop for ImageFiles {
     fn drop(&mut self) {
         for (path, _) in &self.written {
             let _ = fs::remove_file(path);
@@ -363,7 +363,7 @@ mod tests {
 
     #[test]
     fn transmit_names_object_and_size() {
-        let shared = Shared {
+        let handoff = Handoff {
             medium: Medium::SharedMemory,
             name: "/thermo-chart-1-0".into(),
             width: 28,
@@ -371,7 +371,7 @@ mod tests {
             len: 28 * 64 * 4,
         };
         assert_eq!(
-            shared.transmit(7, 2, 2),
+            handoff.transmit(7, 2, 2),
             "\x1b_Ga=d,d=I,i=7,q=2\x1b\\\
              \x1b_Ga=T,U=1,q=2,i=7,f=32,t=s,s=28,v=64,S=7168,c=2,r=2;L3RoZXJtby1jaGFydC0xLTA=\x1b\\"
         );
@@ -379,14 +379,14 @@ mod tests {
 
     #[test]
     fn temp_files_use_t_t_and_their_path() {
-        let shared = Shared {
+        let handoff = Handoff {
             medium: Medium::TempFile,
             name: "/tmp/thermo-chart-tty-graphics-protocol-1-0".into(),
             width: 1,
             height: 1,
             len: 4,
         };
-        let sequence = shared.transmit(7, 1, 1);
+        let sequence = handoff.transmit(7, 1, 1);
         assert!(sequence.contains(",t=t,"));
         assert!(sequence.ends_with(&format!(
             ";{}\x1b\\",
@@ -397,7 +397,7 @@ mod tests {
 
     #[test]
     fn temp_file_round_trip() {
-        let mut memory = SharedMemory {
+        let mut files = ImageFiles {
             medium: Medium::TempFile,
             next: 0,
             written: Vec::new(),
@@ -407,14 +407,14 @@ mod tests {
             height: 1,
             data: vec![1, 2, 3, 4],
         };
-        let shared = memory.write(&image).expect("temp dir is writable");
+        let handoff = files.write(&image).expect("temp dir is writable");
         assert!(
-            shared
+            handoff
                 .name
                 .starts_with(&*std::env::temp_dir().to_string_lossy())
         );
-        assert_eq!(fs::read(&shared.name).expect("written"), image.data);
-        drop(memory);
-        assert!(!Path::new(&shared.name).exists());
+        assert_eq!(fs::read(&handoff.name).expect("written"), image.data);
+        drop(files);
+        assert!(!Path::new(&handoff.name).exists());
     }
 }

@@ -238,26 +238,25 @@ fn job_text(state: &crate::app::DeviceState, now: SystemTime) -> Option<(String,
     let waiting = state
         .queued
         .saturating_sub(usize::from(state.busy.is_some()));
-    let age = state
-        .last_at
-        .map(|at| now.duration_since(at).unwrap_or_default());
-    let finished = |mark: char, message: &str, tone: JobTone| {
-        let ago = age.map_or_else(String::new, |age| format!(" · {} ago", format_age(age)));
-        let tone = if age.is_some_and(|age| age >= JOB_RESULT_FRESH) {
-            JobTone::Old
-        } else {
-            tone
-        };
-        (format!("{mark} {message}{ago}"), tone)
-    };
     Some(match (&state.busy, &state.last) {
         (Some(label), _) if waiting > 0 => {
             (format!("⟳ {label}… (+{waiting} queued)"), JobTone::Running)
         }
         (Some(label), _) => (format!("⟳ {label}…"), JobTone::Running),
         (None, _) if waiting > 0 => (format!("… {waiting} queued"), JobTone::Running),
-        (None, Some(Ok(message))) => finished('✓', message, JobTone::Succeeded),
-        (None, Some(Err(message))) => finished('✗', message, JobTone::Failed),
+        (None, Some(last)) => {
+            let age = now.duration_since(last.at).unwrap_or_default();
+            let (mark, message, tone) = match &last.message {
+                Ok(message) => ('✓', message, JobTone::Succeeded),
+                Err(message) => ('✗', message, JobTone::Failed),
+            };
+            let tone = if age >= JOB_RESULT_FRESH {
+                JobTone::Old
+            } else {
+                tone
+            };
+            (format!("{mark} {message} · {} ago", format_age(age)), tone)
+        }
         (None, None) => return None,
     })
 }
@@ -286,20 +285,25 @@ fn format_age(age: Duration) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::JobResult;
 
     #[test]
     fn job_results_show_their_age_and_fade() {
         let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
         let mut state = crate::app::DeviceState {
-            last: Some(Err("connecting timed out".into())),
-            last_at: Some(now - Duration::from_secs(150)),
+            last: Some(JobResult {
+                message: Err("connecting timed out".into()),
+                at: now - Duration::from_secs(150),
+            }),
             ..Default::default()
         };
         assert_eq!(
             job_text(&state, now),
             Some(("✗ connecting timed out · 2m ago".into(), JobTone::Failed))
         );
-        state.last_at = Some(now - JOB_RESULT_FRESH);
+        if let Some(last) = &mut state.last {
+            last.at = now - JOB_RESULT_FRESH;
+        }
         assert_eq!(
             job_text(&state, now),
             Some(("✗ connecting timed out · 10m ago".into(), JobTone::Old))

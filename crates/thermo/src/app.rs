@@ -118,15 +118,20 @@ pub enum ScanStatus {
     Failed(String),
 }
 
+/// A finished job: its message and when it finished.
+#[derive(Debug, Clone, PartialEq)]
+pub struct JobResult {
+    pub message: Result<String, String>,
+    pub at: SystemTime,
+}
+
 /// What device jobs are doing and have done, per device.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct DeviceState {
     pub queued: usize,
     pub busy: Option<&'static str>,
-    /// Message of the last finished job.
-    pub last: Option<Result<String, String>>,
-    /// When that job finished.
-    pub last_at: Option<SystemTime>,
+    /// The last finished job.
+    pub last: Option<JobResult>,
     /// Device minus host clock, in seconds, when last measured.
     pub clock_offset: Option<f64>,
     /// Settings last read from or written to the device.
@@ -365,8 +370,10 @@ impl App {
                 let state = self.states.entry(address).or_default();
                 state.queued = state.queued.saturating_sub(1);
                 state.busy = None;
-                state.last = Some(message);
-                state.last_at = Some(SystemTime::now());
+                state.last = Some(JobResult {
+                    message,
+                    at: SystemTime::now(),
+                });
                 if self.states.values().all(|s| s.queued == 0) {
                     self.restart_scan_at = Some(Instant::now() + SCAN_RESTART_DELAY);
                 }
@@ -1314,7 +1321,9 @@ mod tests {
         let config = config_with_power(150);
         finish(&mut app, A, Ok(Outcome::TxPowerSet { before, config }));
         assert_eq!(
-            app.state(A).and_then(|s| s.last.clone()),
+            app.state(A)
+                .and_then(|s| s.last.clone())
+                .map(|last| last.message),
             Some(Ok("TX power +0.0 dBm → -5.0 dBm".to_owned()))
         );
         assert_eq!(app.state(A).and_then(|s| s.config), Some(config));
@@ -1411,8 +1420,9 @@ mod tests {
         let state = app.state(A).expect("state");
         assert_eq!(state.clock_offset, Some(-5.0));
         assert_eq!(state.busy, None);
-        assert_eq!(state.last, Some(Ok("1 of 1 log records added".to_owned())));
-        assert!(state.last_at.is_some_and(|at| at <= SystemTime::now()));
+        let last = state.last.as_ref().expect("finished");
+        assert_eq!(last.message, Ok("1 of 1 log records added".to_owned()));
+        assert!(last.at <= SystemTime::now());
         // Later downloads start from now, not a day back.
         assert!(app.download_since(A) > at);
     }

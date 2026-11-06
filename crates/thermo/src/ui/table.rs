@@ -14,6 +14,9 @@ use crate::devices::{Device, RSSI_FINE, RSSI_MARGINAL};
 
 /// Rows of devices not heard from for this long are dimmed.
 const STALE_AFTER: Duration = Duration::from_secs(120);
+/// A finished job's result keeps its color this long, then is dimmed: the device may
+/// have changed since (Seen tells whether it is still heard), but the job didn't rerun.
+const JOB_RESULT_FRESH: Duration = Duration::from_secs(10 * 60);
 /// Battery percentages from which a level counts as fine, then as getting low.
 const BATTERY_FINE: u8 = 50;
 const BATTERY_LOW: u8 = 20;
@@ -29,7 +32,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         .collect();
     let header = Row::new([
         "", "#", "Device", "Address", "Temp", "Humidity", "Battery", "Voltage", "RSSI", "RSSI 5m",
-        "Seen", "Clock", "TX power", "Adv", "Measure", "Log", "Status",
+        "Seen", "Clock", "TX power", "Adv", "Measure", "Log", "Job",
     ])
     .style(Style::new().bold());
     let name_width = app
@@ -167,7 +170,7 @@ fn row(
             c.log_period()
                 .map_or_else(|| "off".to_owned(), format_interval)
         })),
-        status_cell(state),
+        job_cell(state, now),
     ]);
     if is_stale { row.dark_gray() } else { row }
 }
@@ -207,23 +210,55 @@ fn rssi_level(dbm: i16) -> Level {
     }
 }
 
-fn status_cell(state: Option<&crate::app::DeviceState>) -> Cell<'static> {
-    let Some(state) = state else {
+/// How a job cell is colored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum JobTone {
+    Running,
+    Succeeded,
+    Failed,
+    /// A result older than [`JOB_RESULT_FRESH`].
+    Old,
+}
+
+/// The device's running or queued jobs, else the result of its last one with its age.
+fn job_cell(state: Option<&crate::app::DeviceState>, now: SystemTime) -> Cell<'static> {
+    let Some((text, tone)) = state.and_then(|state| job_text(state, now)) else {
         return Cell::from("");
     };
+    let cell = Cell::from(text);
+    match tone {
+        JobTone::Running => cell.yellow(),
+        JobTone::Succeeded => cell.green(),
+        JobTone::Failed => cell.red(),
+        JobTone::Old => cell.dark_gray(),
+    }
+}
+
+fn job_text(state: &crate::app::DeviceState, now: SystemTime) -> Option<(String, JobTone)> {
     let waiting = state
         .queued
         .saturating_sub(usize::from(state.busy.is_some()));
-    match (&state.busy, &state.last) {
+    Some(match (&state.busy, &state.last) {
         (Some(label), _) if waiting > 0 => {
-            Cell::from(format!("⟳ {label}… (+{waiting} queued)")).yellow()
+            (format!("⟳ {label}… (+{waiting} queued)"), JobTone::Running)
         }
-        (Some(label), _) => Cell::from(format!("⟳ {label}…")).yellow(),
-        (None, _) if waiting > 0 => Cell::from(format!("… {waiting} queued")).yellow(),
-        (None, Some(Ok(message))) => Cell::from(format!("✓ {message}")).green(),
-        (None, Some(Err(message))) => Cell::from(format!("✗ {message}")).red(),
-        (None, None) => Cell::from(""),
-    }
+        (Some(label), _) => (format!("⟳ {label}…"), JobTone::Running),
+        (None, _) if waiting > 0 => (format!("… {waiting} queued"), JobTone::Running),
+        (None, Some(last)) => {
+            let age = now.duration_since(last.at).unwrap_or_default();
+            let (mark, message, tone) = match &last.message {
+                Ok(message) => ('✓', message, JobTone::Succeeded),
+                Err(message) => ('✗', message, JobTone::Failed),
+            };
+            let tone = if age >= JOB_RESULT_FRESH {
+                JobTone::Old
+            } else {
+                tone
+            };
+            (format!("{mark} {message} · {} ago", format_age(age)), tone)
+        }
+        (None, None) => return None,
+    })
 }
 
 /// `500 ms`, `2.5 s`, `10 s`, `30 min`.
@@ -250,6 +285,38 @@ fn format_age(age: Duration) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::JobResult;
+
+    #[test]
+    fn job_results_show_their_age_and_fade() {
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+        let mut state = crate::app::DeviceState {
+            last: Some(JobResult {
+                message: Err("connecting timed out".into()),
+                at: now - Duration::from_secs(150),
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+            job_text(&state, now),
+            Some(("✗ connecting timed out · 2m ago".into(), JobTone::Failed))
+        );
+        if let Some(last) = &mut state.last {
+            last.at = now - JOB_RESULT_FRESH;
+        }
+        assert_eq!(
+            job_text(&state, now),
+            Some(("✗ connecting timed out · 10m ago".into(), JobTone::Old))
+        );
+        // A running job replaces the old result.
+        state.busy = Some("calibrating");
+        state.queued = 1;
+        assert_eq!(
+            job_text(&state, now),
+            Some(("⟳ calibrating…".into(), JobTone::Running))
+        );
+        assert_eq!(job_text(&crate::app::DeviceState::default(), now), None);
+    }
 
     #[test]
     fn ages() {

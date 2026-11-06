@@ -7,12 +7,12 @@ use tokio::time::{Instant, timeout_at};
 
 use crate::clock::ticks_delta;
 use crate::coefficients::COEFFICIENTS_LEN;
-use crate::config::CONFIG_LEN;
+use crate::firmware::DEV_ID_MIN_LEN;
 use crate::log::LOG_RECORD_LEN;
 use crate::screen::SCREEN_MESSAGE_LEN;
 use crate::{
-    ClockReading, Coefficients, Config, DeviceId, Error, LogRecord, Notifications, ScreenMessage,
-    Transport,
+    ATC_MAX_GAIN, ClockReading, Coefficients, Config, DeviceId, DeviceInfo, Error, Firmware,
+    LogRecord, Notifications, ScreenMessage, SensorInfo, THB_AHT_MAX_GAIN, Transport,
 };
 
 const CMD_DEV_ID: u8 = 0x00;
@@ -27,8 +27,6 @@ const CMD_COEFFICIENTS_DEFAULT: u8 = 0x26;
 const CMD_LOG: u8 = 0x35;
 const CMD_CONFIG: u8 = 0x55;
 
-/// Oldest firmware whose config layout this crate knows (BCD, v4.7).
-const MIN_VERSION: u16 = 0x47;
 /// Bytes in a MAC address.
 const MAC_LEN: usize = 6;
 /// Longest name the firmware stores.
@@ -40,23 +38,6 @@ const REPLY_TIMEOUT: Duration = Duration::from_millis(1500);
 /// Longest pause between two log records before the download counts as stalled.
 const LOG_RECORD_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Identity reported by the firmware (`CMD_ID_DEV_ID`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DeviceInfo {
-    /// Hardware revision code (for LYWSD03MMC: 4 = B1.6, ...).
-    pub hardware: u16,
-    /// Firmware version, BCD: `0x59` is v5.9.
-    pub firmware: u16,
-}
-
-impl DeviceInfo {
-    /// Firmware version as text, e.g. `"5.9"`.
-    #[must_use]
-    pub fn firmware_version(&self) -> String {
-        format!("{}.{}", self.firmware >> 4, self.firmware & 0xf)
-    }
-}
-
 /// An open connection to a thermometer running pvvx firmware.
 ///
 /// Only one command runs at a time; methods take `&mut self`.
@@ -64,32 +45,41 @@ pub struct Thermometer<T> {
     transport: T,
     notifications: Notifications,
     info: DeviceInfo,
+    /// THB2 only: learned from the coefficient reply.
+    sensor: Option<SensorInfo>,
 }
 
 impl<T: Transport> Thermometer<T> {
     /// Starts talking to a device over a fresh connection: reads its identity and
-    /// checks the firmware version. `notifications` must already be subscribed, so no
-    /// reply is missed.
+    /// checks the firmware version. `family` is the one whose command characteristic
+    /// `transport` writes to ([`Firmware::from_command_uuid`]). `notifications` must
+    /// already be subscribed, so no reply is missed.
     ///
     /// # Errors
     ///
-    /// Fails if the device does not answer or its firmware is older than v4.7.
-    pub async fn open(transport: T, notifications: Notifications) -> Result<Self, Error> {
+    /// Fails if the device does not answer or its firmware is older than
+    /// [`Firmware::min_version`].
+    pub async fn open(
+        transport: T,
+        notifications: Notifications,
+        family: Firmware,
+    ) -> Result<Self, Error> {
         let mut thermometer = Self {
             transport,
             notifications,
             info: DeviceInfo {
+                family,
                 hardware: 0,
                 firmware: 0,
+                services: None,
             },
+            sensor: None,
         };
-        let reply = thermometer.command(&[CMD_DEV_ID], 6).await?;
-        thermometer.info = DeviceInfo {
-            hardware: u16::from_le_bytes([reply[2], reply[3]]),
-            firmware: u16::from_le_bytes([reply[4], reply[5]]),
-        };
-        if thermometer.info.firmware < MIN_VERSION {
+        let reply = thermometer.command(&[CMD_DEV_ID], DEV_ID_MIN_LEN).await?;
+        thermometer.info = DeviceInfo::from_reply(family, &reply);
+        if thermometer.info.firmware < family.min_version() {
             return Err(Error::UnsupportedFirmware {
+                firmware: family,
                 version: thermometer.info.firmware,
             });
         }
@@ -101,14 +91,46 @@ impl<T: Transport> Thermometer<T> {
         self.info
     }
 
+    #[must_use]
+    pub fn firmware(&self) -> Firmware {
+        self.info.family
+    }
+
+    /// The sensor a THB2 device reported with its coefficients, once they were read.
+    #[must_use]
+    pub fn sensor(&self) -> Option<SensorInfo> {
+        self.sensor
+    }
+
+    /// Largest gain coefficient the firmware's integer maths takes on this device.
+    ///
+    /// THB2 limits depend on the sensor, which the coefficient reply names; they are
+    /// read first if needed.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the device does not answer.
+    pub async fn max_gain(&mut self) -> Result<u32, Error> {
+        match self.firmware() {
+            Firmware::Atc => Ok(ATC_MAX_GAIN),
+            Firmware::Thb => {
+                if self.sensor.is_none() {
+                    self.coefficients().await?;
+                }
+                Ok(self.sensor.map_or(THB_AHT_MAX_GAIN, |s| s.max_gain()))
+            }
+        }
+    }
+
     /// Reads the device's own MAC address, which CoreBluetooth hides from scans.
     ///
     /// # Errors
     ///
     /// Fails if the device does not answer.
     pub async fn mac(&mut self) -> Result<DeviceId, Error> {
-        let reply = self.command(&[CMD_MAC], 2 + MAC_LEN).await?;
-        Ok(mac_from_reply(&reply))
+        let family = self.firmware();
+        let reply = self.command(&[CMD_MAC], mac_reply_len(family)).await?;
+        Ok(mac_from_reply(family, &reply))
     }
 
     /// # Errors
@@ -147,8 +169,11 @@ impl<T: Transport> Thermometer<T> {
     ///
     /// Fails if the device does not answer.
     pub async fn config(&mut self) -> Result<Config, Error> {
-        let reply = self.command(&[CMD_CONFIG], 2 + CONFIG_LEN).await?;
-        Ok(config_from_reply(&reply))
+        let family = self.firmware();
+        let reply = self
+            .command(&[CMD_CONFIG], config_reply_len(family))
+            .await?;
+        Ok(config_from_reply(family, &reply))
     }
 
     /// Writes the config and returns it as the device accepted it (it may clamp values).
@@ -157,10 +182,17 @@ impl<T: Transport> Thermometer<T> {
     ///
     /// Fails if the device does not answer.
     pub async fn set_config(&mut self, config: &Config) -> Result<Config, Error> {
+        let family = self.firmware();
+        if config.firmware() != family {
+            return Err(Error::InvalidValue(format!(
+                "{} config for a {family} device",
+                config.firmware()
+            )));
+        }
         let mut payload = vec![CMD_CONFIG];
         payload.extend_from_slice(config.as_bytes());
-        let reply = self.command(&payload, 2 + CONFIG_LEN).await?;
-        Ok(config_from_reply(&reply))
+        let reply = self.command(&payload, config_reply_len(family)).await?;
+        Ok(config_from_reply(family, &reply))
     }
 
     /// # Errors
@@ -170,7 +202,7 @@ impl<T: Transport> Thermometer<T> {
         let reply = self
             .command(&[CMD_COEFFICIENTS], 1 + COEFFICIENTS_LEN)
             .await?;
-        Ok(coefficients_from_reply(&reply))
+        Ok(self.coefficients_from_reply(&reply))
     }
 
     /// Writes new sensor coefficients (persisted in flash) and returns them as read back.
@@ -185,10 +217,13 @@ impl<T: Transport> Thermometer<T> {
         let mut payload = vec![CMD_COEFFICIENTS];
         payload.extend_from_slice(&coefficients.to_bytes());
         let reply = self.command(&payload, 1 + COEFFICIENTS_LEN).await?;
-        Ok(coefficients_from_reply(&reply))
+        Ok(self.coefficients_from_reply(&reply))
     }
 
     /// Restores the factory coefficients for the sensor type.
+    ///
+    /// THB2 `0x26` restores them only in RAM (`cmd_parser.c` doesn't save them), and the
+    /// stored ones come back on the next restart, so they are written back with `0x25`.
     ///
     /// # Errors
     ///
@@ -197,7 +232,11 @@ impl<T: Transport> Thermometer<T> {
         let reply = self
             .command(&[CMD_COEFFICIENTS_DEFAULT], 1 + COEFFICIENTS_LEN)
             .await?;
-        Ok(coefficients_from_reply(&reply))
+        let defaults = self.coefficients_from_reply(&reply);
+        match self.firmware() {
+            Firmware::Atc => Ok(defaults),
+            Firmware::Thb => self.set_coefficients(&defaults).await,
+        }
     }
 
     /// # Errors
@@ -238,6 +277,9 @@ impl<T: Transport> Thermometer<T> {
     /// Fails if the message cannot be displayed, or the device does not answer or
     /// stores something else.
     pub async fn show(&mut self, message: &ScreenMessage) -> Result<(), Error> {
+        if !self.info.has_screen() {
+            return Err(Error::Unsupported("a screen"));
+        }
         let bytes = message.to_bytes()?;
         let mut payload = vec![CMD_SCREEN];
         payload.extend_from_slice(&bytes);
@@ -258,6 +300,7 @@ impl<T: Transport> Thermometer<T> {
     ///
     /// Fails if the device does not answer, e.g. firmware built without time adjustment.
     pub async fn second_ticks(&mut self) -> Result<u32, Error> {
+        self.require_clock_rate()?;
         let reply = self.command(&[CMD_SECOND_TICKS], 5).await?;
         Ok(u32::from_le_bytes([reply[1], reply[2], reply[3], reply[4]]))
     }
@@ -269,6 +312,7 @@ impl<T: Transport> Thermometer<T> {
     /// Fails if `ticks` is outside nominal ± 32767, or the device does not answer or
     /// stores something else.
     pub async fn set_second_ticks(&mut self, ticks: u32) -> Result<u32, Error> {
+        self.require_clock_rate()?;
         let delta = ticks_delta(ticks).ok_or_else(|| {
             Error::InvalidValue(format!("{ticks} ticks per second is out of range"))
         })?;
@@ -296,6 +340,9 @@ impl<T: Transport> Thermometer<T> {
         max_records: u16,
         mut wanted: impl FnMut(&LogRecord) -> bool,
     ) -> Result<Vec<LogRecord>, Error> {
+        if !self.info.has_log() {
+            return Err(Error::Unsupported("a measurement log"));
+        }
         let [lo, hi] = max_records.to_le_bytes();
         let mut records = Vec::new();
         let mut attempts = 0;
@@ -339,6 +386,22 @@ impl<T: Transport> Thermometer<T> {
     /// Fails if the BLE stack cannot disconnect.
     pub async fn disconnect(self) -> Result<(), Error> {
         self.transport.disconnect().await
+    }
+
+    fn require_clock_rate(&self) -> Result<(), Error> {
+        if self.info.has_clock_rate() {
+            Ok(())
+        } else {
+            Err(Error::Unsupported("clock rate trimming"))
+        }
+    }
+
+    /// Also notes the sensor a THB2 device names in the reply.
+    fn coefficients_from_reply(&mut self, reply: &[u8]) -> Coefficients {
+        if self.firmware() == Firmware::Thb {
+            self.sensor = SensorInfo::from_thb_reply(reply).or(self.sensor);
+        }
+        coefficients_from_reply(reply)
     }
 
     async fn write(&mut self, payload: &[u8]) -> Result<(), Error> {
@@ -403,9 +466,23 @@ impl<T: Transport> Thermometer<T> {
     }
 }
 
-/// MAC replies are `[0x10, 8, MAC least significant byte first, random static[2]]`.
-fn mac_from_reply(reply: &[u8]) -> DeviceId {
-    let mut mac: [u8; MAC_LEN] = reply[2..2 + MAC_LEN]
+/// Where the MAC starts in a reply: ATC sends `[0x10, 8, MAC, random static[2]]`, THB2
+/// `[0x10, MAC]` (`cmd_parser.c`). Both least significant byte first.
+fn mac_offset(family: Firmware) -> usize {
+    match family {
+        Firmware::Atc => 2,
+        Firmware::Thb => 1,
+    }
+}
+
+fn mac_reply_len(family: Firmware) -> usize {
+    mac_offset(family) + MAC_LEN
+}
+
+/// The caller checked the reply is [`mac_reply_len`] long.
+fn mac_from_reply(family: Firmware, reply: &[u8]) -> DeviceId {
+    let at = mac_offset(family);
+    let mut mac: [u8; MAC_LEN] = reply[at..at + MAC_LEN]
         .try_into()
         .expect("caller checked the length");
     mac.reverse();
@@ -417,12 +494,22 @@ fn decode_name(bytes: &[u8]) -> String {
     String::from_utf8_lossy(&bytes[..end]).into_owned()
 }
 
-/// Config replies are `[0x55, firmware version, cfg_t...]`.
-fn config_from_reply(reply: &[u8]) -> Config {
-    let bytes: [u8; CONFIG_LEN] = reply[2..2 + CONFIG_LEN]
-        .try_into()
-        .expect("caller checked the length");
-    Config::from_bytes(bytes)
+/// Where `cfg_t` starts in a config reply: ATC sends `[0x55, firmware version,
+/// cfg_t...]`, THB2 `[0x55, cfg_t...]`.
+fn config_offset(family: Firmware) -> usize {
+    match family {
+        Firmware::Atc => 2,
+        Firmware::Thb => 1,
+    }
+}
+
+fn config_reply_len(family: Firmware) -> usize {
+    config_offset(family) + Config::len_for(family)
+}
+
+/// The caller checked the reply is [`config_reply_len`] long.
+fn config_from_reply(family: Firmware, reply: &[u8]) -> Config {
+    Config::from_slice(family, &reply[config_offset(family)..])
 }
 
 fn coefficients_from_reply(reply: &[u8]) -> Coefficients {
@@ -452,10 +539,21 @@ mod tests {
 
     #[test]
     fn parses_replies() {
-        let config = config_from_reply(&[
+        let reply = [
             0x55, 0x59, 0x87, 0x10, 0x0a, 0x06, 0x28, 0x04, 0xa9, 0x31, 0x31, 0x04, 0xb4, 0x00,
-        ]);
+        ];
+        assert!(reply.len() >= config_reply_len(Firmware::Atc));
+        let config = config_from_reply(Firmware::Atc, &reply);
         assert_eq!(config.measure_interval(), 4);
+
+        // THB1 `def_cfg` as `cmd_parser.c` sends it: no version byte.
+        let reply = [0x55, 0x05, 0, 0, 0, 0x1f, 80, 29, 16, 2, 60, 180, 0];
+        assert_eq!(reply.len(), config_reply_len(Firmware::Thb));
+        let config = config_from_reply(Firmware::Thb, &reply);
+        assert_eq!(config.firmware(), Firmware::Thb);
+        assert_eq!(config.measure_interval(), 2);
+        assert_eq!(config.advertising_interval(), Duration::from_secs(5));
+        assert!(config.tx_power().is_factory());
 
         let clock = clock_from_reply(&[0x23, 1, 0, 0, 0, 2, 0, 0, 0], UNIX_EPOCH);
         assert_eq!(clock.device_now, 1);
@@ -464,9 +562,21 @@ mod tests {
         assert_eq!(clock.last_set, None);
 
         assert_eq!(decode_name(b"Kitchen\0\0"), "Kitchen");
+    }
 
+    #[test]
+    fn parses_mac_replies() {
         // Recorded from A4:C1:38:A0:C9:52 on firmware v5.9.
-        let mac = mac_from_reply(&[0x10, 0x08, 0x52, 0xc9, 0xa0, 0x38, 0xc1, 0xa4, 0x20, 0x34]);
+        let reply = [0x10, 0x08, 0x52, 0xc9, 0xa0, 0x38, 0xc1, 0xa4, 0x20, 0x34];
+        assert!(reply.len() >= mac_reply_len(Firmware::Atc));
+        let mac = mac_from_reply(Firmware::Atc, &reply);
         assert_eq!(mac.to_string(), "A4:C1:38:A0:C9:52");
+
+        // THB2 sends `ownPublicAddr`, least significant byte first: the default name
+        // THB1-D2D067 is its bytes 2, 1, 0 (`set_def_name` in `thb2_main.c`).
+        let reply = [0x10, 0x67, 0xd0, 0xd2, 0x8d, 0x1f, 0x38];
+        assert_eq!(reply.len(), mac_reply_len(Firmware::Thb));
+        let mac = mac_from_reply(Firmware::Thb, &reply);
+        assert_eq!(mac.to_string(), "38:1F:8D:D2:D0:67");
     }
 }

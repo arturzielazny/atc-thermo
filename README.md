@@ -3,14 +3,16 @@
 [![CI](https://github.com/arturzielazny/atc-thermo/actions/workflows/ci.yml/badge.svg)](https://github.com/arturzielazny/atc-thermo/actions/workflows/ci.yml)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](#license)
 
-A Linux terminal app for BLE thermometers running the
+A Linux and macOS terminal app for BLE thermometers running the
 [pvvx ATC_MiThermometer](https://github.com/pvvx/ATC_MiThermometer) firmware with
-**BTHome v2** advertising (tested on eight Xiaomi LYWSD03MMC). It shows live readings
-and fills gaps from each device's log, even though the device clocks are wrong. It also
-syncs and trims those clocks, renames devices and changes their settings in bulk. Put
-all the thermometers side by side and it **calibrates them against each other**, writing
-a gain and offset into each one, so Home Assistant and every other BTHome receiver get
-the corrected values too.
+**BTHome v2** advertising (tested on eight Xiaomi LYWSD03MMC), or the
+[pvvx THB2](https://github.com/pvvx/THB2) firmware (THB1, THB2, BTH01, TH05, …). It shows
+live readings and fills gaps from each device's log, even though the device clocks are
+wrong. It also syncs and trims those clocks, renames devices and changes their settings
+in bulk. Put all the thermometers side by side and it **calibrates them against each
+other**, writing a gain and offset into each one, so Home Assistant and every other
+BTHome receiver get the corrected values too. THB2 has no clock-rate trim, and its
+Android support is still missing (see [android/README.md](android/README.md)).
 
 **Website and guides:** https://arturzielazny.github.io/atc-thermo/
 
@@ -21,7 +23,8 @@ the corrected values too.
 - **Live dashboard:** a chart (temperature, humidity or signal strength) above one row
   per device with battery, voltage, latest and 5-minute median RSSI, last seen and
   clock offset. In Ghostty or kitty the chart is a pixel image passed through shared
-  memory; elsewhere (SSH, tmux) it's drawn in braille.
+  memory (a temporary file on macOS); elsewhere (SSH, tmux, Terminal.app) it's drawn
+  in braille.
 - **History:** saved to `~/.local/share/thermo/YYYY-MM-DD.csv` and reloaded on start.
   Gaps in the last 24 h are filled from each device's own log, with its timestamps
   corrected for clock offset and drift.
@@ -50,6 +53,8 @@ sudo pacman -S --needed dbus pkgconf               # Arch
 cargo install --git https://github.com/arturzielazny/atc-thermo thermo
 thermo
 ```
+
+macOS: see [docs/macos.md](docs/macos.md).
 
 `thermo calibrate 6` prints a calibration proposal for the last 6 hours of saved
 history without touching any device.

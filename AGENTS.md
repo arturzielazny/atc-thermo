@@ -7,10 +7,11 @@ repository. Humans are welcome too.
 
 `thermo` is a terminal dashboard and calibration tool for BLE thermometers running the
 [pvvx ATC_MiThermometer](https://github.com/pvvx/ATC_MiThermometer) firmware (tested on
-Xiaomi LYWSD03MMC) with BTHome v2 advertising. It listens to adverts, charts them, stores
+Xiaomi LYWSD03MMC) or the [pvvx THB2](https://github.com/pvvx/THB2) firmware (THB1, THB2,
+BTH01, TH05, …) with BTHome v2 advertising. It listens to adverts, charts them, stores
 history as CSV, downloads device logs, syncs clocks, changes settings and writes
-calibration coefficients over GATT. Linux only today (BlueZ via the `bluer` crate), behind
-a boundary that takes a backend per platform.
+calibration coefficients over GATT. Linux (BlueZ via the `bluer` crate) and macOS
+(CoreBluetooth via `btleplug`), each a backend behind one boundary.
 
 ## Layout
 
@@ -18,8 +19,8 @@ a boundary that takes a backend per platform.
 |---|---|---|
 | `crates/bthome` | BTHome v2 payload decoder. No dependencies. | portable |
 | `crates/calibration` | Consensus calibration: binning, steady-state selection, Huber fit, outliers, anchoring. No dependencies. Algorithm described in `docs/calibration.md` §4. | portable |
-| `crates/atc` | The firmware's command protocol on characteristic `0x1F1F`: name, MAC, config, coefficients, clock and clock rate, LCD message, log download. `thermometer.rs` speaks it over the `Transport` trait (`transport.rs`); `clock.rs`, `config.rs`, `coefficients.rs`, `log.rs`, `screen.rs` are byte encodings and maths; `device_id.rs` is `DeviceId` (a MAC, or a CoreBluetooth UUID). No Bluetooth I/O. | portable |
-| `crates/ble` | Bluetooth backends behind one API: `Bluetooth::scan` (BTHome adverts → `ScanEvent`), `connect` (→ `Thermometer`), `release`. `bluez.rs` is the Linux backend; each platform's quirks stay inside its backend. | `bluez.rs` uses `bluer` (Linux) |
+| `crates/atc` | The firmwares' command protocol on characteristic `0x1F1F` (ATC) or `0xFFF4` (THB2): name, MAC, config, coefficients, clock and clock rate, LCD message, log download. `firmware.rs` names the family by its characteristic and says which features a device has; `thermometer.rs` speaks the protocol over the `Transport` trait (`transport.rs`); `clock.rs`, `config.rs`, `coefficients.rs`, `log.rs`, `screen.rs` are byte encodings and maths; `device_id.rs` is `DeviceId` (a MAC, or a CoreBluetooth UUID). No Bluetooth I/O. | portable |
+| `crates/ble` | Bluetooth backends behind one API: `Bluetooth::scan` (BTHome adverts → `ScanEvent`), `connect` (→ `Thermometer`), `release`. `bluez.rs` is the Linux backend, `macos.rs` the macOS one; each platform's quirks stay inside its backend. | `bluez.rs` uses `bluer` (Linux), `macos.rs` uses `btleplug` (macOS) |
 | `crates/thermo/src/main.rs` | Event loop: keys, scan events, job events, chart frames, 1 s tick. | portable |
 | `crates/thermo/src/app.rs` | All state and key handling, no I/O, unit-tested. | portable |
 | `crates/thermo/src/jobs.rs` | One-at-a-time device worker: connect, run an `Action`, report an `Outcome`. | portable (uses `ble`) |
@@ -27,8 +28,8 @@ a boundary that takes a backend per platform.
 | `crates/thermo/src/store.rs` | `~/.local/share/thermo/`: `YYYY-MM-DD.csv` readings, `calibrations.csv`, `clocks.csv`, `downloads.csv`. | XDG paths |
 | `crates/thermo/src/calibrate.rs` | Glue from history to `calibration`, and from fits to coefficients. | portable |
 | `crates/thermo/src/level.rs` | Signal levelling: per-device median RSSI and the TX power change towards a common target. | portable |
-| `crates/thermo/src/ui/` | ratatui widgets. `chart.rs` axes and layout, `plot.rs` tiny-skia rasterizer, `kitty.rs` kitty graphics protocol via `/dev/shm`, braille fallback in `chart.rs`. | `kitty.rs` assumes `/dev/shm` |
-| `android/` | Android app (Kotlin, Compose): ports of `bthome`, `calibration`, the `atc` encodings and `app.rs`, plus an Android GATT client and scanner. See `android/README.md`. | Android |
+| `crates/thermo/src/ui/` | ratatui widgets. `chart.rs` axes and layout, `plot.rs` tiny-skia rasterizer, `kitty.rs` kitty graphics protocol via `/dev/shm` (`t=s`) or, where that is missing (macOS), a temp file (`t=t`), braille fallback in `chart.rs`. | portable |
+| `android/` | Android app (Kotlin, Compose): ports of `bthome`, `calibration`, the `atc` encodings and `app.rs`, plus an Android GATT client and scanner. ATC firmware only for now: THB2 devices show readings but take no commands. See `android/README.md`. | Android |
 | `scripts/` | The original Python prototypes (`dbus-python`). Not used by the app. | Linux |
 | `site/` | GitHub Pages site, deployed by `.github/workflows/pages.yml`. Static HTML, no build step. | — |
 
@@ -50,9 +51,9 @@ cd android && ./gradlew testDebugUnitTest      # JVM tests, no phone needed
 cd android && ./gradlew installDebug           # needs a phone with USB debugging
 ```
 
-Build dependencies: Rust ≥ 1.90 (`rust-version` in `Cargo.toml`, checked in CI),
-`pkg-config` and the libdbus headers (`libdbus-1-dev` on Debian/Ubuntu, `dbus-devel` on
-Fedora, `dbus` on Arch).
+Build dependencies: Rust ≥ 1.90 (`rust-version` in `Cargo.toml`, checked in CI); on
+Linux also `pkg-config` and the libdbus headers (`libdbus-1-dev` on Debian/Ubuntu,
+`dbus-devel` on Fedora, `dbus` on Arch). macOS needs only the Command Line Tools.
 
 ## Rules
 
@@ -81,6 +82,14 @@ Fedora, `dbus` on Arch).
 ## Firmware facts worth knowing
 
 - Command/notify characteristic `0x1F1F`; first byte is the command. Replies echo it.
+- THB2 firmware (pvvx/THB2): command characteristic `0xFFF4`, write without response.
+  Dev id reply `[0x00, ver, device, hw…, services u32]`; `services` bit `0x20` screen,
+  `0x10` history, `0x1000` clock rate (not built, so `0x24` is absent). Config is
+  `[0x55, cfg_t]`, 12 bytes with its own offsets and TX power codes (`config.rs`).
+  Coefficient reply adds mid, vid, I²C address and sensor type; AHT2x gains must stay
+  ≤ 4095. `0x26` resets coefficients only in RAM, so `atc` writes the defaults with
+  `0x25` instead. `0x10` answers `[0x10, MAC]`, without ATC's length and random bytes.
+  `0x23` has no last-set time.
 - `0x25` coefficients: `temp = raw·k_T/65536 + z_T` in 0.01 °C, same for humidity. Write
   composes as `k' = a·k`, `z' = a·z + 100·b`. `0x26` restores factory values.
 - `0x10` alone returns the device's MAC: `[0x10, 8, MAC least significant byte first,
@@ -94,11 +103,19 @@ Fedora, `dbus` on Arch).
 - A connected thermometer stops advertising; BlueZ pauses discovery during connects.
   The BlueZ backend restarts discovery after jobs finish (`ScanControl::Resume`) and
   whenever BlueZ ends it by itself.
+- CoreBluetooth only connects peripherals its own central has scanned, forgets them on
+  disconnect until the next advert, and keeps a connect request pending until the
+  device's next connectable advert. So the macOS backend shares one central between
+  scan and connect, keeps scanning during jobs (`ScanControl::Pause` only stops and
+  cancels identifications), waits for an advert in the last 60 s before connecting, and cancels
+  a connect request it gives up on. Every btleplug call has its own timeout
+  (`disconnect` can otherwise wait forever for a callback).
 
 ## Porting to another OS
 
 The protocol (`atc`), the app and the job worker are platform-independent; a port adds
-one backend to `crates/ble` and keeps the tests passing.
+one backend to `crates/ble` and keeps the tests passing. macOS (`macos.rs`) follows
+these steps and is the closest example for another btleplug platform.
 
 1. **Backend.** Add `crates/ble/src/<platform>.rs` behind a `cfg` in `ble/src/lib.rs`,
    with the same API as `bluez.rs`: a `Bluetooth` handle (`Default`, `Clone`) with
@@ -111,14 +128,17 @@ one backend to `crates/ble` and keeps the tests passing.
    per-host UUIDs instead; the macOS backend maps each UUID back to a MAC by connecting
    once and reading `Thermometer::mac` (command `0x10`, read-only), then:
    - keeps the UUID → MAC map in a cache file of its own (e.g.
-     `$HOME/Library/Caches/thermo/macos-ids.csv`); losing it only costs a re-read;
+     `$HOME/Library/Caches/thermo/macos-ids.csv`), together with the UUIDs of BTHome
+     devices that aren't pvvx thermometers, so those aren't connected to on every
+     start; losing it only costs a re-read;
    - sends adverts from mapped UUIDs as `DeviceId::Mac`, and `connect(DeviceId::Mac)`
      looks the UUID up in the map;
    - holds back adverts from an unmapped UUID until its first identification attempt
      ends; if that fails (weak signal), sends them as `DeviceId::Uuid` so the readings
      still show, and retries now and then;
    - identifies only while scanning is not paused, one device at a time, and shares a
-     lock with `connect` so a job never connects alongside an identification.
+     lock with `connect` so a job never connects alongside an identification; a pause
+     cancels a running identification, so a queued job doesn't wait for it.
 
    All of this stays inside the backend: the app and `jobs.rs` see the same ids as on
    Linux. A device in range of the Mac but never identified keeps its `DeviceId::Uuid`.

@@ -1,7 +1,7 @@
 use std::error;
 use std::fmt;
 
-use crate::DeviceId;
+use crate::{DeviceId, Firmware};
 
 /// Why talking to a thermometer failed.
 #[derive(Debug)]
@@ -20,7 +20,9 @@ pub enum Error {
     /// The device has no pvvx command characteristic.
     NotPvvx,
     /// The firmware is older than the layouts this crate understands.
-    UnsupportedFirmware { version: u16 },
+    UnsupportedFirmware { firmware: Firmware, version: u16 },
+    /// The firmware has no such feature, e.g. clock rate trimming on THB2.
+    Unsupported(&'static str),
     /// An answer was shorter than its layout requires.
     ShortReply { command: u8, len: usize },
     /// A requested value cannot be represented by the firmware.
@@ -35,13 +37,22 @@ impl fmt::Display for Error {
             Self::ConnectTimeout => write!(f, "connecting timed out"),
             Self::Timeout { command } => write!(f, "no answer to command {command:#04x}"),
             Self::Disconnected => write!(f, "device disconnected"),
-            Self::NotPvvx => write!(f, "not a pvvx ATC firmware device"),
-            Self::UnsupportedFirmware { version } => write!(
+            Self::NotPvvx => write!(
                 f,
-                "firmware v{}.{} is too old (need v4.7+)",
-                version >> 4,
-                version & 0xf
+                "not a pvvx ATC (0x1F1F) or THB2 (0xFFF4) firmware device"
             ),
+            Self::UnsupportedFirmware { firmware, version } => {
+                let min = firmware.min_version();
+                write!(
+                    f,
+                    "{firmware} firmware v{}.{} is too old (need v{}.{}+)",
+                    version >> 4,
+                    version & 0xf,
+                    min >> 4,
+                    min & 0xf
+                )
+            }
+            Self::Unsupported(what) => write!(f, "firmware does not support {what}"),
             Self::ShortReply { command, len } => {
                 write!(f, "reply to command {command:#04x} too short ({len} bytes)")
             }

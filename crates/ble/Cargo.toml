@@ -22,5 +22,8 @@ uuid.workspace = true
 [target.'cfg(target_os = "linux")'.dependencies]
 bluer.workspace = true
 
+[target.'cfg(target_os = "macos")'.dependencies]
+btleplug.workspace = true
+
 [lints]
 workspace = true

@@ -73,3 +73,8 @@ can take a while; moving them closer or raising their TX power helps.
   fine.
 - **A connected thermometer stops advertising.** Its live readings pause while
   `thermo` (or another app) is connected, and resume after.
+- **Long advertising intervals are heard only now and then.** At 10 s, a phone
+  scanning nearby saw a thermometer every 10–40 s, but the Mac heard it only every
+  30 s to 4 minutes. Its readings then lag, and connecting can fail with "not in range".
+  Keep the interval at 5 s or less. To reach a device set longer, press its button
+  while the job runs: the device sends connectable adverts at once.

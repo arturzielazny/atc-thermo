@@ -49,10 +49,16 @@ const NO_RESULT_HINT: [&str; 4] = [
 
 /// Rows the panel needs: borders, window line and a gap, then the result.
 pub fn height(screen: &CalibrationScreen) -> u16 {
+    // The reset question and a gap above a missing result.
+    let question = if screen.confirm == Some(Confirm::Reset) {
+        2
+    } else {
+        0
+    };
     let body = match &screen.result {
-        None => 1,
+        None => question + 1,
         // The error, a gap and the hint, plus a row in case a line wraps.
-        Some(Err(_)) => 2 + NO_RESULT_HINT.len() + 1,
+        Some(Err(_)) => question + 2 + NO_RESULT_HINT.len() + 1,
         // Summary, table header and rows, footer.
         Some(Ok(run)) => 3 + 1 + run.devices.len() + 1,
     };
@@ -82,22 +88,44 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App, screen: &CalibrationScre
     frame.render_widget(window_line(app, screen), window_area);
 
     let run = match &screen.result {
-        None => {
-            frame.render_widget(Paragraph::new("computing…").dark_gray(), inner);
+        None => None,
+        Some(Err(err)) => Some(err),
+        Some(Ok(run)) => {
+            render_run(frame, inner, run, screen, devices.len());
             return;
         }
-        Some(Err(err)) => {
-            let mut text = vec![
+    };
+    let text = no_result(run.map(String::as_str), screen.confirm, devices.len());
+    frame.render_widget(Paragraph::new(text).wrap(Wrap { trim: true }), inner);
+}
+
+/// What the panel shows while there is no fit: still computing, or why there is
+/// none. `x` works without a fit, so its question goes first.
+fn no_result(err: Option<&str>, confirm: Option<Confirm>, devices: usize) -> Vec<Line<'static>> {
+    let mut text = Vec::new();
+    if confirm == Some(Confirm::Reset) {
+        text.extend([reset_prompt(devices), Line::from("")]);
+    }
+    match err {
+        None => text.push(Line::from("computing…").dark_gray()),
+        Some(err) => {
+            text.extend([
                 Line::from(format!("No result: {err}")).yellow(),
                 Line::from(""),
-            ];
+            ]);
             text.extend(NO_RESULT_HINT.into_iter().map(Line::from));
-            frame.render_widget(Paragraph::new(text).wrap(Wrap { trim: true }), inner);
-            return;
         }
-        Some(Ok(run)) => run,
-    };
+    }
+    text
+}
 
+fn render_run(
+    frame: &mut Frame,
+    inner: Rect,
+    run: &calibrate::Run,
+    screen: &CalibrationScreen,
+    devices: usize,
+) {
     let [summary_area, table_area, footer_area] = Layout::vertical([
         Constraint::Length(3),
         Constraint::Min(3),
@@ -106,7 +134,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App, screen: &CalibrationScre
     .areas(inner);
     frame.render_widget(Paragraph::new(summary(run)), summary_area);
     frame.render_widget(table(run), table_area);
-    frame.render_widget(footer(run, screen), footer_area);
+    frame.render_widget(footer(run, screen, devices), footer_area);
 }
 
 /// `Window  [13:15] → [now]  5.8 h`, with the edge that `←`/`→` move highlighted.
@@ -252,7 +280,17 @@ fn table(run: &calibrate::Run) -> Table<'static> {
     .flex(Flex::Start)
 }
 
-fn footer(run: &calibrate::Run, screen: &CalibrationScreen) -> Line<'static> {
+/// `x` restores factory calibration on every compared device, whether they took part
+/// in the fit or not.
+fn reset_prompt(devices: usize) -> Line<'static> {
+    Line::from(format!(
+        "Restore factory calibration on {devices} device(s)? y = yes, any other key = no"
+    ))
+    .red()
+    .bold()
+}
+
+fn footer(run: &calibrate::Run, screen: &CalibrationScreen, devices: usize) -> Line<'static> {
     let applicable = run
         .report
         .sensors
@@ -268,12 +306,7 @@ fn footer(run: &calibrate::Run, screen: &CalibrationScreen) -> Line<'static> {
         ))
         .red()
         .bold(),
-        Some(Confirm::Reset) => Line::from(format!(
-            "Restore factory calibration on {} device(s)? y = yes, any other key = no",
-            run.devices.len()
-        ))
-        .red()
-        .bold(),
+        Some(Confirm::Reset) => reset_prompt(devices),
         None => Line::from(format!(
             "Enter writes the corrections to {applicable} device(s); offsets add to what they report now."
         ))
@@ -353,6 +386,25 @@ mod tests {
 
     fn text(line: &Line) -> String {
         line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    #[test]
+    fn the_reset_question_shows_without_a_fit() {
+        let question = "Restore factory calibration on 2 device(s)? y = yes, any other key = no";
+        let lines = no_result(Some("too few samples"), Some(Confirm::Reset), 2);
+        assert_eq!(text(&lines[0]), question);
+        assert!(
+            lines
+                .iter()
+                .any(|l| text(l) == "No result: too few samples")
+        );
+        let lines = no_result(None, Some(Confirm::Reset), 2);
+        assert_eq!(text(&lines[0]), question);
+        assert_eq!(text(lines.last().expect("lines")), "computing…");
+        // Nothing asked: only the reason.
+        let lines = no_result(Some("too few samples"), None, 2);
+        assert_eq!(text(&lines[0]), "No result: too few samples");
+        assert_eq!(text(&no_result(None, None, 2)[0]), "computing…");
     }
 
     #[test]

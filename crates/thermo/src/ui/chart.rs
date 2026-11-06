@@ -309,9 +309,10 @@ pub struct ChartView {
 }
 
 impl ChartView {
-    /// Images go to the terminal through shared memory when `picker` says that works;
-    /// otherwise the chart is drawn with braille characters. Finished images arrive on
-    /// the returned receiver and must be passed to [`ChartView::accept`].
+    /// Images go to the terminal through shared memory or a temporary file when
+    /// `picker` says that works; otherwise the chart is drawn with braille characters.
+    /// Finished images arrive on the returned receiver and must be passed to
+    /// [`ChartView::accept`].
     pub fn new(picker: Option<Picker>) -> (Self, UnboundedReceiver<ChartUpdate>) {
         let (updates, receiver) = mpsc::unbounded_channel();
         let graphics = picker.filter(kitty::usable).map(|picker| {
@@ -410,7 +411,7 @@ pub struct ChartUpdate {
     view: View,
     axes: Axes,
     requested_at: Instant,
-    image: Result<kitty::Shared, String>,
+    image: Result<kitty::Handoff, String>,
 }
 
 struct Request {
@@ -440,7 +441,7 @@ fn spawn_renderer(
 ) -> std::sync::mpsc::Sender<Request> {
     let (requests, received) = std::sync::mpsc::channel::<Request>();
     std::thread::spawn(move || {
-        let mut memory = kitty::SharedMemory::new();
+        let mut files = kitty::ImageFiles::new();
         for request in received {
             let image = plot::rasterize(
                 &request.axes,
@@ -451,9 +452,9 @@ fn spawn_renderer(
             )
             .ok_or_else(|| "chart area too large".to_owned())
             .and_then(|pixels| {
-                memory
+                files
                     .write(&pixels)
-                    .map_err(|e| format!("writing to shared memory: {e}"))
+                    .map_err(|e| format!("writing the chart image: {e}"))
             });
             let update = ChartUpdate {
                 view: request.view,

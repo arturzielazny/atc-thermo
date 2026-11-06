@@ -16,6 +16,7 @@ ble = { path = "crates/ble" }
 bthome = { path = "crates/bthome" }
 calibration = { path = "crates/calibration" }
 bluer = { version = "0.17.4", features = ["bluetoothd"] }
+btleplug = "0.13.5"
 futures = "0.3.34"
 uuid = "1.29.0"
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "sync", "time"] }

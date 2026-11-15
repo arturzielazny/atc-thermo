@@ -19,7 +19,15 @@ data class CalibrationRun(
     val since: Long,
     val until: Long,
     val report: Report,
-)
+    /** The device the others were corrected to match, or `null` for the group average. */
+    val reference: String? = null,
+) {
+    fun isReference(index: Int): Boolean = reference != null && devices.getOrNull(index)?.first == reference
+
+    /** The corrections to write to the device at [index]: none for the reference, which defines what is correct. */
+    fun corrections(index: Int): Pair<Correction?, Correction?> =
+        if (isReference(index)) null to null else report.sensors.getOrNull(index)?.let(::corrections) ?: (null to null)
+}
 
 /**
  * The window start: [requested], but never before the last coefficient change of a
@@ -29,14 +37,29 @@ fun windowStart(requested: Long, devices: List<String>, lastCalibrations: Map<St
     devices.mapNotNull { lastCalibrations[it] }.fold(requested) { start, changed -> maxOf(start, changed) }
 
 /**
- * Fits corrections for [addresses] using their live samples in `since..until`.
+ * Fits corrections for [addresses] using their live samples in `since..until`, so they
+ * agree with their average or, with a [reference] among them, with that device.
  *
  * @throws dev.artur.thermo.calibration.CalibrationError with too few devices or too
- * little steady data.
+ * little steady data, also from the reference.
  */
-fun runCalibration(devices: Devices, addresses: List<String>, since: Long, until: Long): CalibrationRun {
+fun runCalibration(devices: Devices, addresses: List<String>, since: Long, until: Long, reference: String? = null): CalibrationRun {
     val (names, readings) = calibrationReadings(devices, addresses, since, until)
-    return CalibrationRun(names, since, until, calibrate(readings, Options()))
+    return fitCalibration(names, readings, since, until, reference)
+}
+
+/** Fits [readings] from [calibrationReadings]; safe on any thread. */
+fun fitCalibration(
+    names: List<Pair<String, String>>,
+    readings: List<List<Reading>>,
+    since: Long,
+    until: Long,
+    reference: String?,
+): CalibrationRun {
+    // A reference that isn't among the devices (never heard) leaves the average.
+    val index = names.indexOfFirst { it.first == reference }.takeIf { it >= 0 }
+    val report = calibrate(readings, Options(reference = index))
+    return CalibrationRun(names, since, until, report, reference.takeIf { index != null })
 }
 
 /**

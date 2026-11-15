@@ -21,14 +21,12 @@ import android.provider.OpenableColumns
 import androidx.core.content.ContextCompat
 import dev.artur.thermo.ble.JobRunner
 import dev.artur.thermo.ble.Scanner
-import dev.artur.thermo.calibration.Options
-import dev.artur.thermo.calibration.calibrate
-import dev.artur.thermo.model.CalibrationRun
 import dev.artur.thermo.model.HISTORY_SPAN_MS
 import dev.artur.thermo.model.Measurement
 import dev.artur.thermo.model.Store
 import dev.artur.thermo.model.ThermoModel
 import dev.artur.thermo.model.calibrationReadings
+import dev.artur.thermo.model.fitCalibration
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.delay
@@ -155,7 +153,7 @@ class Controller(private val app: Application) {
         val (names, readings) = calibrationReadings(model.devices, input.devices, input.since, input.until)
         scope.launch {
             val result = withContext(Dispatchers.Default) {
-                runCatching { CalibrationRun(names, input.since, input.until, calibrate(readings, Options())) }
+                runCatching { fitCalibration(names, readings, input.since, input.until, input.reference) }
             }
             model.onCalibrationResult(input, result)
         }

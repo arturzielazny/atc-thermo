@@ -21,7 +21,8 @@ const val IDENTIFY_DURATION_SECS = 30 * 60
 data class Settings(
     val advertisingInterval: Double? = null,
     val measureInterval: Int? = null,
-    val txPower: TxPower? = null,
+    /** Wanted output in dBm; each device takes its firmware's nearest level. */
+    val txPower: Float? = null,
     /** Desired time per on-device log record. */
     val logPeriod: Double? = null,
 ) {
@@ -32,7 +33,7 @@ data class Settings(
         var c = config
         advertisingInterval?.let { c = c.withAdvertisingInterval(it) }
         measureInterval?.let { c = c.withMeasureInterval(it) }
-        txPower?.let { c = c.withTxPower(it) }
+        txPower?.let { c = c.withTxPower(TxPower.nearest(c.firmware, it)) }
         logPeriod?.let { c = c.withLogAveraging(Math.round(it / c.measurementPeriod).toInt().coerceIn(1, 255)) }
         return c
     }
@@ -86,7 +87,7 @@ sealed interface Action {
         override val label get() = "adjusting TX power"
     }
 
-    /** Set the TX power the firmware starts with, [TxPower.FACTORY]. */
+    /** Set the TX power the firmware starts with, [TxPower.factory]. */
     data object ResetTxPower : Action {
         override val label get() = "restoring TX power"
     }

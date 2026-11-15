@@ -34,7 +34,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
-import dev.artur.thermo.atc.TxPower
+import dev.artur.thermo.atc.TX_POWER_PRESETS_DBM
 import dev.artur.thermo.model.Settings
 import dev.artur.thermo.model.ThermoModel
 
@@ -44,7 +44,7 @@ import dev.artur.thermo.model.ThermoModel
 fun SettingsSheet(model: ThermoModel, targets: List<String>, onDismiss: () -> Unit) {
     var advertising by remember { mutableStateOf<Double?>(null) }
     var measure by remember { mutableStateOf<Int?>(null) }
-    var power by remember { mutableStateOf<TxPower?>(null) }
+    var power by remember { mutableStateOf<Float?>(null) }
     var log by remember { mutableStateOf<Double?>(null) }
     val single = targets.singleOrNull()?.let { model.state(it).config }
     // Show what a single device has now: read its settings if they aren't known.
@@ -64,7 +64,8 @@ fun SettingsSheet(model: ThermoModel, targets: List<String>, onDismiss: () -> Un
             )
             Choice("Advertising interval", advertising, Settings.ADVERTISING, { formatInterval(it) }, single?.let { formatInterval(it.advertisingInterval) }) { advertising = it }
             Choice("Measure every", measure, Settings.MEASURE_EVERY, { "$it adverts" }, single?.let { "${it.measureInterval} adverts" }) { measure = it }
-            Choice("TX power", power, TxPower.PRESETS, { it.toString() }, single?.txPower?.toString()) { power = it }
+            // In dBm: each device takes its firmware's nearest level.
+            Choice("TX power", power, TX_POWER_PRESETS_DBM, { "%+.1f dBm".format(java.util.Locale.ROOT, it) }, single?.txPower?.toString()) { power = it }
             Choice("Log record every", log, Settings.LOG_EVERY, { formatInterval(it) }, single?.let { c -> c.logPeriod?.let { formatInterval(it) } ?: "off" }) { log = it }
             val period = advertising?.let { a -> measure?.let { a * it } }
             if (period != null) {

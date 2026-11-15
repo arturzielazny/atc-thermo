@@ -11,8 +11,7 @@ live readings and fills gaps from each device's log, even though the device cloc
 wrong. It also syncs and trims those clocks, renames devices and changes their settings
 in bulk. Put all the thermometers side by side and it **calibrates them against each
 other**, writing a gain and offset into each one, so Home Assistant and every other
-BTHome receiver get the corrected values too. THB2 has no clock-rate trim, and its
-Android support is still missing (see [android/README.md](android/README.md)).
+BTHome receiver get the corrected values too. THB2 has no clock-rate trim.
 
 **Website and guides:** https://arturzielazny.github.io/atc-thermo/
 

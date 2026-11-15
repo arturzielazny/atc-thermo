@@ -165,7 +165,7 @@ fun LevelingScreen(
                                     row.change == null -> Text("ok", color = Fine, style = MaterialTheme.typography.labelLarge)
                                     else -> {
                                         Text("%+d dB".format(row.change), fontWeight = FontWeight.Bold)
-                                        planned(config?.txPower?.dbm, row.change)?.let {
+                                        planned(config?.txPower, row.change)?.let {
                                             Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                         }
                                     }
@@ -217,9 +217,9 @@ fun LevelingScreen(
 }
 
 /** `"→ −5.0 dBm"`, with "(limit)" when the radio's range ends before the wanted level. */
-private fun planned(currentDbm: Float?, change: Int): String? {
-    val dbm = currentDbm ?: return null
-    val target = dev.artur.thermo.atc.TxPower.nearest(dbm + change)
+private fun planned(current: dev.artur.thermo.atc.TxPower?, change: Int): String? {
+    val dbm = current?.dbm ?: return null
+    val target = dev.artur.thermo.atc.TxPower.nearest(current.firmware, dbm + change)
     val reached = target.dbm ?: return null
     val clamped = abs(reached - (dbm + change)) > CLAMPED_DB
     return "→ $target" + if (clamped) " (limit)" else ""

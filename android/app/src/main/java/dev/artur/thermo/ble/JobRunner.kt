@@ -93,13 +93,12 @@ private suspend fun perform(t: Thermometer, action: Action): Outcome = when (act
     Action.ReadConfig -> Outcome.ConfigRead(t.config())
     is Action.Configure -> Outcome.Configured(t.setConfig(action.settings.applyTo(t.config())))
     is Action.AdjustTxPower -> setTxPower(t) { before ->
-        val dbm = before.dbm ?: throw InvalidValue("unknown TX power $before")
-        TxPower.nearest(dbm + action.changeDb)
+        before.changedBy(action.changeDb) ?: throw InvalidValue("unknown TX power $before")
     }
-    Action.ResetTxPower -> setTxPower(t) { TxPower.FACTORY }
+    Action.ResetTxPower -> setTxPower(t) { TxPower.factory(it.firmware) }
     is Action.Calibrate -> {
         val before = t.coefficients()
-        val wanted = before.corrected(action.temperature, action.humidity)
+        val wanted = before.corrected(action.temperature, action.humidity, t.maxGain())
         val after = t.setCoefficients(wanted)
         if (after != wanted) throw InvalidValue("device stored $after instead of $wanted")
         Outcome.Calibrated(before, after, action.temperature, action.humidity)
@@ -110,7 +109,9 @@ private suspend fun perform(t: Thermometer, action: Action): Outcome = when (act
     }
     Action.ReadInfo -> {
         val clock = t.clock()
-        Outcome.InfoRead(t.info.firmwareVersion, t.info.hardware, t.coefficients(), t.config(), clock.offsetSecs)
+        // `ATC v5.9`, or `THB1 · THB v2.1` with the model a THB2 device names.
+        val firmware = listOfNotNull(t.info.model, "${t.firmware.label} v${t.info.firmwareVersion}").joinToString(" · ")
+        Outcome.InfoRead(firmware, t.info.hardware, t.coefficients(), t.config(), clock.offsetSecs)
     }
 }
 
@@ -126,6 +127,7 @@ private suspend fun setTxPower(t: Thermometer, wanted: (TxPower) -> TxPower): Ou
 }
 
 private suspend fun trimRate(t: Thermometer, clock: ClockReading): RateTrim {
+    if (!t.info.hasClockRate) return RateTrim.Unsupported
     val drift = clock.drift() ?: return RateTrim.Unknown
     val current = try {
         t.secondTicks()

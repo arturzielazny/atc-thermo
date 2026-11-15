@@ -3,15 +3,10 @@
 The `thermo` dashboard and calibration tool as an Android app, for the same BLE
 thermometers: pvvx [ATC_MiThermometer](https://github.com/pvvx/ATC_MiThermometer)
 firmware with BTHome v2 advertising (tested on Xiaomi LYWSD03MMC, firmware v5.9, on a
-Samsung Galaxy S21 with Android 15).
-
-The terminal app also supports pvvx [THB2](https://github.com/pvvx/THB2) firmware (THB1,
-THB2, BTH01, TH05, …); this app doesn't yet. THB2 devices show their readings, which are
-plain BTHome, but commands (identify, sync, download, settings, calibration, levelling)
-fail with "not a pvvx ATC firmware device": the app only looks for the ATC command
-characteristic `0x1F1F`, and THB2 uses `0xFFF4` with its own config and coefficient
-layouts. `crates/atc/src/firmware.rs` lists what a port needs. Kotlin and Jetpack Compose (Material 3), no other
-dependencies. Android 8 and newer.
+Samsung Galaxy S21 with Android 15), and pvvx [THB2](https://github.com/pvvx/THB2)
+firmware (THB1, THB2, BTH01, TH05, …; ported from the terminal app, not yet tried on a
+phone). Kotlin and Jetpack Compose (Material 3), no other dependencies. Android 8 and
+newer.
 
 **Install:** download the APK from the [Android release](https://github.com/arturzielazny/atc-thermo/releases/tag/android-v0.1.0) and open it on
 the phone (allow installing from your browser or file manager when asked).
@@ -27,9 +22,9 @@ Everything the terminal app does, laid out for touch:
 | `↑` `↓`, `space`, `a`, `Esc` | tap a card for its detail screen; long-press to select, tap to add more, ✕ or Back to clear |
 | `i` `s` `d` `e` `n` | Identify, Sync clock, Download log, Settings, Rename: in the selection bar or on the device screen |
 | `e` settings form | bottom sheet with a drop-down per field, “Keep” by default; a single device's current values are read and shown |
-| `c` calibration, `Tab` `←` `→` | Calibration screen: device chips, a range slider over the shaded chart (snapped to 15 min), summary, corrections with bars; Write asks first; menu: restore factory calibration, sync clocks |
+| `c` calibration, `Tab` `←` `→`, `r` | Calibration screen: device chips, “Correct to” chips (group average or one trusted device), a range slider over the shaded chart (snapped to 15 min), summary, corrections with bars; Write asks first; menu: restore factory calibration, sync clocks |
 | `l` levelling, `←` `→`, `Enter`, `x`, `r` | Signal levelling screen: target slider with ±1 dB buttons, a checkbox per device, Change asks first; menu: factory TX power; ⟳ listens anew |
-| status line | subtitle (“Listening · 2 of 2 in range · connecting”), snackbars for problems, a spinner and the last result on each card |
+| status line, Job column | subtitle (“Listening · 2 of 2 in range · connecting”), snackbars for problems, a spinner and the last result with its age on each card (greyed after 10 min) |
 
 It also downloads a device's log the first time it is heard if recent history has a
 gap, keeps recording with the app closed (a foreground service with a notification and a
@@ -90,8 +85,9 @@ gh release create android-vX.Y.Z thermo-android-X.Y.Z.apk --title "Android X.Y.Z
 |---|---|
 | `bthome/` | BTHome v2 decoder, port of `crates/bthome` |
 | `calibration/` | consensus calibration, port of `crates/calibration` |
-| `atc/Encodings.kt` | config, TX power, coefficients, clock, log and LCD layouts, port of `crates/atc` |
-| `atc/Thermometer.kt` | GATT client for characteristic `0x1F1F` on `BluetoothGatt`, with coroutines |
+| `atc/Firmware.kt` | ATC or THB2, told apart by the command characteristic, and which features a device has; port of `crates/atc/src/firmware.rs` |
+| `atc/Encodings.kt` | config, TX power, coefficients, clock, log and LCD layouts of both families, port of `crates/atc` |
+| `atc/Thermometer.kt` | GATT client for characteristic `0x1F1F` (ATC) or `0xFFF4` (THB2) on `BluetoothGatt`, with coroutines |
 | `model/` | devices, CSV store, levelling, calibration glue and `ThermoModel` (the I/O-free `app.rs`) |
 | `ble/` | scanner (filtered on service data `0xFCD2`) and the one-at-a-time job worker |
 | `Controller.kt`, `MonitorService.kt` | process-wide wiring and the recording service |

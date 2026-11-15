@@ -74,6 +74,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.artur.thermo.model.Device
+import dev.artur.thermo.model.JobResult
 import dev.artur.thermo.model.Metric
 import dev.artur.thermo.model.STALE_AFTER_MS
 import dev.artur.thermo.model.ScanStatus
@@ -281,7 +282,7 @@ private fun DeviceCard(
                     Indicator(Icons.Default.SignalCellularAlt, device.typicalRssi?.let { "$it dBm" } ?: "–", rssiColor(device.typicalRssi).takeUnless { stale })
                     if (now - device.lastSeen >= QUIET_AFTER_MS) Text(formatAgo(now - device.lastSeen), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
                 }
-                JobStatus(state.busy, state.queued, state.last)
+                JobStatus(state.busy, state.queued, state.last, now)
             }
             Column(horizontalAlignment = Alignment.End, modifier = Modifier.padding(start = 8.dp).alpha(if (stale) 0.55f else 1f)) {
                 if (device.encrypted) {
@@ -308,7 +309,7 @@ fun Indicator(icon: ImageVector, text: String, tint: androidx.compose.ui.graphic
 
 /** A running job with a spinner, else the last job's result. */
 @Composable
-fun JobStatus(busy: String?, queued: Int, last: Pair<Boolean, String>?) {
+fun JobStatus(busy: String?, queued: Int, last: JobResult?, now: Long) {
     AnimatedVisibility(busy != null || queued > 0 || last != null) {
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 2.dp)) {
             when {
@@ -318,8 +319,18 @@ fun JobStatus(busy: String?, queued: Int, last: Pair<Boolean, String>?) {
                 }
                 queued > 0 -> Text("waiting to connect" + if (queued > 1) " ($queued jobs)" else "", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
                 last != null -> {
-                    Icon(if (last.first) Icons.Default.CheckCircle else Icons.Default.Error, null, Modifier.size(12.dp), tint = if (last.first) Fine else Bad)
-                    Text(" ${last.second}", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    // An old result is dimmed: it says the job didn't run again, without looking current.
+                    val tint = when {
+                        !last.isFresh(now) -> MaterialTheme.colorScheme.outline
+                        last.ok -> Fine
+                        else -> Bad
+                    }
+                    Icon(if (last.ok) Icons.Default.CheckCircle else Icons.Default.Error, null, Modifier.size(12.dp), tint = tint)
+                    Text(
+                        " ${last.message} · ${formatAgo(now - last.at)}",
+                        style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2, overflow = TextOverflow.Ellipsis,
+                    )
                 }
             }
         }

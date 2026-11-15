@@ -3,15 +3,11 @@
 Known gaps and loose ends, mostly found while reviewing #3–#6 (macOS backend, THB2
 firmware). Each is small; none blocks normal use.
 
-## Android app lacks THB2
+## THB2 on Android is untested on hardware
 
-THB2 devices (THB1, THB2, BTH01, TH05, …) show readings in the Android app, but every
-command fails with "not a pvvx ATC firmware device": it only looks for the ATC command
-characteristic `0x1F1F`. A port needs what `crates/atc/src/firmware.rs` lists: the
-`0xFFF4` characteristic, the 12-byte THB `cfg_t` and its TX power table, the 19-byte
-coefficient reply with sensor info and per-sensor gain limits (AHT2x ≤ 4095), the
-`[0x10, MAC]` reply, no `0x24`, and `0x26` followed by a `0x25` write so a reset lasts.
-AGENTS.md asks for byte layouts in both apps, with tests on both sides.
+The Android app speaks THB2 since its port of #4 (`atc/Firmware.kt`), with the Rust
+tests ported, but no THB2 device has been connected from a phone yet. Check one with a
+read-only action first (Read settings, Read device).
 
 ## THB2 on Linux is untested on hardware
 

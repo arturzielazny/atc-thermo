@@ -4,17 +4,27 @@
  */
 package dev.artur.thermo
 
+import dev.artur.thermo.atc.ATC_COMMAND_UUID
 import dev.artur.thermo.atc.Coefficients
 import dev.artur.thermo.atc.Config
 import dev.artur.thermo.atc.ClockReading
 import dev.artur.thermo.atc.Correction
+import dev.artur.thermo.atc.DeviceInfo
+import dev.artur.thermo.atc.Firmware
 import dev.artur.thermo.atc.LogRecord
 import dev.artur.thermo.atc.NOMINAL_SECOND_TICKS
 import dev.artur.thermo.atc.ScreenMessage
+import dev.artur.thermo.atc.SensorInfo
 import dev.artur.thermo.atc.Smiley
+import dev.artur.thermo.atc.THB_AHT_MAX_GAIN
+import dev.artur.thermo.atc.THB_COMMAND_UUID
+import dev.artur.thermo.atc.THB_MAX_GAIN
+import dev.artur.thermo.atc.TX_POWER_PRESETS_DBM
 import dev.artur.thermo.atc.TX_POWER_TABLE
 import dev.artur.thermo.atc.TxPower
 import dev.artur.thermo.atc.clockFromReply
+import dev.artur.thermo.atc.configFromReply
+import dev.artur.thermo.atc.configReplyLen
 import dev.artur.thermo.atc.decodeName
 import dev.artur.thermo.atc.ticksDelta
 import dev.artur.thermo.atc.trimmedSecondTicks
@@ -28,6 +38,7 @@ import kotlin.math.abs
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -94,8 +105,57 @@ class ConfigTest {
         assertEquals(4, config.measureInterval)
         assertEquals(10.0, config.measurementPeriod)
         assertEquals("+0.0 dBm", config.txPower.toString())
-        assertEquals(TxPower.FACTORY, config.txPower)
+        assertTrue(config.txPower.isFactory)
+        assertEquals(Firmware.Atc, config.firmware)
         assertEquals(1800.0, config.logPeriod)
+    }
+
+    /**
+     * THB2 `def_cfg` (`config.c`): flg `FLG_MEAS_NOTIFY | FLG_SHOW_SMILEY` (u32 LE),
+     * `rf_tx_power` 0x1F, `advertising_interval` 80 (5 s), `connect_latency` 29,
+     * `adv_event_cnt` 16, `measure_interval` 2, `batt_interval` 60, averaging 180.
+     */
+    private val thbFactory = bytes(0x05, 0, 0, 0, 0x1f, 80, 29, 16, 2, 60, 180, 0)
+
+    @Test
+    fun decodesThbFactoryConfig() {
+        val config = Config(thbFactory, Firmware.Thb)
+        assertEquals(5.0, config.advertisingInterval)
+        assertEquals(2, config.measureInterval)
+        assertEquals(10.0, config.measurementPeriod)
+        assertEquals(0x1f, config.txPower.code)
+        assertEquals("+0.0 dBm", config.txPower.toString())
+        assertTrue(config.txPower.isFactory)
+        assertEquals(1800.0, config.logPeriod)
+        assertContentEquals(thbFactory, config.bytes())
+        // As `cmd_parser.c` sends it: no version byte, unlike ATC.
+        val reply = bytes(0x55) + thbFactory
+        assertEquals(reply.size, configReplyLen(Firmware.Thb))
+        assertEquals(config, configFromReply(Firmware.Thb, reply))
+        val atcReply = bytes(0x55, 0x59) + factory
+        assertEquals(Config(factory), configFromReply(Firmware.Atc, atcReply))
+    }
+
+    @Test
+    fun thbSettersTouchOnlyTheirByte() {
+        val config = Config(thbFactory, Firmware.Thb).withAdvertisingInterval(2.5).withMeasureInterval(40)
+            .withTxPower(TxPower(0x0a, Firmware.Thb)).withLogAveraging(0)
+        val expected = thbFactory.copyOf().also {
+            it[5] = 40
+            it[8] = 40
+            it[4] = 0x0a
+            it[10] = 0
+        }
+        assertContentEquals(expected, config.bytes())
+        assertNull(config.logPeriod)
+        assertFailsWith<Exception> { config.withMeasureInterval(1) }
+    }
+
+    @Test
+    fun powerFromTheOtherFamilyIsConverted() {
+        // −5.03 dBm on ATC is THB's −5 dBm; THB's +5 dBm is ATC's +5.13 dBm.
+        assertEquals(TxPower(0x0a, Firmware.Thb), Config(thbFactory, Firmware.Thb).withTxPower(TxPower(150)).txPower)
+        assertEquals(TxPower(29), Config(factory).withTxPower(TxPower(0x3f, Firmware.Thb)).txPower)
     }
 
     @Test
@@ -115,17 +175,74 @@ class ConfigTest {
         assertFailsWith<Exception> { config.withAdvertisingInterval(11.0) }
         assertFailsWith<Exception> { config.withAdvertisingInterval(0.0) }
         assertFailsWith<Exception> { config.withMeasureInterval(1) }
+        assertFailsWith<Exception> { config.withMeasureInterval(26) }
     }
 
     @Test
     fun txPowers() {
-        assertTrue(TxPower.PRESETS.all { it.dbm != null })
+        val atc = Firmware.Atc
+        assertEquals(listOf(140, 150, 160, 169, 182, 191, 33, 63), TX_POWER_PRESETS_DBM.map { TxPower.nearest(atc, it).code })
         assertEquals("code 7", TxPower(7).toString())
-        assertEquals(TxPower(169), TxPower.nearest(0f))
-        assertEquals(TxPower(150), TxPower.nearest(-5.2f))
-        assertEquals(TxPower(63), TxPower.nearest(40f))
-        assertEquals(TxPower(130), TxPower.nearest(-40f))
-        for ((code, _) in TX_POWER_TABLE) assertEquals(TxPower(code), TxPower.nearest(TxPower(code).dbm!!))
+        assertEquals(TxPower(169), TxPower.nearest(atc, 0f))
+        assertEquals(TxPower(150), TxPower.nearest(atc, -5.2f))
+        assertEquals(TxPower(63), TxPower.nearest(atc, 40f))
+        assertEquals(TxPower(130), TxPower.nearest(atc, -40f))
+        for ((code, _) in TX_POWER_TABLE) assertEquals(TxPower(code), TxPower.nearest(atc, TxPower(code).dbm!!))
+    }
+
+    @Test
+    fun thbPowerTable() {
+        val thb = { code: Int -> TxPower(code, Firmware.Thb) }
+        assertEquals(thb(0x3f), TxPower.nearest(Firmware.Thb, 10f))
+        assertEquals(thb(0x0f), TxPower.nearest(Firmware.Thb, -1f))
+        assertEquals(thb(0x01), TxPower.nearest(Firmware.Thb, -40f))
+        assertEquals(thb(0x0a), thb(0x1f).changedBy(-5f))
+        assertEquals(thb(0x3f), thb(0x1f).changedBy(3f))
+        assertEquals("code 48", thb(0x30).toString())
+        assertNull(thb(0x30).changedBy(1f))
+        assertTrue(TxPower.factory(Firmware.Thb).isFactory)
+        assertFalse(TxPower(0x1f).isFactory, "0x1F is THB's factory code, not ATC's")
+    }
+}
+
+class FirmwareTest {
+    @Test
+    fun familyFromCharacteristic() {
+        assertEquals(Firmware.Atc, Firmware.fromCommandUuid(ATC_COMMAND_UUID))
+        assertEquals(Firmware.Thb, Firmware.fromCommandUuid(THB_COMMAND_UUID))
+        // 0xFFF3 is the THB2 OTA characteristic, never the command one.
+        assertNull(Firmware.fromCommandUuid(java.util.UUID.fromString("0000fff3-0000-1000-8000-00805f9b34fb")))
+    }
+
+    @Test
+    fun parsesThb1DevId() {
+        // THB2 `cmd_parser.c`: pid 0, revision 0, hw DEVICE_THB1 = 23, sw 0x21, dev_spec 0,
+        // services of the THB1 build: OTA|SCREEN|THS|KEY|HISTORY|TH_TRG|RDS|BINDKEY.
+        val services = 0x01 or 0x20 or 0x80 or 0x200 or 0x10 or 0x4000 or 0x100 or 0x08
+        val reply = bytes(0x00, 0x00, 23, 0, 0x21, 0x00, 0, 0) + byteArrayOf(services.toByte(), (services shr 8).toByte(), 0, 0)
+        val info = DeviceInfo.fromReply(Firmware.Thb, reply)
+        assertEquals("THB1", info.model)
+        assertEquals("2.1", info.firmwareVersion)
+        assertTrue(info.firmware >= Firmware.Thb.minVersion && info.firmware < Firmware.Atc.minVersion)
+        assertTrue(info.hasScreen && info.hasLog)
+        assertFalse(info.hasClockRate)
+    }
+
+    @Test
+    fun thbWithoutScreenBitHasNoScreen() {
+        // BTH01: no LCD, so SCREEN (0x20) is clear.
+        val info = DeviceInfo.fromReply(Firmware.Thb, bytes(0x00, 0x00, 20, 0, 0x21, 0x00, 0, 0, 0x99, 0, 0, 0))
+        assertEquals("BTH01", info.model)
+        assertFalse(info.hasScreen)
+    }
+
+    @Test
+    fun atcDevIdKeepsItsMeaning() {
+        val info = DeviceInfo.fromReply(Firmware.Atc, bytes(0x00, 0x00, 4, 0, 0x59, 0))
+        assertEquals("5.9", info.firmwareVersion)
+        assertNull(info.services)
+        assertNull(info.model)
+        assertTrue(info.hasScreen && info.hasLog && info.hasClockRate)
     }
 }
 
@@ -160,6 +277,53 @@ class CoefficientsTest {
     fun rejectsUnrepresentable() {
         assertFailsWith<Exception> { sht4x.corrected(Correction(2.0, 0.0), Correction.IDENTITY) }
         assertFailsWith<Exception> { sht4x.corrected(Correction(1.0, 400.0), Correction.IDENTITY) }
+    }
+
+    // THB2 `sensors.c` defaults for the THB1's CHT832x (type 7).
+    private val cht832x = Coefficients(17_500, 10_000, -4_500, 0)
+
+    /** THB2 `read_sensor_cht83xx`: `(raw * k) >> 16 + z` in a u32, then i16. */
+    private fun thbFirmware(gain: Long, offset: Int, raw: Int) = ((((raw.toLong() * gain) and 0xffff_ffffL) shr 16) + offset) / 100.0
+
+    @Test
+    fun thbReplyLayout() {
+        // `[0x25, coef, mid, vid, i2c addr, type]` from a THB1 with a CHT832x: mid 0x5959,
+        // vid 0x2083, `TH_SENSOR_CHT832x` = 7.
+        val reply = bytes(0x25) + cht832x.toBytes() + bytes(0x59, 0x59, 0x83, 0x20, 0x44, 7)
+        assertEquals(cht832x, Coefficients.fromBytes(reply, 1))
+        val sensor = SensorInfo.fromThbReply(reply)!!
+        assertEquals(7, sensor.sensorType)
+        assertEquals(0x2083, sensor.vendorId)
+        assertEquals(THB_MAX_GAIN, sensor.maxGain)
+        assertNull(SensorInfo.fromThbReply(reply.copyOf(13)))
+    }
+
+    @Test
+    fun thbCorrectionMatchesFirmwareMaths() {
+        val t = Correction(1.01, -0.4)
+        val h = Correction(1.05, -3.0)
+        val new = cht832x.corrected(t, h, THB_MAX_GAIN)
+        for (raw in listOf(20_000, 26_000, 32_000, 40_000)) {
+            val wantT = t.gain * thbFirmware(cht832x.temperatureGain, cht832x.temperatureOffset, raw) + t.offset
+            assertTrue(abs(thbFirmware(new.temperatureGain, new.temperatureOffset, raw) - wantT) < 0.02)
+            val wantH = h.gain * thbFirmware(cht832x.humidityGain, cht832x.humidityOffset, raw) + h.offset
+            assertTrue(abs(thbFirmware(new.humidityGain, new.humidityOffset, raw) - wantH) < 0.02)
+        }
+    }
+
+    @Test
+    fun gainLimitsPerSensor() {
+        // CHT8215 humidity k = 20000: doubling passes on THB, fails the ATC limit.
+        val cht8215 = Coefficients(25_606, 20_000, 0, 0)
+        val double = Correction(2.0, 0.0)
+        assertFailsWith<Exception> { cht8215.corrected(Correction.IDENTITY, double) }
+        cht8215.corrected(Correction.IDENTITY, double, THB_MAX_GAIN)
+        // AHT2x (k 1250 / 625, 20-bit raw): capped at 4095.
+        val aht = Coefficients(1_250, 625, -5_000, 0)
+        val sensor = SensorInfo(0, 0xAAAA, 0x70, 5)
+        assertEquals(THB_AHT_MAX_GAIN, sensor.maxGain)
+        assertFailsWith<Exception> { aht.corrected(Correction(3.5, 0.0), Correction.IDENTITY, sensor.maxGain) }
+        aht.corrected(Correction(1.03, 0.2), Correction(1.03, 0.2), sensor.maxGain)
     }
 }
 

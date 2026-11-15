@@ -60,17 +60,29 @@ sealed interface ScanStatus {
     data class Failed(val reason: String) : ScanStatus
 }
 
+/** A finished job: whether it succeeded, its message, and when it finished (epoch ms). */
+data class JobResult(val ok: Boolean, val message: String, val at: Long) {
+    /**
+     * Whether it is recent enough to keep its color. Later it is dimmed: the device may
+     * have changed since (Seen tells whether it is still heard), but the job didn't rerun.
+     */
+    fun isFresh(now: Long): Boolean = now - at < JOB_RESULT_FRESH_MS
+}
+
+/** A finished job's result keeps its color this long; as `JOB_RESULT_FRESH` in `ui/table.rs`. */
+const val JOB_RESULT_FRESH_MS = 10 * 60_000L
+
 /** What device jobs are doing and have done, per device. */
 data class DeviceState(
     val queued: Int = 0,
     val busy: String? = null,
-    /** Message of the last finished job, and whether it succeeded. */
-    val last: Pair<Boolean, String>? = null,
+    /** The last finished job. */
+    val last: JobResult? = null,
     /** Device minus host clock, in seconds, when last measured. */
     val clockOffset: Double? = null,
     /** Settings last read from or written to the device. */
     val config: Config? = null,
-    /** Firmware version, once read. */
+    /** Firmware family and version (`ATC v5.9`, `THB1 · THB v2.1`), once read. */
     val firmware: String? = null,
     val coefficients: dev.artur.thermo.atc.Coefficients? = null,
 )
@@ -85,6 +97,8 @@ class CalibrationSession(
     /** Last moment of data to fit; `null` follows the current time. */
     var end: Long?,
 ) {
+    /** The device the others are corrected to match, or `null` for their average. */
+    var reference: String? = null
     /** The devices compared, in list order. */
     val devices: List<String> get() = chosen ?: all()
     var result: Result<CalibrationRun>? = null
@@ -95,7 +109,7 @@ class CalibrationSession(
 }
 
 /** Readings handed to a background fit; see [ThermoModel.calibrationInput]. */
-class CalibrationInput(val devices: List<String>, val since: Long, val until: Long, val end: Long?)
+class CalibrationInput(val devices: List<String>, val since: Long, val until: Long, val end: Long?, val reference: String?)
 
 class ThermoModel(
     /** Runs a job on a device; `false` if the worker is gone. `null` disables device commands. */
@@ -228,8 +242,8 @@ class ThermoModel(
             is JobEvent.Started -> update(event.address) { it.copy(busy = event.label) }
             is JobEvent.Finished -> {
                 val message = event.outcome.fold(
-                    onSuccess = { true to applyOutcome(event.address, it) },
-                    onFailure = { false to (it.message ?: it.toString()) },
+                    onSuccess = { JobResult(true, applyOutcome(event.address, it), clock()) },
+                    onFailure = { JobResult(false, it.message ?: it.toString(), clock()) },
                 )
                 update(event.address) { it.copy(queued = (it.queued - 1).coerceAtLeast(0), busy = null, last = message) }
             }
@@ -293,7 +307,7 @@ class ThermoModel(
                 )
             }
             noteClockOffset(address, outcome.clockOffset)
-            "firmware v${outcome.firmware}"
+            "firmware ${outcome.firmware}"
         }
     }
 
@@ -474,6 +488,14 @@ class ThermoModel(
         changed()
     }
 
+    /** Corrects the others to match [address], one of the compared devices, or `null` for their average. */
+    fun setCalibrationReference(address: String?) {
+        val session = calibration ?: return
+        session.reference = address?.takeIf { it in session.devices }
+        session.computedAt = null
+        changed()
+    }
+
     /** What to fit, if the calibration screen's result is due for a refresh. */
     fun calibrationInput(force: Boolean = false): CalibrationInput? {
         val session = calibration ?: return null
@@ -484,18 +506,21 @@ class ThermoModel(
         session.computing = true
         session.fitted = session.devices
         session.start = windowStart(session.start, session.devices, lastCalibrations)
-        return CalibrationInput(session.devices, session.start, session.end ?: now, session.end)
+        if (session.reference !in session.devices) session.reference = null
+        return CalibrationInput(session.devices, session.start, session.end ?: now, session.end, session.reference)
     }
 
     /** Fits [input] here; the app fits [calibrationReadings] off the main thread instead. */
     fun fit(input: CalibrationInput): Result<CalibrationRun> =
-        runCatching { runCalibration(devices, input.devices, input.since, input.until) }
+        runCatching { runCalibration(devices, input.devices, input.since, input.until, input.reference) }
 
     fun onCalibrationResult(input: CalibrationInput, result: Result<CalibrationRun>) {
         val session = calibration ?: return
         session.computing = false
         // A fit of a window or devices changed since is stale.
-        if (session.devices != input.devices || session.start != input.since || session.end != input.end) return
+        if (session.devices != input.devices || session.start != input.since || session.end != input.end ||
+            session.reference != input.reference
+        ) return
         session.result = result
         session.computedAt = clock()
         changed()
@@ -504,10 +529,10 @@ class ThermoModel(
     /** Corrections that "apply" writes: `(address, temperature, humidity)`. */
     fun calibrationWrites(): List<Triple<String, Correction, Correction>> {
         val run = calibration?.result?.getOrNull() ?: return emptyList()
-        return run.devices.zip(run.report.sensors).mapNotNull { (device, sensor) ->
-            val (t, h) = corrections(sensor)
+        return run.devices.indices.mapNotNull { i ->
+            val (t, h) = run.corrections(i)
             if (t == null && h == null) null
-            else Triple(device.first, t ?: Correction.IDENTITY, h ?: Correction.IDENTITY)
+            else Triple(run.devices[i].first, t ?: Correction.IDENTITY, h ?: Correction.IDENTITY)
         }
     }
 
@@ -576,7 +601,7 @@ class ThermoModel(
 
     /** The devices a factory TX power reset applies to: those not known to have it already. */
     fun factoryResets(): List<String> =
-        levelingDevices.filter { state(it).config?.txPower != TxPower.FACTORY }
+        levelingDevices.filter { state(it).config?.txPower?.isFactory != true }
 
     fun resetTxPower() {
         for (address in factoryResets()) enqueue(address, Action.ResetTxPower)

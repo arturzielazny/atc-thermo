@@ -8,14 +8,20 @@ import dev.artur.thermo.atc.Coefficients
 import dev.artur.thermo.atc.Correction
 import dev.artur.thermo.atc.TxPower
 import dev.artur.thermo.calibration.Fit
+import dev.artur.thermo.calibration.QuantityReport
+import dev.artur.thermo.calibration.Report
+import dev.artur.thermo.calibration.Spread
 import dev.artur.thermo.calibration.SensorReport
 import dev.artur.thermo.model.Action
 import dev.artur.thermo.model.Advert
 import dev.artur.thermo.model.CalibrationRecord
+import dev.artur.thermo.model.CalibrationRun
 import dev.artur.thermo.model.DEFAULT_TARGET
 import dev.artur.thermo.model.Devices
+import dev.artur.thermo.model.JOB_RESULT_FRESH_MS
 import dev.artur.thermo.model.Job
 import dev.artur.thermo.model.JobEvent
+import dev.artur.thermo.model.JobResult
 import dev.artur.thermo.model.Leveling
 import dev.artur.thermo.model.Loaded
 import dev.artur.thermo.model.LoggedSample
@@ -45,6 +51,7 @@ import java.io.File
 import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -394,8 +401,8 @@ class ThermoModelTest {
         assertEquals(emptyList(), drain())
 
         val config = configWithPower(150)
-        finish(model, A, Result.success(Outcome.TxPowerSet(TxPower.FACTORY, config)))
-        assertEquals(true to "TX power +0.0 dBm → -5.0 dBm", model.state(A).last)
+        finish(model, A, Result.success(Outcome.TxPowerSet(TxPower.factory(dev.artur.thermo.atc.Firmware.Atc), config)))
+        assertEquals(JobResult(true, "TX power +0.0 dBm → -5.0 dBm", now), model.state(A).last)
         assertEquals(config, model.state(A).config)
         val plan = model.levelingPlan()!!
         assertEquals(0, plan.rows[0].adverts)
@@ -417,7 +424,9 @@ class ThermoModelTest {
         val state = model.state(A)
         assertEquals(-5.0, state.clockOffset)
         assertNull(state.busy)
-        assertEquals(true to "1 of 1 log records added", state.last)
+        assertEquals(JobResult(true, "1 of 1 log records added", now), state.last)
+        assertTrue(state.last!!.isFresh(now + JOB_RESULT_FRESH_MS - 1))
+        assertFalse(state.last!!.isFresh(now + JOB_RESULT_FRESH_MS))
         assertTrue(model.downloadSince(A) > at)
     }
 
@@ -453,6 +462,40 @@ class ThermoModelTest {
         assertNull(session.result)
         model.onCalibrationResult(second, Result.failure(Exception("current")))
         assertEquals("current", session.result!!.exceptionOrNull()!!.message)
+    }
+
+    @Test
+    fun theReferenceGoesWithTheFitAndGetsNothingWritten() {
+        val model = model()
+        drain()
+        val session = model.openCalibration()
+        model.setCalibrationReference("A4:C1:38:00:00:99")
+        assertNull(session.reference, "not a compared device")
+        model.setCalibrationReference(A)
+        val first = model.calibrationInput()!!
+        assertEquals(A, first.reference)
+        // A result fitted for another reference is stale.
+        model.setCalibrationReference(B)
+        model.onCalibrationResult(first, Result.failure(Exception("matched A")))
+        assertNull(session.result)
+        val second = model.calibrationInput(force = true)!!
+        assertEquals(B, second.reference)
+
+        val fit = { offset: Double -> Fit(offset = offset, steady = 3 * 3600.0) }
+        val quantity = QuantityReport(3 * 3600.0, 21.0 to 22.0, Spread(0.2, 0.01))
+        val report = Report(
+            listOf(SensorReport(fit(-0.3), fit(2.0)), SensorReport(fit(0.0), fit(0.0))),
+            quantity, quantity, emptyList(),
+        )
+        val run = CalibrationRun(listOf(A to "ATC_000001", B to "ATC_000002"), now - 4 * 3_600_000, now, report, reference = B)
+        model.onCalibrationResult(second, Result.success(run))
+        assertEquals(listOf(A), model.calibrationWrites().map { it.first })
+        assertTrue(run.isReference(1) && !run.isReference(0))
+        // The group average writes both.
+        model.setCalibrationReference(null)
+        val third = model.calibrationInput(force = true)!!
+        model.onCalibrationResult(third, Result.success(run.copy(reference = null)))
+        assertEquals(listOf(A, B), model.calibrationWrites().map { it.first })
     }
 
     @Test

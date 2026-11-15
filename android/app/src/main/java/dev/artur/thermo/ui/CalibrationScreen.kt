@@ -1,6 +1,7 @@
 /*
- * Consensus calibration: pick the devices and a time window with a range slider over
- * the chart, check the proposed corrections, and write them.
+ * Consensus calibration: pick the devices, what they are corrected to (their average or
+ * one trusted device) and a time window with a range slider over the chart, check the
+ * proposed corrections, and write them.
  */
 package dev.artur.thermo.ui
 
@@ -59,7 +60,6 @@ import dev.artur.thermo.model.HISTORY_SPAN_MS
 import dev.artur.thermo.model.Metric
 import dev.artur.thermo.model.ThermoModel
 import dev.artur.thermo.model.WINDOW_STEP_MS
-import dev.artur.thermo.model.corrections
 import dev.artur.thermo.model.formatLag
 import dev.artur.thermo.model.netCorrection
 import dev.artur.thermo.model.notes
@@ -117,6 +117,7 @@ fun CalibrationScreen(
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             DeviceChips(model, session, onWindowChanged)
+            ReferenceChips(model, session, onWindowChanged)
             WindowCard(model, session, revision, now, chartMetric, { chartMetric = it }, onWindowChanged)
             when (val result = session.result) {
                 null -> Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -170,6 +171,30 @@ private fun DeviceChips(model: ThermoModel, session: CalibrationSession, onChang
                 leadingIcon = { ColorDot(model.colorOf(device.address), 10.dp) },
                 label = { Text(device.name) },
             )
+        }
+    }
+}
+
+/** What the others are corrected to: their average, or one compared device declared correct. */
+@Composable
+private fun ReferenceChips(model: ThermoModel, session: CalibrationSession, onChanged: () -> Unit) {
+    fun pick(address: String?) {
+        if (session.reference == address) return
+        model.setCalibrationReference(address)
+        onChanged()
+    }
+    Column {
+        Text("Correct to", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            FilterChip(selected = session.reference == null, onClick = { pick(null) }, label = { Text("Group average") })
+            for (device in model.devices.all().filter { it.address in session.devices }) {
+                FilterChip(
+                    selected = session.reference == device.address,
+                    onClick = { pick(device.address) },
+                    leadingIcon = { ColorDot(model.colorOf(device.address), 10.dp) },
+                    label = { Text(device.name) },
+                )
+            }
         }
     }
 }
@@ -274,13 +299,17 @@ private fun ResultCards(model: ThermoModel, run: CalibrationRun, computing: Bool
             )
             run.devices.zip(r.sensors).forEachIndexed { i, (device, sensor) ->
                 if (i > 0) HorizontalDivider(Modifier.padding(horizontal = 16.dp))
-                val (tWritten, hWritten) = corrections(sensor)
+                val (tWritten, hWritten) = run.corrections(i)
                 Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         ColorDot(model.colorOf(device.first))
                         Text("  ${device.second}", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
                         val note = notes(sensor.temperature, sensor.humidity)
                         when {
+                            run.isReference(i) -> Text(
+                                "reference", style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold,
+                            )
                             tWritten != null && hWritten != null -> Icon(Icons.Default.CheckCircle, "Applies", tint = Fine, modifier = Modifier.size(18.dp))
                             else -> {
                                 Icon(Icons.Default.Warning, null, tint = Marginal, modifier = Modifier.size(16.dp))
@@ -301,8 +330,13 @@ private fun ResultCards(model: ThermoModel, run: CalibrationRun, computing: Bool
     Button(onClick = onApply, enabled = writes > 0, modifier = Modifier.fillMaxWidth()) {
         Text(if (writes > 0) "Write corrections to $writes device(s)" else "Nothing to write")
     }
+    val reference = run.devices.indices.firstOrNull(run::isReference)?.let { run.devices[it].second }
     Text(
-        "Bars show the net correction mid-range. Agreement isn't absolute accuracy; a salt test (75.3 %RH over NaCl) pins humidity.",
+        "Bars show the net correction mid-range. " + if (reference != null) {
+            "The others are corrected to read like $reference, which keeps its own calibration."
+        } else {
+            "Agreement isn't absolute accuracy; a salt test (75.3 %RH over NaCl) pins humidity, or pick a device you trust under Correct to."
+        },
         style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
 }

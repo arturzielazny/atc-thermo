@@ -2,8 +2,9 @@
  * Client for the BLE command interface of the pvvx firmware, on Android's BluetoothGatt;
  * the transport half of `crates/atc/src/thermometer.rs`.
  *
- * The firmware exposes one GATT characteristic (UUID `0x1F1F`) that takes commands as
- * writes and answers with notifications whose first byte echoes the command id.
+ * Each firmware exposes one GATT characteristic (ATC `0x1F1F`, THB2 `0xFFF4`) that takes
+ * commands as writes and answers with notifications whose first byte echoes the command
+ * id. Where the families' replies differ, [Firmware] and the encodings keep the layouts.
  */
 package dev.artur.thermo.atc
 
@@ -26,8 +27,6 @@ import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.UUID
 
-/** The firmware's command/notify characteristic `0x1F1F`. */
-private val COMMAND_UUID: UUID = UUID.fromString("00001f1f-0000-1000-8000-00805f9b34fb")
 /** Client characteristic configuration descriptor, to switch notifications on. */
 private val CCCD_UUID: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
 
@@ -41,8 +40,6 @@ private const val CMD_COEFFICIENTS_DEFAULT = 0x26
 private const val CMD_LOG = 0x35
 private const val CMD_CONFIG = 0x55
 
-/** Oldest firmware whose config layout this client knows (BCD, v4.7). */
-private const val MIN_VERSION = 0x47
 /** Longest name the firmware stores. */
 const val MAX_NAME_LEN = 20
 
@@ -63,12 +60,8 @@ private const val LOG_RECORD_TIMEOUT_MS = 5_000L
 open class AtcException(message: String) : Exception(message)
 class CommandTimeout(val command: Int) : AtcException("no answer to command 0x%02x".format(command))
 class Disconnected : AtcException("device disconnected")
-
-/** Identity reported by the firmware (`CMD_ID_DEV_ID`). */
-data class DeviceInfo(val hardware: Int, val firmware: Int) {
-    /** Firmware version as text, e.g. `"5.9"`. */
-    val firmwareVersion: String get() = "${firmware shr 4}.${firmware and 0xf}"
-}
+/** The firmware has no such feature, e.g. clock rate trimming on THB2. */
+class Unsupported(what: String) : AtcException("firmware does not support $what")
 
 /** An open connection to a thermometer running pvvx firmware. One command at a time. */
 @SuppressLint("MissingPermission")
@@ -77,7 +70,13 @@ class Thermometer private constructor(
     private val callback: Callback,
     private val command: BluetoothGattCharacteristic,
 ) {
-    var info = DeviceInfo(0, 0)
+    var info = DeviceInfo(Firmware.Atc, 0, 0)
+        private set
+
+    val firmware: Firmware get() = info.family
+
+    /** The sensor a THB2 device reported with its coefficients, once they were read. */
+    var sensor: SensorInfo? = null
         private set
 
     val address: String get() = gatt.device.address
@@ -97,28 +96,52 @@ class Thermometer private constructor(
         return decodeName(command(payload, 1), 1)
     }
 
-    /** Config replies are `[0x55, firmware version, cfg_t...]`. */
-    suspend fun config(): Config =
-        Config(command(byteArrayOf(CMD_CONFIG.toByte()), 2 + CONFIG_LEN).copyOfRange(2, 2 + CONFIG_LEN))
+    suspend fun config(): Config = configFromReply(firmware, command(byteArrayOf(CMD_CONFIG.toByte()), configReplyLen(firmware)))
 
     /** Writes the config and returns it as the device accepted it. */
     suspend fun setConfig(config: Config): Config {
-        val reply = command(byteArrayOf(CMD_CONFIG.toByte()) + config.bytes(), 2 + CONFIG_LEN)
-        return Config(reply.copyOfRange(2, 2 + CONFIG_LEN))
+        if (config.firmware != firmware) throw InvalidValue("${config.firmware} config for a $firmware device")
+        return configFromReply(firmware, command(byteArrayOf(CMD_CONFIG.toByte()) + config.bytes(), configReplyLen(firmware)))
     }
 
     suspend fun coefficients(): Coefficients =
-        Coefficients.fromBytes(command(byteArrayOf(CMD_COEFFICIENTS.toByte()), 1 + COEFFICIENTS_LEN), 1)
+        coefficientsFromReply(command(byteArrayOf(CMD_COEFFICIENTS.toByte()), 1 + COEFFICIENTS_LEN))
 
     /** Writes new sensor coefficients (persisted in flash) and returns them as read back. */
-    suspend fun setCoefficients(coefficients: Coefficients): Coefficients {
-        val reply = command(byteArrayOf(CMD_COEFFICIENTS.toByte()) + coefficients.toBytes(), 1 + COEFFICIENTS_LEN)
-        return Coefficients.fromBytes(reply, 1)
+    suspend fun setCoefficients(coefficients: Coefficients): Coefficients =
+        coefficientsFromReply(command(byteArrayOf(CMD_COEFFICIENTS.toByte()) + coefficients.toBytes(), 1 + COEFFICIENTS_LEN))
+
+    /**
+     * Restores the factory coefficients for the sensor type. THB2 `0x26` restores them
+     * only in RAM (`cmd_parser.c` doesn't save them), and the stored ones come back on
+     * the next restart, so they are written back with `0x25`.
+     */
+    suspend fun resetCoefficients(): Coefficients {
+        val defaults = coefficientsFromReply(command(byteArrayOf(CMD_COEFFICIENTS_DEFAULT.toByte()), 1 + COEFFICIENTS_LEN))
+        return when (firmware) {
+            Firmware.Atc -> defaults
+            Firmware.Thb -> setCoefficients(defaults)
+        }
     }
 
-    /** Restores the factory coefficients for the sensor type. */
-    suspend fun resetCoefficients(): Coefficients =
-        Coefficients.fromBytes(command(byteArrayOf(CMD_COEFFICIENTS_DEFAULT.toByte()), 1 + COEFFICIENTS_LEN), 1)
+    /**
+     * Largest gain coefficient the firmware's integer maths takes on this device. THB2
+     * limits depend on the sensor, which the coefficient reply names; they are read first
+     * if needed.
+     */
+    suspend fun maxGain(): Long = when (firmware) {
+        Firmware.Atc -> ATC_MAX_GAIN
+        Firmware.Thb -> {
+            if (sensor == null) coefficients()
+            sensor?.maxGain ?: THB_AHT_MAX_GAIN
+        }
+    }
+
+    /** Also notes the sensor a THB2 device names in the reply. */
+    private fun coefficientsFromReply(reply: ByteArray): Coefficients {
+        if (firmware == Firmware.Thb) sensor = SensorInfo.fromThbReply(reply) ?: sensor
+        return Coefficients.fromBytes(reply, 1)
+    }
 
     suspend fun clock(): ClockReading = clockFromReply(command(byteArrayOf(CMD_CLOCK.toByte()), 5), System.currentTimeMillis())
 
@@ -133,6 +156,7 @@ class Thermometer private constructor(
 
     /** Shows [message] on the LCD, alternating with the readings. */
     suspend fun show(message: ScreenMessage) {
+        if (!info.hasScreen) throw Unsupported("a screen")
         val bytes = message.toBytes()
         val reply = command(byteArrayOf(CMD_SCREEN.toByte()) + bytes, 1 + SCREEN_MESSAGE_LEN)
         val stored = reply.copyOfRange(1, 1 + SCREEN_MESSAGE_LEN)
@@ -140,10 +164,14 @@ class Thermometer private constructor(
     }
 
     /** System timer ticks the device counts as one second, nominally [NOMINAL_SECOND_TICKS]. */
-    suspend fun secondTicks(): Long = command(byteArrayOf(CMD_SECOND_TICKS.toByte()), 5).u32(1)
+    suspend fun secondTicks(): Long {
+        requireClockRate()
+        return command(byteArrayOf(CMD_SECOND_TICKS.toByte()), 5).u32(1)
+    }
 
     /** Sets the length of a clock second; the device keeps it in flash. */
     suspend fun setSecondTicks(ticks: Long): Long {
+        requireClockRate()
         val delta = ticksDelta(ticks) ?: throw InvalidValue("$ticks ticks per second is out of range")
         val stored = command(byteArrayOf(CMD_SECOND_TICKS.toByte()) + le16(delta), 5).u32(1)
         if (stored != ticks) throw InvalidValue("device stored $stored ticks per second instead of $ticks")
@@ -155,6 +183,7 @@ class Thermometer private constructor(
      * [maxRecords]. The first record [wanted] rejects is not included and ends the download.
      */
     suspend fun readLog(maxRecords: Int, wanted: (LogRecord) -> Boolean): List<LogRecord> = mutex.withLock {
+        if (!info.hasLog) throw Unsupported("a measurement log")
         val request = byteArrayOf(CMD_LOG.toByte()) + le16(maxRecords.coerceIn(0, 0xffff))
         val records = mutableListOf<LogRecord>()
         var attempts = 0
@@ -186,6 +215,10 @@ class Thermometer private constructor(
         }
         @Suppress("UNREACHABLE_CODE")
         records
+    }
+
+    private fun requireClockRate() {
+        if (!info.hasClockRate) throw Unsupported("clock rate trimming")
     }
 
     /** Disconnects and releases the connection; safe to call more than once. */
@@ -330,7 +363,7 @@ class Thermometer private constructor(
          * Connects to [address], switches on notifications and checks the firmware.
          *
          * @throws AtcException if the connection cannot be made, the device is not running
-         * pvvx firmware, or the firmware is older than v4.7.
+         * pvvx ATC or THB2 firmware, or the firmware is older than [Firmware.minVersion].
          */
         suspend fun connect(context: Context, adapter: BluetoothAdapter, address: String): Thermometer {
             val device = adapter.getRemoteDevice(address)
@@ -368,7 +401,8 @@ class Thermometer private constructor(
             }
             if (!gatt.discoverServices()) throw AtcException("service discovery did not start")
             withTimeout(GATT_OP_TIMEOUT_MS) { callback.servicesDiscovered.await() }
-            val characteristic = gatt.services.firstNotNullOfOrNull { it.getCharacteristic(COMMAND_UUID) }
+            val (family, characteristic) = gatt.services.flatMap { it.characteristics }
+                .firstNotNullOfOrNull { c -> Firmware.fromCommandUuid(c.uuid)?.let { it to c } }
                 ?: throw NotPvvx()
             gatt.setCharacteristicNotification(characteristic, true)
             val cccd = characteristic.getDescriptor(CCCD_UUID)
@@ -386,24 +420,41 @@ class Thermometer private constructor(
                 withTimeout(GATT_OP_TIMEOUT_MS) { callback.descriptorWritten.await() }
             }
             val thermometer = Thermometer(gatt, callback, characteristic)
-            val reply = thermometer.command(byteArrayOf(CMD_DEV_ID.toByte()), 6)
-            thermometer.info = DeviceInfo(hardware = reply.u16(2), firmware = reply.u16(4))
-            if (thermometer.info.firmware < MIN_VERSION) throw UnsupportedFirmware(thermometer.info.firmware)
+            thermometer.info = DeviceInfo(family, 0, 0)
+            val reply = thermometer.command(byteArrayOf(CMD_DEV_ID.toByte()), DEV_ID_MIN_LEN)
+            thermometer.info = DeviceInfo.fromReply(family, reply)
+            if (thermometer.info.firmware < family.minVersion) throw UnsupportedFirmware(family, thermometer.info.firmware)
             return thermometer
         }
     }
 }
 
-class NotPvvx : AtcException("not a pvvx ATC firmware device")
-class UnsupportedFirmware(version: Int) :
-    AtcException("firmware v${version shr 4}.${version and 0xf} is too old (need v4.7+)")
+class NotPvvx : AtcException("not a pvvx ATC (0x1F1F) or THB2 (0xFFF4) firmware device")
+class UnsupportedFirmware(family: Firmware, version: Int) : AtcException(
+    "$family firmware v${version shr 4}.${version and 0xf} is too old " +
+        "(need v${family.minVersion shr 4}.${family.minVersion and 0xf}+)",
+)
 
 internal fun decodeName(reply: ByteArray, from: Int): String {
     val end = (from until reply.size).firstOrNull { reply[it].toInt() == 0 } ?: reply.size
     return String(reply, from, end - from, Charsets.UTF_8)
 }
 
-/** Clock replies are `[0x23, now u32, (last set u32)]`. */
+/** Where `cfg_t` starts in a config reply: ATC sends `[0x55, firmware version, cfg_t...]`, THB2 `[0x55, cfg_t...]`. */
+private fun configOffset(firmware: Firmware) = when (firmware) {
+    Firmware.Atc -> 2
+    Firmware.Thb -> 1
+}
+
+internal fun configReplyLen(firmware: Firmware) = configOffset(firmware) + configLen(firmware)
+
+/** The caller checked the reply is [configReplyLen] long. */
+internal fun configFromReply(firmware: Firmware, reply: ByteArray): Config {
+    val at = configOffset(firmware)
+    return Config(reply.copyOfRange(at, at + configLen(firmware)), firmware)
+}
+
+/** Clock replies are `[0x23, now u32, (last set u32)]`; THB2 has no last-set time. */
 internal fun clockFromReply(reply: ByteArray, hostNowMs: Long) = ClockReading(
     deviceNow = reply.u32(1),
     lastSet = if (reply.size >= 9) reply.u32(5) else null,

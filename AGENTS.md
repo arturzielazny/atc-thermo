@@ -29,7 +29,7 @@ calibration coefficients over GATT. Linux (BlueZ via the `bluer` crate) and macO
 | `crates/thermo/src/calibrate.rs` | Glue from history to `calibration`, and from fits to coefficients. | portable |
 | `crates/thermo/src/level.rs` | Signal levelling: per-device median RSSI and the TX power change towards a common target. | portable |
 | `crates/thermo/src/ui/` | ratatui widgets. `chart.rs` axes and layout, `plot.rs` tiny-skia rasterizer, `kitty.rs` kitty graphics protocol via `/dev/shm` (`t=s`) or, where that is missing (macOS), a temp file (`t=t`), braille fallback in `chart.rs`. | portable |
-| `android/` | Android app (Kotlin, Compose): ports of `bthome`, `calibration`, the `atc` encodings and `app.rs`, plus an Android GATT client and scanner. ATC firmware only for now: THB2 devices show readings but take no commands. See `android/README.md`. | Android |
+| `android/` | Android app (Kotlin, Compose): ports of `bthome`, `calibration`, the `atc` encodings and `app.rs`, plus an Android GATT client and scanner, for ATC and THB2 firmware. See `android/README.md`. | Android |
 | `scripts/` | The original Python prototypes (`dbus-python`). Not used by the app. | Linux |
 | `site/` | GitHub Pages site, deployed by `.github/workflows/pages.yml`. Static HTML, no build step. | — |
 

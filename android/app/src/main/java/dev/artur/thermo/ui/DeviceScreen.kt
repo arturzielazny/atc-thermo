@@ -113,7 +113,7 @@ fun DeviceScreen(
                         Text(" %", fontSize = 18.sp, modifier = Modifier.padding(bottom = 4.dp))
                     }
                     Text("#${index + 1} · seen ${formatAgo(now - device.lastSeen)}", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    JobStatus(state.busy, state.queued, state.last)
+                    JobStatus(state.busy, state.queued, state.last, now)
                 }
             }
 
@@ -145,7 +145,7 @@ fun DeviceScreen(
                 Fact("Battery", listOfNotNull(device.battery?.let { "$it %" }, device.voltage?.let { "%.3f V".format(it) }).joinToString(" · ").ifEmpty { "–" })
                 Fact("Signal", "${device.rssi?.let { "$it dBm" } ?: "–"} now · ${device.typicalRssi?.let { "$it dBm" } ?: "–"} median (5 min)")
                 Fact("Clock", state.clockOffset?.let { formatOffset(it) + if (it >= 1.5) " ahead" else if (it <= -1.5) " behind" else "" } ?: "not measured yet")
-                Fact("Firmware", state.firmware?.let { "v$it" } ?: "–")
+                Fact("Firmware", state.firmware ?: "–")
                 state.coefficients?.let {
                     Fact("Temperature coefficients", "k ${it.temperatureGain} · z ${it.temperatureOffset}")
                     Fact("Humidity coefficients", "k ${it.humidityGain} · z ${it.humidityOffset}")

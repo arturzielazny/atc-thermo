@@ -142,9 +142,13 @@ pub struct DeviceState {
 #[derive(Debug)]
 pub enum Mode {
     Normal,
-    Rename { address: DeviceId, input: String },
+    Rename {
+        address: DeviceId,
+        input: String,
+    },
     Settings(SettingsForm),
-    Calibration(CalibrationScreen),
+    /// Boxed: with its fit it is much larger than the other modes.
+    Calibration(Box<CalibrationScreen>),
     Leveling(LevelingScreen),
 }
 
@@ -164,6 +168,9 @@ pub struct CalibrationScreen {
     pub end: Option<SystemTime>,
     /// Which edge `←`/`→` move.
     pub editing: WindowEdge,
+    /// The device the others are corrected to match (`r` picks it), or `None` for
+    /// their average. Always one of the compared devices.
+    pub reference: Option<DeviceId>,
     pub result: Option<Result<calibrate::Run, String>>,
     pub confirm: Option<Confirm>,
     computed_at: Option<Instant>,
@@ -569,9 +576,17 @@ impl App {
         let now = SystemTime::now();
         // A calibration since the screen opened moves the earliest usable data.
         screen.start = calibrate::window_start(screen.start, &devices, &self.last_calibrations);
+        screen.reference = screen.reference.filter(|r| devices.contains(r));
         let until = screen.end.unwrap_or(now);
         screen.result = Some(
-            calibrate::run(&self.devices, &devices, screen.start, until).map_err(|e| e.to_string()),
+            calibrate::run(
+                &self.devices,
+                &devices,
+                screen.start,
+                until,
+                screen.reference,
+            )
+            .map_err(|e| e.to_string()),
         );
         screen.computed_at = Some(Instant::now());
     }
@@ -684,14 +699,15 @@ impl App {
             KeyCode::Char('c') => {
                 let requested = SystemTime::now() - DEFAULT_CALIBRATION_SPAN;
                 let devices = self.compared_devices();
-                self.mode = Mode::Calibration(CalibrationScreen {
+                self.mode = Mode::Calibration(Box::new(CalibrationScreen {
                     start: calibrate::window_start(requested, &devices, &self.last_calibrations),
                     end: None,
                     editing: WindowEdge::Start,
+                    reference: None,
                     result: None,
                     confirm: None,
                     computed_at: None,
-                });
+                }));
                 self.refit();
             }
             KeyCode::Char('l') => {
@@ -789,7 +805,7 @@ impl App {
         self.mode = Mode::Settings(form);
     }
 
-    fn on_calibration_key(&mut self, key: KeyEvent, mut screen: CalibrationScreen) {
+    fn on_calibration_key(&mut self, key: KeyEvent, mut screen: Box<CalibrationScreen>) {
         let code = key.code;
         if let Some(confirm) = screen.confirm.take() {
             if code == KeyCode::Char('y') {
@@ -830,6 +846,10 @@ impl App {
                 }
             }
             KeyCode::Char('x') => screen.confirm = Some(Confirm::Reset),
+            KeyCode::Char(key @ ('r' | 'R')) => {
+                screen.reference = cycle(screen.reference, &self.compared_devices(), key == 'r');
+                screen.computed_at = None;
+            }
             KeyCode::Char('s') => {
                 let devices = self.compared_devices();
                 self.sync_clocks(&devices);
@@ -950,9 +970,9 @@ impl App {
         let jobs: Vec<(DeviceId, Correction, Correction)> = run
             .devices
             .iter()
-            .zip(&run.report.sensors)
-            .filter_map(|(&(address, _), sensor)| {
-                let (t, h) = calibrate::corrections(sensor);
+            .enumerate()
+            .filter_map(|(i, &(address, _))| {
+                let (t, h) = run.corrections(i);
                 (t.is_some() || h.is_some()).then(|| {
                     (
                         address,
@@ -985,6 +1005,17 @@ impl App {
         };
         self.selected = self.devices.iter().nth(next).map(|d| d.address);
     }
+}
+
+/// The reference after `current` in `None`, then each of `devices`, round again;
+/// backwards unless `forward`.
+fn cycle(current: Option<DeviceId>, devices: &[DeviceId], forward: bool) -> Option<DeviceId> {
+    let choices: Vec<Option<DeviceId>> = std::iter::once(None)
+        .chain(devices.iter().copied().map(Some))
+        .collect();
+    let at = choices.iter().position(|&c| c == current).unwrap_or(0);
+    let step = if forward { 1 } else { choices.len() - 1 };
+    choices[(at + step) % choices.len()]
 }
 
 /// `"ok"`, `"+12s"`, `"-3m"`, `"+2.4h"`.
@@ -1063,6 +1094,7 @@ mod tests {
             start: now - Duration::from_secs(3 * 3600),
             end: None,
             editing: WindowEdge::Start,
+            reference: None,
             result: None,
             confirm: None,
             computed_at: None,
@@ -1142,6 +1174,83 @@ mod tests {
 
     fn drain(rx: &mut UnboundedReceiver<Job>) -> Vec<Job> {
         std::iter::from_fn(|| rx.try_recv().ok()).collect()
+    }
+
+    #[test]
+    fn r_cycles_the_reference_through_the_compared_devices() {
+        let (mut app, _rx) = app_with_devices();
+        press(&mut app, KeyCode::Char('c'));
+        let reference = |app: &App| match &app.mode {
+            Mode::Calibration(screen) => screen.reference,
+            other => panic!("left calibration: {other:?}"),
+        };
+        assert_eq!(reference(&app), None);
+        for wanted in [Some(A), Some(B), None, Some(A)] {
+            press(&mut app, KeyCode::Char('r'));
+            assert_eq!(reference(&app), wanted);
+        }
+        press(&mut app, KeyCode::Char('R'));
+        assert_eq!(reference(&app), None);
+        press(&mut app, KeyCode::Char('R'));
+        assert_eq!(reference(&app), Some(B));
+    }
+
+    #[test]
+    fn the_reference_gets_no_correction_written() {
+        let (mut app, mut rx) = app_with_devices();
+        drain(&mut rx);
+        let fit = |offset| calibration::Fit {
+            gain: 1.0,
+            offset,
+            gain_fitted: false,
+            gain_stderr: 0.0,
+            residual_rms: 0.01,
+            lag: None,
+            outlier: false,
+            steady: Duration::from_secs(3 * 3600),
+        };
+        let quantity = calibration::QuantityReport {
+            steady: Duration::from_secs(3 * 3600),
+            range: (21.0, 22.0),
+            spread: calibration::Spread {
+                before: 0.2,
+                after: 0.01,
+            },
+        };
+        let now = SystemTime::now();
+        let run = |reference| calibrate::Run {
+            devices: vec![(A, "ATC_000001".into()), (B, "ATC_000002".into())],
+            since: now - Duration::from_secs(4 * 3600),
+            until: now,
+            report: calibration::Report {
+                sensors: vec![
+                    calibration::SensorReport {
+                        temperature: fit(0.0),
+                        humidity: fit(0.0),
+                    },
+                    calibration::SensorReport {
+                        temperature: fit(-0.3),
+                        humidity: fit(2.0),
+                    },
+                ],
+                temperature: quantity,
+                humidity: quantity,
+                phases: Vec::new(),
+            },
+            reference,
+        };
+        let written = |rx: &mut UnboundedReceiver<Job>| -> Vec<DeviceId> {
+            drain(rx)
+                .iter()
+                .filter(|j| matches!(j.action, Action::Calibrate { .. }))
+                .map(|j| j.address)
+                .collect()
+        };
+        app.apply_calibration(Some(&Ok(run(Some(A)))));
+        assert_eq!(written(&mut rx), [B]);
+        // Matching the group average writes both, an unchanged one included.
+        app.apply_calibration(Some(&Ok(run(None))));
+        assert_eq!(written(&mut rx), [A, B]);
     }
 
     #[test]

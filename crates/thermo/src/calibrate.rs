@@ -18,6 +18,28 @@ pub struct Run {
     pub since: SystemTime,
     pub until: SystemTime,
     pub report: Report,
+    /// The device the others were corrected to match, or `None` for the group
+    /// average.
+    pub reference: Option<DeviceId>,
+}
+
+impl Run {
+    /// The corrections to write to the device at `index` of [`Run::devices`]: none for
+    /// the reference, which defines what is correct.
+    pub fn corrections(&self, index: usize) -> (Option<Correction>, Option<Correction>) {
+        if self.is_reference(index) {
+            return (None, None);
+        }
+        self.report
+            .sensors
+            .get(index)
+            .map_or((None, None), corrections)
+    }
+
+    pub fn is_reference(&self, index: usize) -> bool {
+        self.reference
+            .is_some_and(|reference| self.devices.get(index).is_some_and(|d| d.0 == reference))
+    }
 }
 
 /// The window start: `requested`, but never before the last coefficient change of a
@@ -33,16 +55,19 @@ pub fn window_start(
         .fold(requested, |start, &changed| start.max(changed))
 }
 
-/// Fits corrections for `addresses` using their live samples in `since..until`.
+/// Fits corrections for `addresses` using their live samples in `since..until`, so
+/// they agree with their average or, with a `reference` among them, with that device.
 ///
 /// # Errors
 ///
-/// Fails if there are too few devices or too little steady data.
+/// Fails if there are too few devices or too little steady data, also from the
+/// reference.
 pub fn run(
     devices: &Devices,
     addresses: &[DeviceId],
     since: SystemTime,
     until: SystemTime,
+    reference: Option<DeviceId>,
 ) -> Result<Run, calibration::Error> {
     let mut names = Vec::new();
     let mut readings: Vec<Vec<Reading>> = Vec::new();
@@ -68,12 +93,19 @@ pub fn run(
         readings.push(samples);
     }
     let slices: Vec<&[Reading]> = readings.iter().map(Vec::as_slice).collect();
-    let report = calibration::calibrate(&slices, &Options::default())?;
+    // A reference that isn't among the devices (never heard) leaves the average.
+    let reference = reference.filter(|r| names.iter().any(|(a, _)| a == r));
+    let options = Options {
+        reference: reference.and_then(|r| names.iter().position(|(a, _)| *a == r)),
+        ..Options::default()
+    };
+    let report = calibration::calibrate(&slices, &options)?;
     Ok(Run {
         devices: names,
         since,
         until,
         report,
+        reference,
     })
 }
 
@@ -114,6 +146,7 @@ pub fn format(run: &Run) -> String {
         "Window: last {hours:.1} h, {} devices",
         run.devices.len()
     );
+    let _ = writeln!(out, "Corrected to: {}", reference_name(run));
     let _ = writeln!(
         out,
         "Steady data: {} min temperature, {} min humidity; range {:.1}–{:.1} °C, {:.0}–{:.0} %RH",
@@ -138,18 +171,29 @@ pub fn format(run: &Run) -> String {
         "\n{:<14} {:>9} {:>8} {:>7}  {:>9} {:>8} {:>7}  {:>6}  note",
         "device", "T offset", "T gain", "T rms", "H offset", "H gain", "H rms", "lag"
     );
-    for ((_, name), sensor) in run.devices.iter().zip(&r.sensors) {
+    for (i, ((_, name), sensor)) in run.devices.iter().zip(&r.sensors).enumerate() {
         let (t, h) = (sensor.temperature, sensor.humidity);
+        let note = if run.is_reference(i) {
+            "reference".to_owned()
+        } else {
+            notes(&t, &h)
+        };
         let _ = writeln!(
             out,
-            "{name:<14} {} {}  {:>6}  {}",
+            "{name:<14} {} {}  {:>6}  {note}",
             format_fit(&t, 2),
             format_fit(&h, 1),
             format_lag(t.lag),
-            notes(&t, &h)
         );
     }
     out
+}
+
+/// `the group average`, or the reference device's name.
+pub fn reference_name(run: &Run) -> String {
+    run.reference
+        .and_then(|r| run.devices.iter().find(|(a, _)| *a == r))
+        .map_or_else(|| "the group average".to_owned(), |(_, name)| name.clone())
 }
 
 /// Columns `offset gain rms` for one quantity.

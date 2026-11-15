@@ -63,8 +63,11 @@ be pinned by one of:
    (mean a = 1, mean b = 0). The devices then agree with their own average.
    With SHT4x (±0.2 °C, ±1.8 %RH typical) the average of four is usually
    better than any single one.
-2. **Reference device**: one thermometer is declared correct; the others
-   are fitted to it.
+2. **Reference device** (`r` on the calibration screen, `--match` offline): one
+   thermometer is declared correct; the others are corrected to read like it. The
+   fit is still the consensus one, so every device helps estimate how the others
+   differ; only the anchor (§4, step 7) moves to the reference. The reference
+   needs an hour of steady data of its own and gets nothing written.
 3. **Reference values**: typed in from a trusted instrument at some moments,
    or a humidity salt test: a sealed box over saturated NaCl solution holds
    75.3 %RH (MgCl₂: 33 %RH) at room temperature. This is the cheap gold
@@ -139,7 +142,9 @@ Temperature and humidity are handled independently.
    written, neither temperature nor humidity: both are measured in the same spot,
    so whatever set the device apart skews both fits.
 7. **Anchor** so that gains average 1 and offsets 0 over devices that are not
-   outliers and have at least an hour of usable data.
+   outliers and have at least an hour of usable data, or, with a reference device,
+   so that its correction is the identity (`gain_i / gain_ref`,
+   `(offset_i − offset_ref) / gain_ref`).
 8. **Apply** after confirmation: compose onto the device's current coefficients
    (`k' = a·k`, `z' = a·z + 100·b`), write with `0x25`, read back and verify, log old
    and new values to `calibrations.csv`. `x` on the calibration screen restores the

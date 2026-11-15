@@ -168,7 +168,7 @@ fn key_help(app: &App) -> Line<'static> {
         Mode::Rename { .. } => " type a name · Enter save (empty = default) · Esc cancel",
         Mode::Settings(_) => " ↑↓ field · ←→ value · Enter apply · Esc cancel",
         Mode::Calibration(_) => {
-            " Tab start/end · ←→ move 15 min (Shift: 1 h) · Enter apply · s sync clocks · x factory reset · mark devices (space/a) first to pick a subset · Esc back"
+            " Tab start/end · ←→ move 15 min (Shift: 1 h) · Enter apply · s sync clocks · r/R match a device · x factory reset · mark devices (space/a) first to pick a subset · Esc back"
         }
         Mode::Leveling(_) => {
             " ↑↓ select · space mark · a all · ←→ target 1 dB · Enter change TX power · x factory TX power · r listen anew · Esc back"

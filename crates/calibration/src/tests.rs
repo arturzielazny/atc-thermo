@@ -330,3 +330,58 @@ fn errors() {
     let one = simulate(&sensors()[..1], 6.0, None, 1);
     assert_eq!(run(&one), Err(Error::TooFewSensors(1)));
 }
+
+fn run_with_reference(data: &[Vec<Reading>], reference: usize) -> Result<Report, Error> {
+    let slices: Vec<&[Reading]> = data.iter().map(Vec::as_slice).collect();
+    let options = Options {
+        reference: Some(reference),
+        ..Options::default()
+    };
+    calibrate(&slices, &options)
+}
+
+#[test]
+fn others_are_corrected_to_read_like_the_reference() {
+    let truth = sensors();
+    let data = simulate(&truth, 14.0, Some((6.0 * HOUR, 10.0 * HOUR)), 7);
+    let reference = 1;
+    let report = run_with_reference(&data, reference).expect("enough data");
+
+    let own = report.sensors[reference];
+    for fit in [own.temperature, own.humidity] {
+        assert_eq!((fit.gain, fit.offset, fit.gain_fitted), (1.0, 0.0, false));
+    }
+    // At both places, every corrected reading matches what the reference reports.
+    let reads = |(gain, offset): (f64, f64), actual: f64| gain * actual + offset;
+    for (s, (fitted, sensor)) in report.sensors.iter().zip(&truth).enumerate() {
+        for actual in [8.0, 21.0] {
+            let wanted = reads(truth[reference].temperature, actual);
+            let got = fitted.temperature.apply(reads(sensor.temperature, actual));
+            assert!(
+                (got - wanted).abs() < 0.05,
+                "sensor {s} at {actual} °C: {got} vs {wanted}"
+            );
+        }
+        for actual in [55.0, 85.0] {
+            let wanted = reads(truth[reference].humidity, actual);
+            let got = fitted.humidity.apply(reads(sensor.humidity, actual));
+            assert!(
+                (got - wanted).abs() < 0.5,
+                "sensor {s} at {actual} %: {got} vs {wanted}"
+            );
+        }
+    }
+    // The group agrees as well as with the consensus anchor.
+    assert!(report.temperature.spread.after < 0.03);
+}
+
+#[test]
+fn a_reference_without_data_is_refused() {
+    let mut data = simulate(&sensors(), 6.0, None, 11);
+    data[2].clear();
+    assert!(matches!(
+        run_with_reference(&data, 2),
+        Err(Error::ReferenceNotSteady { steady, .. }) if steady == Duration::ZERO
+    ));
+    assert!(run_with_reference(&data, 0).is_ok());
+}

@@ -5,7 +5,8 @@
  * Sensors placed together measure the same air, so their disagreement is sensor error.
  * [calibrate] fits a linear correction `gain · reported + offset` per sensor such that
  * all sensors agree, anchored so the corrections average to zero over the sensors that
- * are not outliers. Durations are in seconds throughout.
+ * are not outliers, or to one reference sensor ([Options.reference]) declared correct.
+ * Durations are in seconds throughout.
  */
 package dev.artur.thermo.calibration
 
@@ -46,6 +47,11 @@ data class Options(
     val humidityOutlierFloor: Double = 1.5,
     /** Least steady temperature data needed for a result (and per sensor to count). */
     val minSteady: Double = 60 * 60.0,
+    /**
+     * Index of a sensor declared correct: the others are corrected to read like it, and its
+     * own correction is the identity. `null` anchors to the group average.
+     */
+    val reference: Int? = null,
 ) {
     /** Least time readings must span: half the steady window on both sides never counts. */
     val shortestSpan: Double get() = minSteady + steadyWindow
@@ -110,6 +116,12 @@ sealed class CalibrationError(message: String) : Exception(message) {
         "only ${(steady / 60).toLong()} steady minutes, need ${(needed / 60).toLong()}; " +
             "keep the sensors together and undisturbed longer"
     )
+
+    /** The reference ([Options.reference]) has too little steady data of its own. */
+    data class ReferenceNotSteady(val steady: Double, val needed: Double) : CalibrationError(
+        "the reference has only ${(steady / 60).toLong()} steady minutes alongside the others, " +
+            "need ${(needed / 60).toLong()}"
+    )
 }
 
 private enum class Quantity {
@@ -132,9 +144,12 @@ private typealias Grid = List<List<Double?>>
  * Fits corrections for co-located sensors; `sensors[i]` are sensor i's readings in any order.
  *
  * @throws CalibrationError with fewer than two sensors with readings, readings spanning
- * less than [Options.shortestSpan], or without [Options.minSteady] of steady temperature.
+ * less than [Options.shortestSpan], without [Options.minSteady] of steady temperature, or
+ * with a reference sensor that has less than that itself (in either quantity that is fitted).
+ * @throws IllegalArgumentException if [Options.reference] is not an index into [sensors].
  */
 fun calibrate(sensors: List<List<Reading>>, options: Options = Options()): Report {
+    options.reference?.let { require(it in sensors.indices) { "reference $it of ${sensors.size} sensors" } }
     val withData = sensors.count { it.isNotEmpty() }
     if (withData < 2) throw CalibrationError.TooFewSensors(withData)
     val bin = options.bin
@@ -156,12 +171,18 @@ fun calibrate(sensors: List<List<Reading>>, options: Options = Options()): Repor
     }
 
     val (tFits, tReport) = fitQuantity(temperature, temperatureRates, Quantity.Temperature, options)
-    val humiditySteady = bin * steadyBinCount(humidity)
-    val (hFits, hReport) = if (humiditySteady >= options.minSteady) {
+    val humidityFitted = bin * steadyBinCount(humidity) >= options.minSteady
+    val (hFits, hReport) = if (humidityFitted) {
         fitQuantity(humidity, humidityRates, Quantity.Humidity, options)
     } else {
         val identity = List(sensors.size) { Fit.IDENTITY }
         identity to quantityReport(humidity, identity, bin)
+    }
+    options.reference?.let { r ->
+        val referenceSteady = min(tFits[r].steady, if (humidityFitted) hFits[r].steady else Double.MAX_VALUE)
+        if (referenceSteady < options.minSteady) {
+            throw CalibrationError.ReferenceNotSteady(referenceSteady, options.minSteady)
+        }
     }
     val goodT = tFits.map { !it.outlier }
     return Report(
@@ -195,7 +216,24 @@ private fun fitQuantity(
     }
     // Sensors with too little data neither define nor shift the group average.
     val anchors = fits.map { !it.outlier && it.steady >= options.minSteady }
-    fits = anchor(fits, if (anchors.any { it }) anchors else good)
+    val reference = options.reference
+    fits = anchor(
+        fits,
+        when {
+            reference != null -> List(sensors) { it == reference }
+            anchors.any { it } -> anchors
+            else -> good
+        },
+    )
+    if (reference != null) {
+        // Others take over the reference's gain; it reads as it does.
+        val referenceGain = fits[reference].gainFitted
+        fits = fits.mapIndexed { i, fit ->
+            // The reference exactly the identity: `g · (1/g)` need not round to 1.
+            if (i == reference) fit.copy(gain = 1.0, offset = 0.0, gainFitted = false)
+            else fit.copy(gainFitted = fit.gainFitted || referenceGain)
+        }
+    }
     corrected = correctedGrid(grid, fits)
     fits = fits.mapIndexed { i, fit ->
         fit.copy(residualRms = residualRms(pairs(grid, rates, corrected, good, i), fit))

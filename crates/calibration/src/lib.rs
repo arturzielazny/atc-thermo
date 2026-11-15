@@ -15,7 +15,8 @@
 //! 4. use a gain only where the data spans enough range and the gain is
 //!    significantly different from 1, otherwise just an offset;
 //! 5. flag sensors whose correction is far from the others' as outliers, refit
-//!    without them, and anchor the result to the mean of the rest.
+//!    without them, and anchor the result to the mean of the rest, or to one
+//!    reference sensor ([`Options::reference`]) that is declared correct.
 
 mod robust;
 mod stats;
@@ -77,6 +78,11 @@ pub struct Options {
     /// Least steady temperature data needed for a result (and per sensor, for its fit
     /// to count as reliable).
     pub min_steady: Duration,
+    /// Index of a sensor declared correct: the others are corrected to read like it,
+    /// and its own correction is the identity. `None` anchors to the group average.
+    /// All sensors still form the consensus each one is compared with, so the
+    /// reference's own noise affects the others only through its overall fit.
+    pub reference: Option<usize>,
 }
 
 impl Options {
@@ -112,6 +118,7 @@ impl Default for Options {
             temperature_outlier_floor: 0.15,
             humidity_outlier_floor: 1.5,
             min_steady: Duration::from_secs(60 * 60),
+            reference: None,
         }
     }
 }
@@ -209,6 +216,9 @@ pub enum Error {
     TooShort { span: Duration, needed: Duration },
     /// Not enough steady, co-observed data yet.
     NotEnoughSteadyData { steady: Duration, needed: Duration },
+    /// The reference sensor ([`Options::reference`]) has too little steady data of
+    /// its own to say what the others should read.
+    ReferenceNotSteady { steady: Duration, needed: Duration },
 }
 
 impl fmt::Display for Error {
@@ -224,6 +234,12 @@ impl fmt::Display for Error {
             Self::NotEnoughSteadyData { steady, needed } => write!(
                 f,
                 "only {} steady minutes, need {}; keep the sensors together and undisturbed longer",
+                steady.as_secs() / 60,
+                needed.as_secs() / 60
+            ),
+            Self::ReferenceNotSteady { steady, needed } => write!(
+                f,
+                "the reference has only {} steady minutes alongside the others, need {}",
                 steady.as_secs() / 60,
                 needed.as_secs() / 60
             ),
@@ -291,9 +307,21 @@ type Grid = Vec<Vec<Option<f64>>>;
 /// # Errors
 ///
 /// Fails with fewer than two sensors with readings, readings spanning less than
-/// [`Options::shortest_span`], or without [`Options::min_steady`] of steady
-/// temperature data.
+/// [`Options::shortest_span`], without [`Options::min_steady`] of steady
+/// temperature data, or with a reference sensor that has less than that itself (in
+/// either quantity that is fitted).
+///
+/// # Panics
+///
+/// If [`Options::reference`] is not an index into `sensors`.
 pub fn calibrate(sensors: &[&[Reading]], options: &Options) -> Result<Report, Error> {
+    if let Some(reference) = options.reference {
+        assert!(
+            reference < sensors.len(),
+            "reference {reference} of {} sensors",
+            sensors.len()
+        );
+    }
     let with_data = sensors.iter().filter(|s| !s.is_empty()).count();
     if with_data < 2 {
         return Err(Error::TooFewSensors(with_data));
@@ -340,13 +368,27 @@ pub fn calibrate(sensors: &[&[Reading]], options: &Options) -> Result<Report, Er
     );
     let humidity_steady =
         options.bin * u32::try_from(steady_bin_count(&humidity)).unwrap_or(u32::MAX);
-    let (h_fits, h_report) = if humidity_steady >= options.min_steady {
+    let humidity_fitted = humidity_steady >= options.min_steady;
+    let (h_fits, h_report) = if humidity_fitted {
         fit_quantity(&humidity, &humidity_rates, Quantity::Humidity, options)
     } else {
         let identity = vec![Fit::IDENTITY; sensors.len()];
         let report = quantity_report(&humidity, &identity, options.bin);
         (identity, report)
     };
+    if let Some(reference) = options.reference {
+        let steady = t_fits[reference].steady.min(if humidity_fitted {
+            h_fits[reference].steady
+        } else {
+            Duration::MAX
+        });
+        if steady < options.min_steady {
+            return Err(Error::ReferenceNotSteady {
+                steady,
+                needed: options.min_steady,
+            });
+        }
+    }
     let good_t: Vec<bool> = t_fits.iter().map(|f| !f.outlier).collect();
     Ok(Report {
         sensors: t_fits
@@ -390,12 +432,25 @@ fn fit_quantity(
         .iter()
         .map(|f| !f.outlier && f.steady >= options.min_steady)
         .collect();
-    let anchors = if anchors.iter().any(|&a| a) {
+    let anchors = if let Some(reference) = options.reference {
+        (0..sensors).map(|i| i == reference).collect()
+    } else if anchors.iter().any(|&a| a) {
         anchors
     } else {
         good.clone()
     };
     anchor(&mut fits, &anchors);
+    if let Some(reference) = options.reference {
+        // Others take over the reference's gain; it reads as it does.
+        let reference_gain = fits[reference].gain_fitted;
+        for fit in &mut fits {
+            fit.gain_fitted |= reference_gain;
+        }
+        // Exactly the identity: `g · (1/g)` need not round to 1.
+        fits[reference].gain_fitted = false;
+        fits[reference].gain = 1.0;
+        fits[reference].offset = 0.0;
+    }
     let corrected = corrected_grid(grid, &fits);
     for (i, fit) in fits.iter_mut().enumerate() {
         let p = pairs(grid, rates, &corrected, &good, i);

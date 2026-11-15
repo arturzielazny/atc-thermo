@@ -30,7 +30,8 @@ Android support is still missing (see [android/README.md](android/README.md)).
   corrected for clock offset and drift.
 - **Consensus calibration:** no reference instrument needed. A robust fit pulls every
   device onto the group average, rejects outliers, fits gains only when the data spans
-  enough range, and writes the corrections to flash. See
+  enough range, and writes the corrections to flash. Or, with `r`, corrects them to
+  match one device you trust. See
   [the calibration guide](https://arturzielazny.github.io/atc-thermo/calibration.html)
   and [docs/calibration.md](docs/calibration.md).
 - **Clock sync with drift trim**: the clocks ran ~200 ppm fast here.
@@ -57,7 +58,8 @@ thermo
 macOS: see [docs/macos.md](docs/macos.md).
 
 `thermo calibrate 6` prints a calibration proposal for the last 6 hours of saved
-history without touching any device.
+history without touching any device; `thermo calibrate 6 --match Kitchen` (a name or
+MAC) corrects the others to read like that device instead of the group average.
 
 ### Flash the thermometers first
 
@@ -80,7 +82,7 @@ Chrome on Android works out of the box.
 | `e` | settings: advertising interval, measurement interval, TX power, log interval |
 | `d` | download the device log for the last 24 h |
 | `l` | signal levelling: `←` `→` target 1 dB, `Enter` change TX power, `x` factory TX power (both confirmed with `y`), `r` listen anew; mark devices there to level only those |
-| `c` | calibration screen: `Tab` start/end, `←` `→` move 15 min (`Shift`: 1 h), `Enter` apply, `x` factory reset |
+| `c` | calibration screen: `Tab` start/end, `←` `→` move 15 min (`Shift`: 1 h), `r` `R` match a device instead of the group average, `Enter` apply, `x` factory reset |
 | `t` `h` `r` · `w` · `p` | temperature / humidity / signal strength · chart time span · lines or points |
 | `q` | quit |
 

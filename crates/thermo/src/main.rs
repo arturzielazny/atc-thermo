@@ -1,7 +1,7 @@
 //! Live terminal dashboard for BTHome thermometers such as LYWSD03MMC on pvvx firmware.
 //!
-//! `thermo` starts the dashboard; `thermo calibrate [HOURS]` prints a calibration
-//! proposal from recorded history without touching any device.
+//! `thermo` starts the dashboard; `thermo calibrate [HOURS] [--match DEVICE]` prints a
+//! calibration proposal from recorded history without touching any device.
 
 mod app;
 mod calibrate;
@@ -37,17 +37,20 @@ async fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
         [] => dashboard().await,
-        ["calibrate"] => print_calibration(DEFAULT_CALIBRATION_HOURS),
-        ["calibrate", hours] => print_calibration(
-            hours
-                .trim_end_matches('h')
-                .parse()
-                .context("HOURS must be a whole number")?,
-        ),
+        ["calibrate"] => print_calibration(DEFAULT_CALIBRATION_HOURS, None),
+        ["calibrate", "--match", device] => {
+            print_calibration(DEFAULT_CALIBRATION_HOURS, Some(device))
+        }
+        ["calibrate", hours] => print_calibration(parse_hours(hours)?, None),
+        ["calibrate", hours, "--match", device] => {
+            print_calibration(parse_hours(hours)?, Some(device))
+        }
         ["-h" | "--help"] => {
             println!("usage: thermo               live dashboard");
             println!(
-                "       thermo calibrate [HOURS]  fit calibration on the last HOURS (default {DEFAULT_CALIBRATION_HOURS})"
+                "       thermo calibrate [HOURS] [--match DEVICE]\n\
+                 \x20                        fit calibration on the last HOURS (default {DEFAULT_CALIBRATION_HOURS}),\n\
+                 \x20                        so the devices agree with their average or with DEVICE (name or MAC)"
             );
             Ok(())
         }
@@ -61,7 +64,14 @@ fn open_store() -> Result<Store> {
         .and_then(Store::open)
 }
 
-fn print_calibration(hours: u32) -> Result<()> {
+fn parse_hours(hours: &str) -> Result<u32> {
+    hours
+        .trim_end_matches('h')
+        .parse()
+        .context("HOURS must be a whole number")
+}
+
+fn print_calibration(hours: u32, reference: Option<&str>) -> Result<()> {
     let mut app = App::new(None, None);
     app.use_store(open_store()?);
     if let Some(warning) = &app.warning {
@@ -72,7 +82,14 @@ fn print_calibration(hours: u32) -> Result<()> {
     let last_changes = open_store()?.last_calibrations()?;
     let requested = now - Duration::from_secs(u64::from(hours) * 3600);
     let since = calibrate::window_start(requested, &devices, &last_changes);
-    let run = calibrate::run(&app.devices, &devices, since, now)?;
+    let reference = reference
+        .map(|wanted| {
+            app.devices
+                .find(wanted)
+                .with_context(|| format!("no device named {wanted:?} in the saved history"))
+        })
+        .transpose()?;
+    let run = calibrate::run(&app.devices, &devices, since, now, reference)?;
     print!("{}", calibrate::format(&run));
     Ok(())
 }

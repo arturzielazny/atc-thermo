@@ -312,6 +312,19 @@ impl Devices {
         self.by_address.get(&address)
     }
 
+    /// The device whose address is `wanted` (a MAC, as `DeviceId` parses it) or whose
+    /// name it is, ignoring case.
+    pub fn find(&self, wanted: &str) -> Option<DeviceId> {
+        if let Ok(address) = wanted.parse::<DeviceId>()
+            && self.by_address.contains_key(&address)
+        {
+            return Some(address);
+        }
+        self.iter()
+            .find(|d| d.name.eq_ignore_ascii_case(wanted.trim()))
+            .map(|d| d.address)
+    }
+
     pub fn rename(&mut self, address: DeviceId, name: String) {
         if let Some(device) = self.by_address.get_mut(&address) {
             device.name = name;
@@ -356,6 +369,20 @@ mod tests {
         0x40, 0x00, 0xa4, 0x01, 0x57, 0x02, 0xc4, 0x08, 0x03, 0x3e, 0x16,
     ];
     const VOLTAGE: [u8; 10] = [0x40, 0x00, 0xa4, 0x0c, 0x91, 0x0b, 0x10, 0x00, 0x11, 0x01];
+
+    #[test]
+    fn devices_are_found_by_mac_or_name() {
+        let mut devices = Devices::default();
+        devices
+            .record(advert(&VOLTAGE, SystemTime::now()))
+            .expect("valid");
+        devices.rename(ADDR, "Kitchen".to_owned());
+        assert_eq!(devices.find("A4:C1:38:84:7E:FC"), Some(ADDR));
+        assert_eq!(devices.find("a4:c1:38:84:7e:fc"), Some(ADDR));
+        assert_eq!(devices.find("kitchen"), Some(ADDR));
+        assert_eq!(devices.find("Hall"), None);
+        assert_eq!(devices.find("A4:C1:38:00:00:00"), None);
+    }
 
     #[test]
     fn typical_rssi_is_the_recent_median() {

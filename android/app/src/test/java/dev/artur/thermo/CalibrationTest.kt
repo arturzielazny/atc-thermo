@@ -5,6 +5,7 @@ package dev.artur.thermo
 
 import dev.artur.thermo.calibration.CalibrationError
 import dev.artur.thermo.calibration.Fit
+import dev.artur.thermo.calibration.Options
 import dev.artur.thermo.calibration.Reading
 import dev.artur.thermo.calibration.Report
 import dev.artur.thermo.calibration.calibrate
@@ -218,5 +219,42 @@ class CalibrationTest {
             CalibrationError.TooFewSensors(1),
             assertFailsWith<CalibrationError> { calibrate(simulate(sensors().take(1), 6.0, null, 1)) },
         )
+    }
+
+    @Test
+    fun othersAreCorrectedToReadLikeTheReference() {
+        val truth = sensors()
+        val reference = 1
+        val report = calibrate(simulate(truth, 14.0, 6.0 * HOUR to 10.0 * HOUR, 7), Options(reference = reference))
+        val own = report.sensors[reference]
+        for (fit in listOf(own.temperature, own.humidity)) {
+            assertEquals(Triple(1.0, 0.0, false), Triple(fit.gain, fit.offset, fit.gainFitted))
+        }
+        // At both places, every corrected reading matches what the reference reports.
+        fun reads(sensor: Pair<Double, Double>, actual: Double) = sensor.first * actual + sensor.second
+        report.sensors.zip(truth).forEachIndexed { s, (fitted, sensor) ->
+            for (actual in listOf(8.0, 21.0)) {
+                val wanted = reads(truth[reference].temperature, actual)
+                val got = fitted.temperature.apply(reads(sensor.temperature, actual))
+                assertTrue(abs(got - wanted) < 0.05, "sensor $s at $actual °C: $got vs $wanted")
+            }
+            for (actual in listOf(55.0, 85.0)) {
+                val wanted = reads(truth[reference].humidity, actual)
+                val got = fitted.humidity.apply(reads(sensor.humidity, actual))
+                assertTrue(abs(got - wanted) < 0.5, "sensor $s at $actual %: $got vs $wanted")
+            }
+        }
+        assertTrue(report.temperature.spread.after < 0.03)
+    }
+
+    @Test
+    fun aReferenceWithoutDataIsRefused() {
+        val data = simulate(sensors(), 6.0, null, 11).toMutableList()
+        data[2] = emptyList()
+        assertEquals(
+            CalibrationError.ReferenceNotSteady(0.0, Options().minSteady),
+            assertFailsWith<CalibrationError> { calibrate(data, Options(reference = 2)) },
+        )
+        calibrate(data, Options(reference = 0))
     }
 }

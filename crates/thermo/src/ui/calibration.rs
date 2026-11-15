@@ -169,6 +169,8 @@ fn window_line(app: &App, screen: &CalibrationScreen) -> Line<'static> {
             WindowEdge::End,
         ),
         Span::from(format!("  {hours:.1} h")),
+        Span::from("   Corrected to "),
+        Span::from(format!(" {} ", reference_name(app, screen))).bold(),
     ];
     let earliest = app.earliest_calibration_start();
     if earliest > SystemTime::UNIX_EPOCH && screen.start <= earliest {
@@ -177,6 +179,18 @@ fn window_line(app: &App, screen: &CalibrationScreen) -> Line<'static> {
         );
     }
     Line::from(spans)
+}
+
+/// What `r` picked: `the group average`, or the reference device's name.
+fn reference_name(app: &App, screen: &CalibrationScreen) -> String {
+    screen.reference.map_or_else(
+        || "the group average".to_owned(),
+        |r| {
+            app.devices
+                .get(r)
+                .map_or_else(|| r.short(), |d| d.name.clone())
+        },
+    )
 }
 
 fn summary(run: &calibrate::Run) -> Vec<Line<'static>> {
@@ -219,7 +233,8 @@ fn table(run: &calibrate::Run) -> Table<'static> {
         .devices
         .iter()
         .zip(&run.report.sensors)
-        .map(|((_, name), sensor)| {
+        .enumerate()
+        .map(|(i, ((_, name), sensor))| {
             let (t, h) = (sensor.temperature, sensor.humidity);
             let gain = |fit: &calibration::Fit| {
                 if fit.gain_fitted {
@@ -228,7 +243,7 @@ fn table(run: &calibrate::Run) -> Table<'static> {
                     "–".to_owned()
                 }
             };
-            let (t_written, h_written) = calibrate::corrections(sensor);
+            let (t_written, h_written) = run.corrections(i);
             let mid = |range: (f64, f64)| f64::midpoint(range.0, range.1);
             let t_bar = bar(
                 net_correction(&t, mid(run.report.temperature.range)),
@@ -241,6 +256,7 @@ fn table(run: &calibrate::Run) -> Table<'static> {
                 h_written.is_some(),
             );
             let applies = match (t_written, h_written) {
+                _ if run.is_reference(i) => Cell::from("reference").bold(),
                 (Some(_), Some(_)) => Cell::from("✓").green(),
                 (None, None) => Cell::from(calibrate::notes(&t, &h)).yellow(),
                 _ => Cell::from(format!("partly: {}", calibrate::notes(&t, &h))).yellow(),
@@ -291,12 +307,9 @@ fn reset_prompt(devices: usize) -> Line<'static> {
 }
 
 fn footer(run: &calibrate::Run, screen: &CalibrationScreen, devices: usize) -> Line<'static> {
-    let applicable = run
-        .report
-        .sensors
-        .iter()
-        .filter(|s| {
-            let (t, h) = calibrate::corrections(s);
+    let applicable = (0..run.devices.len())
+        .filter(|&i| {
+            let (t, h) = run.corrections(i);
             t.is_some() || h.is_some()
         })
         .count();

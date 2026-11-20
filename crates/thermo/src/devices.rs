@@ -1,5 +1,6 @@
 //! Latest readings and history of every BTHome device heard so far.
 
+use std::cmp::Reverse;
 use std::collections::{BTreeMap, VecDeque};
 use std::time::{Duration, SystemTime};
 
@@ -98,7 +99,9 @@ impl Device {
 
     /// Median signal strength of the adverts in the last [`RSSI_SPAN`] the device was
     /// heard, or the latest one known. Single adverts jump by several dB from channel
-    /// to channel and fade to fade; the median shows the usual level.
+    /// to channel and fade to fade; the median shows the usual level. It starts empty
+    /// each run, from the first advert is the median of the adverts so far, and once
+    /// they span [`RSSI_SPAN`] slides along.
     pub fn typical_rssi(&self) -> Option<i16> {
         let mut values: Vec<i16> = self.recent_rssi.iter().map(|&(_, rssi)| rssi).collect();
         median_rssi(&mut values).or(self.rssi)
@@ -207,10 +210,24 @@ pub fn median_rssi(values: &mut [i16]) -> Option<i16> {
     })
 }
 
-/// All known devices, ordered by address so the order (and colors) are stable between runs.
+/// How [`Devices::iter`] orders the devices, and so their numbers and colors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Order {
+    /// By address, so the order is the same between runs.
+    #[default]
+    Address,
+    /// By [`Device::typical_rssi`] when sorted, strongest first. The order then stays
+    /// put; devices first heard later come last.
+    Signal,
+}
+
+/// All known devices, in an [`Order`].
 #[derive(Debug, Default)]
 pub struct Devices {
     by_address: BTreeMap<DeviceId, Device>,
+    /// Every key of `by_address` once, in `sorted_by` order.
+    order: Vec<DeviceId>,
+    sorted_by: Order,
 }
 
 impl Devices {
@@ -223,10 +240,7 @@ impl Devices {
     /// Returns the decode error if the payload is not valid BTHome v2. The device's
     /// name, signal strength and last-seen time are still updated.
     pub fn record(&mut self, advert: Advert) -> Result<Option<Measurement>, ParseError> {
-        let device = self
-            .by_address
-            .entry(advert.address)
-            .or_insert_with(|| Device::new(advert.address, advert.name.clone(), advert.received));
+        let device = self.entry(advert.address, &advert.name, advert.received);
         device.name = advert.name;
         device.rssi = advert.rssi.or(device.rssi);
         if let Some(rssi) = advert.rssi {
@@ -254,6 +268,20 @@ impl Devices {
         Ok(measurement)
     }
 
+    /// The device at `address`, added (as `name`, first seen at `seen`) if it is new.
+    fn entry(&mut self, address: DeviceId, name: &str, seen: SystemTime) -> &mut Device {
+        if !self.by_address.contains_key(&address) {
+            let at = match self.sorted_by {
+                Order::Address => self.order.partition_point(|&a| a < address),
+                Order::Signal => self.order.len(),
+            };
+            self.order.insert(at, address);
+        }
+        self.by_address
+            .entry(address)
+            .or_insert_with(|| Device::new(address, name.to_owned(), seen))
+    }
+
     /// Adds a measurement loaded from disk. Call in chronological order.
     pub fn restore(&mut self, measurement: Measurement) {
         let Measurement {
@@ -263,10 +291,7 @@ impl Devices {
             battery,
             voltage,
         } = measurement;
-        let device = self
-            .by_address
-            .entry(address)
-            .or_insert_with(|| Device::new(address, name.clone(), sample.at));
+        let device = self.entry(address, &name, sample.at);
         device.name = name;
         if sample.at >= device.last_seen {
             device.temperature = Some(sample.temperature);
@@ -331,8 +356,32 @@ impl Devices {
         }
     }
 
+    /// The devices in [`Devices::order`].
     pub fn iter(&self) -> impl Iterator<Item = &Device> {
-        self.by_address.values()
+        self.order.iter().filter_map(|a| self.by_address.get(a))
+    }
+
+    /// The order last sorted in.
+    pub fn order(&self) -> Order {
+        self.sorted_by
+    }
+
+    /// Puts the devices in `order`; [`Order::Signal`] by their signal strength now.
+    pub fn sort(&mut self, order: Order) {
+        self.sorted_by = order;
+        match order {
+            Order::Address => self.order.sort_unstable(),
+            Order::Signal => {
+                let by_address = &self.by_address;
+                // `Reverse(None)` sorts after every `Reverse(Some(_))`: unheard ones last.
+                self.order.sort_by_cached_key(|a| {
+                    (
+                        Reverse(by_address.get(a).and_then(Device::typical_rssi)),
+                        *a,
+                    )
+                });
+            }
+        }
     }
 
     pub fn len(&self) -> usize {
@@ -501,5 +550,42 @@ mod tests {
         assert_eq!(d.history()[1].source, Source::Log);
         // Live values stay those of the newest live advert.
         assert_eq!(d.temperature, Some(22.44));
+    }
+
+    #[test]
+    fn signal_order_puts_the_strongest_first_and_new_devices_last() {
+        let now = SystemTime::now();
+        let heard = |devices: &mut Devices, last: u8, rssi: i16| {
+            let mut advert = advert(&VOLTAGE, now);
+            advert.address = DeviceId::Mac([0xa4, 0xc1, 0x38, 0, 0, last]);
+            advert.rssi = Some(rssi);
+            devices.record(advert).expect("valid");
+        };
+        let lasts = |devices: &Devices| -> Vec<u8> {
+            devices
+                .iter()
+                .map(|d| match d.address {
+                    DeviceId::Mac(mac) => mac[5],
+                    DeviceId::Uuid(_) => unreachable!(),
+                })
+                .collect()
+        };
+        let mut devices = Devices::default();
+        heard(&mut devices, 3, -80);
+        heard(&mut devices, 1, -70);
+        heard(&mut devices, 2, -40);
+        assert_eq!(lasts(&devices), [1, 2, 3], "by address at first");
+
+        devices.sort(Order::Signal);
+        assert_eq!(lasts(&devices), [2, 1, 3]);
+        // A device heard later goes last, and changing signals don't reorder.
+        heard(&mut devices, 0, -30);
+        heard(&mut devices, 3, -20);
+        assert_eq!(lasts(&devices), [2, 1, 3, 0]);
+
+        devices.sort(Order::Address);
+        assert_eq!(lasts(&devices), [0, 1, 2, 3]);
+        heard(&mut devices, 4, -90);
+        assert_eq!(lasts(&devices), [0, 1, 2, 3, 4]);
     }
 }

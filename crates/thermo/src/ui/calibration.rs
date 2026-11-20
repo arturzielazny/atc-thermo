@@ -91,7 +91,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App, screen: &CalibrationScre
         None => None,
         Some(Err(err)) => Some(err),
         Some(Ok(run)) => {
-            render_run(frame, inner, run, screen, devices.len());
+            render_run(frame, inner, app, run, screen, devices.len());
             return;
         }
     };
@@ -122,6 +122,7 @@ fn no_result(err: Option<&str>, confirm: Option<Confirm>, devices: usize) -> Vec
 fn render_run(
     frame: &mut Frame,
     inner: Rect,
+    app: &App,
     run: &calibrate::Run,
     screen: &CalibrationScreen,
     devices: usize,
@@ -133,7 +134,7 @@ fn render_run(
     ])
     .areas(inner);
     frame.render_widget(Paragraph::new(summary(run)), summary_area);
-    frame.render_widget(table(run), table_area);
+    frame.render_widget(table(app, run), table_area);
     frame.render_widget(footer(run, screen, devices), footer_area);
 }
 
@@ -186,9 +187,14 @@ fn reference_name(app: &App, screen: &CalibrationScreen) -> String {
     screen.reference.map_or_else(
         || "the group average".to_owned(),
         |r| {
-            app.devices
+            let name = app
+                .devices
                 .get(r)
-                .map_or_else(|| r.short(), |d| d.name.clone())
+                .map_or_else(|| r.short(), |d| d.name.clone());
+            match app.device_number(r) {
+                Some(number) => format!("#{number} {name}"),
+                None => name,
+            }
         },
     )
 }
@@ -223,9 +229,10 @@ fn summary(run: &calibrate::Run) -> Vec<Line<'static>> {
     ]
 }
 
-fn table(run: &calibrate::Run) -> Table<'static> {
+/// One row per device, with its `#` from the device table.
+fn table(app: &App, run: &calibrate::Run) -> Table<'static> {
     let header = Row::new([
-        "Device", "T offset", "", "T gain", "T rms", "Lag", "H offset", "", "H gain", "H rms",
+        "#", "Device", "T offset", "", "T gain", "T rms", "Lag", "H offset", "", "H gain", "H rms",
         "Applies",
     ])
     .style(Style::new().bold());
@@ -234,7 +241,7 @@ fn table(run: &calibrate::Run) -> Table<'static> {
         .iter()
         .zip(&run.report.sensors)
         .enumerate()
-        .map(|(i, ((_, name), sensor))| {
+        .map(|(i, ((address, name), sensor))| {
             let (t, h) = (sensor.temperature, sensor.humidity);
             let gain = |fit: &calibration::Fit| {
                 if fit.gain_fitted {
@@ -261,7 +268,11 @@ fn table(run: &calibrate::Run) -> Table<'static> {
                 (None, None) => Cell::from(calibrate::notes(&t, &h)).yellow(),
                 _ => Cell::from(format!("partly: {}", calibrate::notes(&t, &h))).yellow(),
             };
+            let number = app
+                .device_number(*address)
+                .map_or_else(String::new, |n| n.to_string());
             Row::new([
+                Cell::from(number),
                 Cell::from(name.clone()),
                 Cell::from(format!("{:+.3} °C", t.offset)),
                 Cell::from(t_bar),
@@ -279,6 +290,7 @@ fn table(run: &calibrate::Run) -> Table<'static> {
     Table::new(
         rows,
         [
+            Constraint::Length(2),
             Constraint::Length(16),
             Constraint::Length(10),
             Constraint::Length(BAR_WIDTH),

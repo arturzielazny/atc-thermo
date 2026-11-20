@@ -83,6 +83,7 @@ Chrome on Android works out of the box.
 | `l` | signal levelling: `←` `→` target 1 dB, `Enter` change TX power, `x` factory TX power (both confirmed with `y`), `r` listen anew; mark devices there to level only those |
 | `c` | calibration screen: `Tab` start/end, `←` `→` move 15 min (`Shift`: 1 h), `r` `R` match a device instead of the group average, `Enter` apply, `x` factory reset |
 | `t` `h` `r` · `w` · `p` | temperature / humidity / signal strength · chart time span · lines or points |
+| `o` | order the table by address, or by signal strength now (strongest first, numbered from 1; devices heard later go last) |
 | `q` | quit |
 
 ## Calibrating in short

@@ -10,7 +10,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::calibrate;
-use crate::devices::{Devices, HISTORY_SPAN, LoggedSample, Sample};
+use crate::devices::{Devices, HISTORY_SPAN, LoggedSample, Order, Sample};
 use crate::forms::SettingsForm;
 use crate::jobs::{Action, IDENTIFY_DURATION, Job, JobEvent, Outcome, RateTrim};
 use crate::level::LevelingScreen;
@@ -305,7 +305,7 @@ impl App {
         if self.marked.is_empty() {
             self.selected.into_iter().collect()
         } else {
-            self.marked.iter().copied().collect()
+            self.marked_devices()
         }
     }
 
@@ -313,7 +313,7 @@ impl App {
     /// two, else all.
     pub fn compared_devices(&self) -> Vec<DeviceId> {
         if self.marked.len() >= 2 {
-            self.marked.iter().copied().collect()
+            self.marked_devices()
         } else {
             self.devices.iter().map(|d| d.address).collect()
         }
@@ -324,8 +324,17 @@ impl App {
         if self.marked.is_empty() {
             self.devices.iter().map(|d| d.address).collect()
         } else {
-            self.marked.iter().copied().collect()
+            self.marked_devices()
         }
+    }
+
+    /// The marked devices in table order, so lists of them follow the `#` numbers.
+    fn marked_devices(&self) -> Vec<DeviceId> {
+        self.devices
+            .iter()
+            .map(|d| d.address)
+            .filter(|a| self.marked.contains(a))
+            .collect()
     }
 
     pub fn on_scan_event(&mut self, event: ScanEvent) {
@@ -657,6 +666,10 @@ impl App {
                 };
             }
             KeyCode::Char('w') => self.window_index = (self.window_index + 1) % WINDOWS.len(),
+            KeyCode::Char('o') => self.devices.sort(match self.devices.order() {
+                Order::Address => Order::Signal,
+                Order::Signal => Order::Address,
+            }),
             KeyCode::Char('p') => {
                 self.style = match self.style {
                     ChartStyle::Lines => ChartStyle::Points,
@@ -1193,6 +1206,50 @@ mod tests {
         assert_eq!(reference(&app), None);
         press(&mut app, KeyCode::Char('R'));
         assert_eq!(reference(&app), Some(B));
+    }
+
+    #[test]
+    fn o_numbers_devices_by_signal_for_marking_and_calibration() {
+        const NEAR: DeviceId = DeviceId::Mac([0xa4, 0xc1, 0x38, 0, 0, 3]);
+        let (mut app, mut rx) = app_with_devices();
+        app.on_scan_event(ScanEvent::Advert(Advert {
+            address: NEAR,
+            name: "ATC_000003".to_owned(),
+            rssi: Some(-30),
+            payload: MEASUREMENT.to_vec(),
+            received: SystemTime::now(),
+        }));
+        drain(&mut rx);
+        assert_eq!(app.device_number(NEAR), Some(3));
+
+        press(&mut app, KeyCode::Char('o'));
+        assert_eq!(app.devices.order(), Order::Signal);
+        assert_eq!(app.device_number(NEAR), Some(1));
+        assert_eq!(app.device_number(A), Some(2));
+        // Mark the two nearest from the top: they are compared, nearest first.
+        for code in [KeyCode::Down, KeyCode::Char(' '), KeyCode::Char(' ')] {
+            press(&mut app, code);
+        }
+        assert_eq!(app.compared_devices(), [NEAR, A]);
+        press(&mut app, KeyCode::Char('i'));
+        let numbers: Vec<(DeviceId, u8)> = drain(&mut rx)
+            .into_iter()
+            .filter_map(|job| match job.action {
+                Action::Identify { number } => Some((job.address, number)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(numbers, [(NEAR, 1), (A, 2)]);
+        press(&mut app, KeyCode::Char('c'));
+        press(&mut app, KeyCode::Char('r'));
+        let Mode::Calibration(screen) = &app.mode else {
+            panic!("calibration screen")
+        };
+        assert_eq!(screen.reference, Some(NEAR));
+
+        press(&mut app, KeyCode::Esc);
+        press(&mut app, KeyCode::Char('o'));
+        assert_eq!(app.device_number(NEAR), Some(3), "back to address order");
     }
 
     #[test]

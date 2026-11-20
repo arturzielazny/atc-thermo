@@ -10,7 +10,7 @@ use ratatui::widgets::{Block, Cell, Row, Table, TableState};
 
 use super::{device_color, ratatui_color};
 use crate::app::{App, format_offset};
-use crate::devices::{Device, RSSI_FINE, RSSI_MARGINAL};
+use crate::devices::{Device, Order, RSSI_FINE, RSSI_MARGINAL};
 
 /// Rows of devices not heard from for this long are dimmed.
 const STALE_AFTER: Duration = Duration::from_secs(120);
@@ -66,11 +66,17 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         .iter()
         .filter(|d| app.is_marked(d.address))
         .count();
-    let title = if marked > 0 {
-        format!(" Devices ({}, {marked} marked) ", app.devices.len())
+    let count = app.devices.len();
+    let counts = if marked > 0 {
+        format!("{count}, {marked} marked")
     } else {
-        format!(" Devices ({}) ", app.devices.len())
+        count.to_string()
     };
+    let order = match app.devices.order() {
+        Order::Address => "",
+        Order::Signal => " · by signal",
+    };
+    let title = format!(" Devices ({counts}){order} ");
     let table = Table::new(rows, widths)
         .header(header)
         .block(Block::bordered().title(title))

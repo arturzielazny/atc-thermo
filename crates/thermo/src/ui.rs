@@ -163,7 +163,7 @@ fn status_line(app: &App) -> Line<'_> {
 fn key_help(app: &App) -> Line<'static> {
     let help = match &app.mode {
         Mode::Normal => {
-            " ↑↓ select · space mark · a all · i identify · n rename · s sync clock · e settings · d download log · c calibrate · l level signal · t/h/r metric · w window · p points · q quit"
+            " ↑↓ select · space mark · a all · i identify · n rename · s sync clock · e settings · d download log · c calibrate · l level signal · t/h/r metric · w window · p points · o order by address/signal · q quit"
         }
         Mode::Rename { .. } => " type a name · Enter save (empty = default) · Esc cancel",
         Mode::Settings(_) => " ↑↓ field · ←→ value · Enter apply · Esc cancel",

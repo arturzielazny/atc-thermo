@@ -228,6 +228,36 @@ fn transients_are_not_steady() {
 }
 
 #[test]
+fn even_and_small_groups_agree_after_correction() {
+    // Evenly spread errors are the hardest case for the rounds: compared with the
+    // others only, two sensors swapped errors forever and four kept 0.13 °C.
+    for count in [2_u32, 3, 4, 6] {
+        let spread = |i: u32, half: f64| -half + 2.0 * half * f64::from(i) / f64::from(count - 1);
+        let truth: Vec<Sensor> = (0..count)
+            .map(|i| Sensor {
+                temperature: (1.0, spread(i, 0.4)),
+                humidity: (1.0, spread(i, 3.0)),
+                lag: 300.0 + 60.0 * f64::from(i),
+            })
+            .collect();
+        let data = simulate(&truth, 6.0, None, 17);
+        let report = run(&data).expect("enough data");
+        for (s, (fitted, sensor)) in report.sensors.iter().zip(&truth).enumerate() {
+            // Anchored to the average, which is the true value here.
+            let t = fitted.temperature.apply(21.0 + sensor.temperature.1);
+            let h = fitted.humidity.apply(55.0 + sensor.humidity.1);
+            assert!((t - 21.0).abs() < 0.02, "{count} sensors, #{s}: {t} °C");
+            assert!((h - 55.0).abs() < 0.2, "{count} sensors, #{s}: {h} %");
+        }
+        assert!(
+            report.temperature.spread.after < 0.03,
+            "{count} sensors: {:?}",
+            report.temperature.spread
+        );
+    }
+}
+
+#[test]
 fn copes_with_lossy_reception() {
     // Keep only ~30 % of readings, like a laptop receiving every third advert.
     let mut rng = Rng(99);

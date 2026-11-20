@@ -176,6 +176,27 @@ class CalibrationTest {
     }
 
     @Test
+    fun evenAndSmallGroupsAgreeAfterCorrection() {
+        // Evenly spread errors are the hardest case for the rounds: compared with the
+        // others only, two sensors swapped errors forever and four kept 0.13 °C.
+        for (count in listOf(2, 3, 4, 6)) {
+            fun spread(i: Int, half: Double) = -half + 2.0 * half * i / (count - 1)
+            val truth = (0 until count).map { i ->
+                Sensor(1.0 to spread(i, 0.4), 1.0 to spread(i, 3.0), 300.0 + 60.0 * i)
+            }
+            val report = calibrate(simulate(truth, 6.0, null, 17))
+            report.sensors.zip(truth).forEachIndexed { s, (fitted, sensor) ->
+                // Anchored to the average, which is the true value here.
+                val t = fitted.temperature.apply(21.0 + sensor.temperature.second)
+                val h = fitted.humidity.apply(55.0 + sensor.humidity.second)
+                assertTrue(abs(t - 21.0) < 0.02, "$count sensors, #$s: $t °C")
+                assertTrue(abs(h - 55.0) < 0.2, "$count sensors, #$s: $h %")
+            }
+            assertTrue(report.temperature.spread.after < 0.03, "$count sensors: ${report.temperature.spread}")
+        }
+    }
+
+    @Test
     fun copesWithLossyReception() {
         val rng = Rng(99)
         val data = simulate(sensors(), 6.0, null, 13).map { r -> r.filter { rng.uniform() < 0.3 } }

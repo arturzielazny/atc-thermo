@@ -135,7 +135,7 @@ humidity    = raw × k_H + z_H</code></pre>
   <ol>
     <li><strong>Resample</strong> every device to 5-minute bins. Bluetooth reception is lossy, and finer bins would be mostly empty.</li>
     <li><strong>Keep only steady data.</strong> A bin counts if, over 30 minutes, neither the group median nor the device moved more than 0.75 °C / 3.5 %RH, and the group didn't jump by 2 °C / 10 %RH in the hour before. Slow drifts, like a room cooling in the evening, are fine.</li>
-    <li><strong>Fit each device against the median of the others</strong> with a robust Huber regression. An extra term absorbs case lag: devices responded up to six minutes apart, which during a slow drift looks like a fake offset.</li>
+    <li><strong>Fit each device against the median of the group, itself included,</strong> with a robust Huber regression, a few rounds over the corrected readings. Leaving the device out would make an even number of devices swing from round to round; two would swap their errors forever. An extra term absorbs case lag: devices responded up to six minutes apart, which during a slow drift looks like a fake offset.</li>
     <li><strong>Reject outliers.</strong> With four or more devices, one whose correction has a robust z-score above 3.5 is left out of the average, and nothing is written to it. Whatever set it apart probably skews both its temperature and humidity.</li>
     <li><strong>Anchor</strong> the set so gains average 1 and offsets 0, then compose onto each device's current coefficients (<code>k′ = a·k</code>, <code>z′ = a·z + 100·b</code>). The new values are read back to verify and logged. Calibrating again later builds on the last calibration.</li>
   </ol>

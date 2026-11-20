@@ -126,14 +126,21 @@ Temperature and humidity are handled independently.
    the bin and must lie within the data, so the first and last 15 minutes never
    count: with at least an hour of usable data required, the shortest possible
    window is 1.5 h (the calibration screen offers 2 h and up).
-4. **Fit** each device against the median of the others (robust Huber regression,
-   iterated four times):
+4. **Fit** each device against the median of the group, itself included (robust
+   Huber regression, four rounds, each against the readings as the previous one
+   corrected them, then a last round against the others only):
    `reference ≈ gain · reading + offset + k · rate`, where `rate` is the device's own
    rate of change. The `k · rate` term absorbs case *lag*: in real data the devices
    responded up to ~6 minutes apart, which during a 1 °C/h drift looked like a
    0.1 °C offset. Lag is modelled only when rates vary enough to tell it from an
    offset (a constant drift makes the two indistinguishable); it is reported but
-   cannot be written to the firmware.
+   cannot be written to the firmware. The device itself counts in the median:
+   compared with the others only, an even number of devices swings from round to
+   round, and two devices swap their errors every round and are never corrected.
+   Both settle on the same corrections, but with itself in the median a device's
+   lag looks ~150 s smaller (corrections don't include lag, so the median shares
+   it); the last round, from settled corrections, measures lag against the others,
+   as do the residuals reported afterwards.
 5. **Gain or offset only.** A gain is fitted only if the steady data spans ≥ 5 °C /
    15 %RH and differs from 1 by more than two standard errors.
 6. **Outliers.** With four or more devices, a device whose correction at the typical

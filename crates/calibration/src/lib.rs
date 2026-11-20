@@ -10,8 +10,9 @@
 //! 1. resample every sensor onto a common time grid ([`Options::bin`]);
 //! 2. keep only readings taken while both the group and the sensor itself were
 //!    steady, so transients after moving the sensors (which differ per case) are ignored;
-//! 3. fit each sensor against the median of the others with a robust (Huber)
-//!    regression, iterating a few times;
+//! 3. fit each sensor against the median of the group, itself included, with a
+//!    robust (Huber) regression, iterating a few times, then once against the
+//!    others only, for lag;
 //! 4. use a gain only where the data spans enough range and the gain is
 //!    significantly different from 1, otherwise just an offset;
 //! 5. flag sensors whose correction is far from the others' as outliers, refit
@@ -423,7 +424,7 @@ fn fit_quantity(
     }
     let corrected = corrected_grid(grid, &fits);
     for (i, fit) in fits.iter_mut().enumerate() {
-        let p = pairs(grid, rates, &corrected, &good, i);
+        let p = pairs(grid, rates, &corrected, &good, i, false);
         fit.outlier = !good[i];
         fit.steady = options.bin * u32::try_from(p.xs.len()).unwrap_or(u32::MAX);
     }
@@ -453,7 +454,7 @@ fn fit_quantity(
     }
     let corrected = corrected_grid(grid, &fits);
     for (i, fit) in fits.iter_mut().enumerate() {
-        let p = pairs(grid, rates, &corrected, &good, i);
+        let p = pairs(grid, rates, &corrected, &good, i, false);
         fit.residual_rms = residual_rms(&p, fit);
     }
     let report = quantity_report(grid, &fits, options.bin);
@@ -589,7 +590,17 @@ fn range(values: &[Option<f64>]) -> f64 {
     if lo <= hi { hi - lo } else { 0.0 }
 }
 
-/// Iteratively fits every sensor against the median of the other included sensors.
+/// Iteratively fits every sensor against the median of the included sensors, itself
+/// among them, as corrected by the previous round; then once more against the others
+/// only.
+///
+/// Leaving the sensor itself out makes the rounds swing with an even number of
+/// sensors: two sensors each take on the other's error and swap every round, so
+/// none is ever corrected. With itself in the median, two sensors meet halfway in
+/// one round, and larger groups settle as fast. Both settle on the same corrections,
+/// but corrections don't include lag, so a median holding the sensor's own reading
+/// shares its lag and makes it look smaller (by ~150 s on real data). The last round,
+/// starting from settled corrections, measures lag against the others.
 fn fit_all(
     grid: &Grid,
     rates: &Grid,
@@ -599,10 +610,14 @@ fn fit_all(
 ) -> Vec<Fit> {
     const ITERATIONS: usize = 4;
     let mut fits = vec![Fit::IDENTITY; include.len()];
-    for _ in 0..ITERATIONS {
+    for round in 0..=ITERATIONS {
         let corrected = corrected_grid(grid, &fits);
+        let itself = round < ITERATIONS;
         fits = (0..include.len())
-            .map(|i| fit_sensor(grid, rates, &corrected, include, i, quantity, options))
+            .map(|i| {
+                let p = pairs(grid, rates, &corrected, include, i, itself);
+                fit_sensor(p, quantity, options)
+            })
             .collect();
     }
     fits
@@ -640,7 +655,10 @@ fn corrected_grid(grid: &Grid, fits: &[Fit]) -> Grid {
         .collect()
 }
 
-/// Readings of one sensor paired with the median of the other included sensors.
+/// Readings of one sensor paired with the median of the other included sensors in
+/// `reference`, in bins where any of them has a value. With `itself`, an included
+/// sensor's own `reference` value joins that median (see [`fit_all`]); without it the
+/// pairs say how the sensor compares with the rest, as reported.
 struct Pairs {
     xs: Vec<f64>,
     ys: Vec<f64>,
@@ -648,7 +666,14 @@ struct Pairs {
     rates: Vec<Option<f64>>,
 }
 
-fn pairs(grid: &Grid, rates: &Grid, reference: &Grid, include: &[bool], i: usize) -> Pairs {
+fn pairs(
+    grid: &Grid,
+    rates: &Grid,
+    reference: &Grid,
+    include: &[bool],
+    i: usize,
+    itself: bool,
+) -> Pairs {
     let mut others = include.to_vec();
     others[i] = false;
     if !others.iter().any(|&o| o) {
@@ -663,13 +688,19 @@ fn pairs(grid: &Grid, rates: &Grid, reference: &Grid, include: &[bool], i: usize
     };
     for ((row, rate_row), ref_row) in grid.iter().zip(rates).zip(reference) {
         let Some(x) = row[i] else { continue };
-        let values: Vec<f64> = ref_row
+        let mut values: Vec<f64> = ref_row
             .iter()
             .zip(&others)
             .filter_map(|(c, &o)| c.filter(|_| o))
             .collect();
         if values.is_empty() {
             continue;
+        }
+        if itself
+            && include[i]
+            && let Some(own) = ref_row[i]
+        {
+            values.push(own);
         }
         p.xs.push(x);
         p.ys.push(median(&values));
@@ -678,16 +709,8 @@ fn pairs(grid: &Grid, rates: &Grid, reference: &Grid, include: &[bool], i: usize
     p
 }
 
-fn fit_sensor(
-    grid: &Grid,
-    rates: &Grid,
-    corrected: &Grid,
-    include: &[bool],
-    i: usize,
-    quantity: Quantity,
-    options: &Options,
-) -> Fit {
-    let mut p = pairs(grid, rates, corrected, include, i);
+/// Fits one sensor's readings to the medians they are paired with.
+fn fit_sensor(mut p: Pairs, quantity: Quantity, options: &Options) -> Fit {
     if p.xs.is_empty() {
         return Fit::IDENTITY;
     }

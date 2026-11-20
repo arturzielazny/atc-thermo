@@ -211,7 +211,7 @@ private fun fitQuantity(
     }
     var corrected = correctedGrid(grid, fits)
     fits = fits.mapIndexed { i, fit ->
-        val p = pairs(grid, rates, corrected, good, i)
+        val p = pairs(grid, rates, corrected, good, i, itself = false)
         fit.copy(outlier = !good[i], steady = options.bin * p.xs.size)
     }
     // Sensors with too little data neither define nor shift the group average.
@@ -236,7 +236,7 @@ private fun fitQuantity(
     }
     corrected = correctedGrid(grid, fits)
     fits = fits.mapIndexed { i, fit ->
-        fit.copy(residualRms = residualRms(pairs(grid, rates, corrected, good, i), fit))
+        fit.copy(residualRms = residualRms(pairs(grid, rates, corrected, good, i, itself = false), fit))
     }
     return fits to quantityReport(grid, fits, options.bin)
 }
@@ -324,12 +324,25 @@ private fun range(values: List<Double?>): Double {
     return if (lo <= hi) hi - lo else 0.0
 }
 
-/** Iteratively fits every sensor against the median of the other included sensors. */
+/**
+ * Iteratively fits every sensor against the median of the included sensors, itself among
+ * them, as corrected by the previous round; then once more against the others only.
+ *
+ * Leaving the sensor itself out makes the rounds swing with an even number of sensors:
+ * two sensors each take on the other's error and swap every round, so none is ever
+ * corrected. With itself in the median, two sensors meet halfway in one round, and larger
+ * groups settle as fast. Both settle on the same corrections, but corrections don't
+ * include lag, so a median holding the sensor's own reading shares its lag and makes it
+ * look smaller (by ~150 s on real data). The last round, starting from settled
+ * corrections, measures lag against the others.
+ */
 private fun fitAll(grid: Grid, rates: Grid, include: List<Boolean>, quantity: Quantity, options: Options): List<Fit> {
     var fits = List(include.size) { Fit.IDENTITY }
-    repeat(4) {
+    val iterations = 4
+    for (round in 0..iterations) {
         val corrected = correctedGrid(grid, fits)
-        fits = include.indices.map { fitSensor(grid, rates, corrected, include, it, quantity, options) }
+        val itself = round < iterations
+        fits = include.indices.map { fitSensor(pairs(grid, rates, corrected, include, it, itself), quantity, options) }
     }
     return fits
 }
@@ -355,10 +368,23 @@ private fun rates(raw: Grid, bin: Double): Grid {
 private fun correctedGrid(grid: Grid, fits: List<Fit>): Grid =
     grid.map { row -> row.mapIndexed { i, cell -> cell?.let { fits[i].apply(it) } } }
 
-/** Readings of one sensor paired with the median of the other included sensors. */
+/** Readings of one sensor paired with the median of a group of sensors, see [pairs]. */
 private class Pairs(val xs: List<Double>, val ys: List<Double>, val rates: List<Double?>)
 
-private fun pairs(grid: Grid, rates: Grid, reference: Grid, include: List<Boolean>, i: Int): Pairs {
+/**
+ * Readings of sensor [i] paired with the median of the other included sensors in
+ * [reference], in bins where any of them has a value. With [itself], an included sensor's
+ * own [reference] value joins that median (see [fitAll]); without it the pairs say how the
+ * sensor compares with the rest, as reported.
+ */
+private fun pairs(
+    grid: Grid,
+    rates: Grid,
+    reference: Grid,
+    include: List<Boolean>,
+    i: Int,
+    itself: Boolean,
+): Pairs {
     var others = include.toMutableList().also { it[i] = false }
     if (others.none { it }) {
         // An excluded sensor in a group of two: compare with everyone else.
@@ -369,8 +395,10 @@ private fun pairs(grid: Grid, rates: Grid, reference: Grid, include: List<Boolea
     val rs = mutableListOf<Double?>()
     for (b in grid.indices) {
         val x = grid[b][i] ?: continue
-        val values = reference[b].filterIndexed { j, _ -> others[j] }.filterNotNull()
+        val values = reference[b].filterIndexed { j, _ -> others[j] }.filterNotNull().toMutableList()
         if (values.isEmpty()) continue
+        val own = reference[b][i]
+        if (itself && include[i] && own != null) values += own
         xs += x
         ys += median(values)
         rs += rates[b][i]
@@ -378,16 +406,9 @@ private fun pairs(grid: Grid, rates: Grid, reference: Grid, include: List<Boolea
     return Pairs(xs, ys, rs)
 }
 
-private fun fitSensor(
-    grid: Grid,
-    rates: Grid,
-    corrected: Grid,
-    include: List<Boolean>,
-    i: Int,
-    quantity: Quantity,
-    options: Options,
-): Fit {
-    var p = pairs(grid, rates, corrected, include, i)
+/** Fits one sensor's readings to the medians they are paired with. */
+private fun fitSensor(pairs: Pairs, quantity: Quantity, options: Options): Fit {
+    var p = pairs
     if (p.xs.isEmpty()) return Fit.IDENTITY
     // Model lag only with enough drift; then use just the pairs with a known rate.
     val known = p.rates.filterNotNull()

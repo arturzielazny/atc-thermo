@@ -28,6 +28,7 @@ import dev.artur.thermo.model.LoggedSample
 import dev.artur.thermo.model.MIN_ADVERTS
 import dev.artur.thermo.model.Measurement
 import dev.artur.thermo.model.Metric
+import dev.artur.thermo.model.Order
 import dev.artur.thermo.model.Outcome
 import dev.artur.thermo.model.RateTrim
 import dev.artur.thermo.model.Sample
@@ -80,6 +81,40 @@ class DevicesTest {
         val d = devices[ADDR]!!
         assertEquals(-79, d.rssi)
         assertEquals(-81, d.typicalRssi)
+    }
+
+    @Test
+    fun signalOrderPutsTheStrongestFirstAndNewDevicesLast() {
+        val devices = Devices()
+        val now = 1_793_000_000_000L
+        fun heard(last: Int, rssi: Int) = devices.record(advert(VOLTAGE, now, "A4:C1:38:00:00:0$last", rssi))
+        fun lasts() = devices.all().map { it.address.last().digitToInt() }
+        heard(3, -80)
+        heard(1, -70)
+        heard(2, -40)
+        assertEquals(listOf(1, 2, 3), lasts(), "by address at first")
+
+        devices.sort(Order.Signal)
+        assertEquals(listOf(2, 1, 3), lasts())
+        // A device heard later goes last, and changing signals don't reorder.
+        heard(0, -30)
+        heard(3, -20)
+        assertEquals(listOf(2, 1, 3, 0), lasts())
+
+        devices.sort(Order.Address)
+        assertEquals(listOf(0, 1, 2, 3), lasts())
+        heard(4, -90)
+        assertEquals(listOf(0, 1, 2, 3, 4), lasts())
+    }
+
+    @Test
+    fun restoredHistoryLeavesTheSignalMedianEmpty() {
+        val devices = Devices()
+        val now = 1_793_000_000_000L
+        devices.restore(Measurement(ADDR, "Kitchen", Sample(now, 21.0f, 50f, -60, Source.Live), 90, null))
+        assertNull(devices[ADDR]!!.typicalRssi, "starts from the first advert of this run")
+        devices.record(advert(VOLTAGE, now + 1000, rssi = -70))
+        assertEquals(-70, devices[ADDR]!!.typicalRssi)
     }
 
     @Test
@@ -350,6 +385,28 @@ class ThermoModelTest {
         assertEquals(listOf(Action.Identify(1), Action.Identify(2)), drain().map { it.action })
         model.selectAll()
         assertTrue(model.selected.isEmpty())
+    }
+
+    @Test
+    fun signalOrderNumbersDevicesForSelectionAndCalibration() {
+        val model = model()
+        model.onAdvert(advert(MEASUREMENT, now, C, -30, "ATC_000003"))
+        drain()
+        assertEquals(3, model.deviceNumber(C))
+
+        model.toggleOrder()
+        assertEquals(Order.Signal, model.devices.order)
+        assertEquals(listOf(1, 2, 3), listOf(C, A, B).map { model.deviceNumber(it) })
+        // Selected devices are compared in list order, nearest first.
+        model.toggleSelected(A)
+        model.toggleSelected(C)
+        model.identify(model.selected)
+        assertEquals(setOf(C to 1, A to 2), drain().map { it.address to (it.action as Action.Identify).number }.toSet())
+        assertEquals(listOf(C, A), model.openCalibration().devices)
+        model.closeCalibration()
+
+        model.toggleOrder()
+        assertEquals(3, model.deviceNumber(C), "back to address order")
     }
 
     @Test

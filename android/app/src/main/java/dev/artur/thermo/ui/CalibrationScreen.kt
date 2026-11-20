@@ -169,7 +169,7 @@ private fun DeviceChips(model: ThermoModel, session: CalibrationSession, onChang
                     }
                 },
                 leadingIcon = { ColorDot(model.colorOf(device.address), 10.dp) },
-                label = { Text(device.name) },
+                label = { Text(model.numberedName(device)) },
             )
         }
     }
@@ -192,7 +192,7 @@ private fun ReferenceChips(model: ThermoModel, session: CalibrationSession, onCh
                     selected = session.reference == device.address,
                     onClick = { pick(device.address) },
                     leadingIcon = { ColorDot(model.colorOf(device.address), 10.dp) },
-                    label = { Text(device.name) },
+                    label = { Text(model.numberedName(device)) },
                 )
             }
         }
@@ -303,7 +303,8 @@ private fun ResultCards(model: ThermoModel, run: CalibrationRun, computing: Bool
                 Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         ColorDot(model.colorOf(device.first))
-                        Text("  ${device.second}", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+                        val number = model.deviceNumber(device.first)?.let { "#$it " } ?: ""
+                        Text("  $number${device.second}", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
                         val note = notes(sensor.temperature, sensor.humidity)
                         when {
                             run.isReference(i) -> Text(
@@ -330,7 +331,10 @@ private fun ResultCards(model: ThermoModel, run: CalibrationRun, computing: Bool
     Button(onClick = onApply, enabled = writes > 0, modifier = Modifier.fillMaxWidth()) {
         Text(if (writes > 0) "Write corrections to $writes device(s)" else "Nothing to write")
     }
-    val reference = run.devices.indices.firstOrNull(run::isReference)?.let { run.devices[it].second }
+    val reference = run.devices.indices.firstOrNull(run::isReference)?.let { i ->
+        val (address, name) = run.devices[i]
+        model.deviceNumber(address)?.let { "#$it $name" } ?: name
+    }
     Text(
         "Bars show the net correction mid-range. " + if (reference != null) {
             "The others are corrected to read like $reference, which keeps its own calibration."

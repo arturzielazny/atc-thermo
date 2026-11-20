@@ -8,7 +8,7 @@ firmware (THB1, THB2, BTH01, TH05, …; ported from the terminal app, not yet tr
 phone). Kotlin and Jetpack Compose (Material 3), no other dependencies. Android 8 and
 newer.
 
-**Install:** download the APK from the [Android release](https://github.com/arturzielazny/atc-thermo/releases/tag/android-v0.2.0) and open it on
+**Install:** download the APK from the [Android release](https://github.com/arturzielazny/atc-thermo/releases/tag/android-v0.3.0) and open it on
 the phone (allow installing from your browser or file manager when asked).
 
 ## What it does
@@ -19,6 +19,7 @@ Everything the terminal app does, laid out for touch:
 |---|---|
 | chart above the device table | chart card above one card per device; tap the chart and drag for a crosshair with every device's value |
 | `t` `h` `r`, `w`, `p` | segmented buttons Temp / Humidity / Signal, span chips 10 min … 48 h, lines/points button |
+| `o` | menu: Order by signal (strongest now first, numbered from 1; devices heard later go last) / Order by address |
 | `↑` `↓`, `space`, `a`, `Esc` | tap a card for its detail screen; long-press to select, tap to add more, ✕ or Back to clear |
 | `i` `s` `d` `e` `n` | Identify, Sync clock, Download log, Settings, Rename: in the selection bar or on the device screen |
 | `e` settings form | bottom sheet with a drop-down per field, “Keep” by default; a single device's current values are read and shown |

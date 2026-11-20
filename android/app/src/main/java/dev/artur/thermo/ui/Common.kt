@@ -20,6 +20,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import dev.artur.thermo.model.Device
 import dev.artur.thermo.model.RSSI_FINE
 import dev.artur.thermo.model.RSSI_MARGINAL
 import dev.artur.thermo.model.ThermoModel
@@ -38,6 +39,10 @@ fun deviceColor(index: Int): Color = PALETTE[index.mod(PALETTE.size)]
 
 /** The color of [address] in the model's device order. */
 fun ThermoModel.colorOf(address: String): Color = deviceColor((deviceNumber(address) ?: 1) - 1)
+
+/** `#3 ATC_847EFC`: the device's number in the list, as on its card, and its name. */
+fun ThermoModel.numberedName(device: Device): String =
+    deviceNumber(device.address)?.let { "#$it ${device.name}" } ?: device.name
 
 /** Battery percentages from which a level counts as fine, then as getting low. */
 const val BATTERY_FINE = 50

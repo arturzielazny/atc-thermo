@@ -397,6 +397,15 @@ class ThermoModel(
         changed()
     }
 
+    /** Switches the list between address order and signal order (strongest now first). */
+    fun toggleOrder() {
+        devices.sort(if (devices.order == Order.Address) Order.Signal else Order.Address)
+        changed()
+    }
+
+    /** The selected devices in list order, so lists of them follow the `#` numbers. */
+    private fun selectedInOrder(): List<String> = devices.all().map { it.address }.filter { it in marked }
+
     /** The device's position in the list, from 1; what identify shows on its screen. */
     fun deviceNumber(address: String): Int? =
         devices.all().indexOfFirst { it.address == address }.takeIf { it >= 0 }?.plus(1)
@@ -447,7 +456,7 @@ class ThermoModel(
 
     fun openCalibration(): CalibrationSession {
         // Compared by default: the selected devices if at least two, else all.
-        val chosen = if (marked.size >= 2) marked.toList() else null
+        val chosen = if (marked.size >= 2) selectedInOrder() else null
         val session = CalibrationSession(chosen, { devices.all().map { it.address } }, start = 0, end = null)
         session.start = windowStart(clock() - DEFAULT_CALIBRATION_SPAN_MS, session.devices, lastCalibrations)
         calibration = session

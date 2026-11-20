@@ -76,6 +76,7 @@ import androidx.compose.ui.unit.sp
 import dev.artur.thermo.model.Device
 import dev.artur.thermo.model.JobResult
 import dev.artur.thermo.model.Metric
+import dev.artur.thermo.model.Order
 import dev.artur.thermo.model.STALE_AFTER_MS
 import dev.artur.thermo.model.ScanStatus
 import dev.artur.thermo.model.ThermoModel
@@ -116,6 +117,11 @@ fun HomeScreen(model: ThermoModel, revision: Long, now: Long, snackbar: Snackbar
                         DropdownMenuItem(text = { Text("Calibrate") }, onClick = { menu = false; actions.openCalibration() })
                         DropdownMenuItem(text = { Text("Signal levelling") }, onClick = { menu = false; actions.openLeveling() })
                         DropdownMenuItem(text = { Text("Select all") }, onClick = { menu = false; model.selectAll() })
+                        // Numbers and colors follow the list, so new devices next to the phone become #1, #2, …
+                        DropdownMenuItem(
+                            text = { Text(if (model.devices.order == Order.Address) "Order by signal" else "Order by address") },
+                            onClick = { menu = false; model.toggleOrder() },
+                        )
                         DropdownMenuItem(text = { Text("Data and recording") }, onClick = { menu = false; actions.openData() })
                     }
                 },
@@ -147,7 +153,9 @@ private fun scanLine(model: ThermoModel, now: Long): String {
     val heard = model.devices.all().count { now - it.lastSeen < STALE_AFTER_MS }
     return when (val s = model.scanStatus) {
         ScanStatus.Starting -> "Starting…"
-        ScanStatus.Scanning -> "Listening · $heard of ${model.devices.size} in range" + if (model.busy) " · connecting" else ""
+        ScanStatus.Scanning -> "Listening · $heard of ${model.devices.size} in range" +
+            (if (model.devices.order == Order.Signal) " · by signal" else "") +
+            if (model.busy) " · connecting" else ""
         is ScanStatus.Failed -> "Not scanning: ${s.reason}"
     }
 }

@@ -90,6 +90,8 @@ class Device internal constructor(val address: String, var name: String, seen: L
     /**
      * Median signal strength of the adverts in the last 5 minutes the device was heard,
      * or the latest one known. Single adverts jump by several dB; the median shows the usual level.
+     * It starts empty each run, from the first advert is the median of the adverts so far, and
+     * once they span 5 minutes slides along.
      */
     val typicalRssi: Int? get() = medianRssi(recentRssi.map { it.second }) ?: rssi
 
@@ -169,9 +171,49 @@ fun medianRssi(values: List<Int>): Int? {
     return if (sorted.size % 2 == 0) Math.floorDiv(sorted[mid - 1] + sorted[mid], 2) else sorted[mid]
 }
 
-/** All known devices, ordered by address so the order (and colors) are stable between runs. */
+/** How [Devices.all] orders the devices, and so their numbers and colors. */
+enum class Order {
+    /** By address, so the order is the same between runs. */
+    Address,
+    /**
+     * By [Device.typicalRssi] when sorted, strongest first. The order then stays put;
+     * devices first heard later come last.
+     */
+    Signal,
+}
+
+/** All known devices, in an [Order]. */
 class Devices {
     private val byAddress = TreeMap<String, Device>()
+    /** Every key of [byAddress] once, in [order]. */
+    private val ordered = ArrayList<String>()
+
+    /** The order last sorted in. */
+    var order = Order.Address
+        private set
+
+    /** Puts the devices in [order]; [Order.Signal] by their signal strength now. */
+    fun sort(order: Order) {
+        this.order = order
+        when (order) {
+            Order.Address -> ordered.sort()
+            // Unheard ones (no signal yet) last, ties by address.
+            Order.Signal -> ordered.sortWith(
+                compareBy<String> { byAddress[it]?.typicalRssi?.let { rssi -> -rssi } ?: Int.MAX_VALUE }.thenBy { it },
+            )
+        }
+    }
+
+    /** The device at [address], added (as [name], first seen at [seen]) if it is new. */
+    private fun entry(address: String, name: String, seen: Long): Device =
+        byAddress.getOrPut(address) {
+            val at = when (order) {
+                Order.Address -> ordered.binarySearch(address).let { -(it + 1) }
+                Order.Signal -> ordered.size
+            }
+            ordered.add(at, address)
+            Device(address, name, seen)
+        }
 
     /**
      * Decodes an advert and updates the sending device; returns the new measurement when
@@ -181,7 +223,7 @@ class Devices {
      * device's name, signal strength and last-seen time are still updated.
      */
     fun record(advert: Advert): Measurement? {
-        val device = byAddress.getOrPut(advert.address) { Device(advert.address, advert.name, advert.received) }
+        val device = entry(advert.address, advert.name, advert.received)
         device.name = advert.name
         device.rssi = advert.rssi ?: device.rssi
         advert.rssi?.let { device.noteRssi(advert.received, it) }
@@ -200,17 +242,13 @@ class Devices {
 
     /** Adds a measurement loaded from disk. Call in chronological order. */
     fun restore(m: Measurement) {
-        val device = byAddress.getOrPut(m.address) { Device(m.address, m.name, m.sample.at) }
+        val device = entry(m.address, m.name, m.sample.at)
         device.name = m.name
         if (m.sample.at >= device.lastSeen) {
             device.temperature = m.sample.temperature
             device.humidity = m.sample.humidity
             device.battery = m.battery ?: device.battery
             device.voltage = m.voltage ?: device.voltage
-            m.sample.rssi?.let {
-                device.rssi = it
-                device.noteRssi(m.sample.at, it)
-            }
         }
         device.lastSeen = maxOf(device.lastSeen, m.sample.at)
         device.insert(m.sample)
@@ -238,7 +276,8 @@ class Devices {
         byAddress[address]?.name = name
     }
 
-    fun all(): Collection<Device> = byAddress.values
+    /** The devices in [order]. */
+    fun all(): List<Device> = ordered.mapNotNull { byAddress[it] }
 
     val size: Int get() = byAddress.size
 }

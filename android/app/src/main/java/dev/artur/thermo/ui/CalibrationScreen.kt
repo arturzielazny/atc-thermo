@@ -9,6 +9,8 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -61,6 +63,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.artur.thermo.calibration.Fit
@@ -131,8 +134,9 @@ fun CalibrationScreen(
                     Column {
                         Text("Calibration")
                         Text(
-                            "${session.devices.size} thermometers · readings since ${formatMoment(session.start, now)}",
+                            "${session.devices.size} thermometers · since ${formatMoment(session.start, now)}",
                             style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1, overflow = TextOverflow.Ellipsis,
                         )
                     }
                 },
@@ -207,6 +211,7 @@ fun CalibrationScreen(
 }
 
 @Composable
+@OptIn(ExperimentalLayoutApi::class)
 private fun StageRow(stage: Stage) {
     val steps = listOf("Together", "Second place", "Written")
     val current = when (stage) {
@@ -214,19 +219,26 @@ private fun StageRow(stage: Stage) {
         Stage.SecondPlace -> 1
         Stage.Checking -> 2
     }
-    Row(Modifier.fillMaxWidth().padding(top = 4.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+    // Wraps between steps with large text, never inside one.
+    FlowRow(
+        Modifier.fillMaxWidth().padding(top = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
         steps.forEachIndexed { i, label ->
             val color = when {
                 i == current -> MaterialTheme.colorScheme.primary
                 i < current -> MaterialTheme.colorScheme.onSurfaceVariant
                 else -> MaterialTheme.colorScheme.outline
             }
-            Text("${i + 1}", color = color, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelLarge)
-            Text(
-                label + if (i == 1) " (optional)" else "", color = color, style = MaterialTheme.typography.labelLarge,
-                fontWeight = if (i == current) FontWeight.Bold else FontWeight.Normal,
-            )
-            if (i < steps.lastIndex) Text("›", color = MaterialTheme.colorScheme.outline)
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("${i + 1}", color = color, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelLarge)
+                Text(
+                    label + if (i == 1) " (optional)" else "", color = color, style = MaterialTheme.typography.labelLarge,
+                    fontWeight = if (i == current) FontWeight.Bold else FontWeight.Normal,
+                )
+                if (i < steps.lastIndex) Text("›", color = MaterialTheme.colorScheme.outline)
+            }
         }
     }
 }

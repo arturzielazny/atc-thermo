@@ -71,6 +71,8 @@ class Controller(private val app: Application) {
     private var loaded = false
     /** Whether a calibration was in progress at the last tick, to clear its notification when it ends. */
     private var calibrating = false
+    /** The session's status as the recording notification last showed it. */
+    private var shownStatus: String? = null
 
     private val prefs = app.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
@@ -136,9 +138,11 @@ class Controller(private val app: Application) {
                 refitCalibration()
                 model.takeCalibrationAnnouncement()?.let { MonitorService.announce(app, it) }
                 if (calibrating && model.calibration == null) MonitorService.clearAnnouncement(app)
-                // Its title says whether a calibration runs: follow at once, not at its next redraw.
-                if (calibrating != (model.calibration != null)) MonitorService.refresh(app)
                 calibrating = model.calibration != null
+                // The notification shows the session's progress: follow it at once, not at the next redraw.
+                val status = model.calibrationStatus()
+                if (status != shownStatus) MonitorService.refresh(app)
+                shownStatus = status
                 if (ticks++ % WIDGET_INTERVAL_S == 0) ThermoWidget.update(app)
             }
         }

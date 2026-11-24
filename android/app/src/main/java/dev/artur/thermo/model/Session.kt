@@ -266,6 +266,8 @@ fun eta(run: CalibrationRun, level: Level): Eta? {
 
 /** How long until a first estimate, from why a fit failed; `null` if more time won't help. */
 fun firstEstimateIn(error: Throwable): Long? = when (error) {
+    // No readings since the start yet: all of it.
+    is CalibrationError.TooFewSensors -> (SESSION_OPTIONS.shortestSpan * 1000).toLong()
     is CalibrationError.TooShort -> ((error.needed - error.span) * 1000).toLong().coerceAtLeast(60_000)
     is CalibrationError.NotEnoughSteadyData -> ((error.needed - error.steady) * 1000).toLong().coerceAtLeast(60_000)
     is CalibrationError.ReferenceNotSteady -> ((error.needed - error.steady) * 1000).toLong().coerceAtLeast(60_000)

@@ -182,6 +182,16 @@ class SessionTest {
     }
 
     @Test
+    fun aSessionJustStartedIsCollectingNotFailing() {
+        val model = model()
+        model.record(mapOf(A to 0.0, B to 0.0), now - 3600_000, now - 60_000)
+        model.startCalibration(listOf(A, B), start = now)
+        model.refit()
+        // No readings since the start: the whole wait, not "need at least 2 sensors".
+        assertEquals("Calibrating 2 · first estimate in 40 min", model.calibrationStatus())
+    }
+
+    @Test
     fun timeShrinksTheStatisticalErrorButNotTheFloor() {
         val parts = ErrorParts(floor = 0.009, statistical = 0.02, steadySeconds = 3600.0)
         assertEquals(Eta.Reached, eta(parts, 0.10, 1.0))
@@ -264,7 +274,8 @@ class SessionTest {
         model.startCalibration(listOf(A, B, C, D), start = now - HOUR)
         val strays = model.calibrationStrays().associate { it.address to it.reason }
         assertEquals(setOf(C, D), strays.keys)
-        assertTrue(strays.getValue(C).startsWith("reads +2.9 °C"), strays[C])
+        // In the phone's language: a decimal point or comma.
+        assertTrue(Regex("""reads \+2[.,]9 °C""").containsMatchIn(strays.getValue(C)), strays[C])
         assertTrue(strays.getValue(D).startsWith("not heard for 10 min"), strays[D])
     }
 

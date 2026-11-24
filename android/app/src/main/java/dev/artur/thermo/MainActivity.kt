@@ -74,6 +74,27 @@ sealed interface Screen {
     data object Data : Screen
 }
 
+/** Name under which the open screens are kept while the activity is recreated. */
+private const val STATE_SCREENS = "screens"
+
+/** The screen as text for saved instance state; [screenOf] reads it back. */
+private fun Screen.key(): String = when (this) {
+    Screen.Home -> "home"
+    is Screen.Device -> "device:$address"
+    Screen.Calibration -> "calibration"
+    Screen.Leveling -> "leveling"
+    Screen.Data -> "data"
+}
+
+private fun screenOf(key: String): Screen? = when {
+    key == "home" -> Screen.Home
+    key.startsWith("device:") -> Screen.Device(key.removePrefix("device:"))
+    key == "calibration" -> Screen.Calibration
+    key == "leveling" -> Screen.Leveling
+    key == "data" -> Screen.Data
+    else -> null
+}
+
 class MainActivity : ComponentActivity() {
     private val stack = mutableStateListOf<Screen>(Screen.Home)
     private var permitted by mutableStateOf(false)
@@ -83,10 +104,24 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         DebugHooks.onCreate(this)
         permitted = controller.hasPermissions()
-        // A calibration in progress is what the app is for until it ends.
-        if (savedInstanceState == null && controller.model.calibration != null) stack.add(Screen.Calibration)
-        handle(intent)
+        val model = controller.model
+        // The screens open before a theme or font change or a rotation recreated the activity
+        // (levelling only if it still runs: not after the process was killed meanwhile).
+        val saved = savedInstanceState?.getStringArrayList(STATE_SCREENS)?.mapNotNull(::screenOf)
+            ?.filter { it != Screen.Home && (it != Screen.Leveling || model.leveling != null) }
+        when {
+            saved != null -> stack.addAll(saved)
+            // A calibration in progress is what the app is for until it ends.
+            model.calibration != null -> stack.add(Screen.Calibration)
+        }
+        // The intent that started the activity was handled before it was recreated.
+        if (savedInstanceState == null) handle(intent)
         setContent { ThermoTheme { Surface { Root() } } }
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        outState.putStringArrayList(STATE_SCREENS, ArrayList(stack.map { it.key() }))
     }
 
     override fun onNewIntent(intent: Intent) {

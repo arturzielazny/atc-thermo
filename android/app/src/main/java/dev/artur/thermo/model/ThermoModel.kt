@@ -604,10 +604,10 @@ class ThermoModel(
     private fun announce(session: CalibrationSession, run: CalibrationRun): String {
         val count = "${session.devices.size} thermometers"
         return if (session.stage == Stage.SecondPlace) {
-            val gain = gainStatus(run).uncertainty?.let { " (±%.2f %%)".fmt(it * 100) } ?: ""
+            val gain = gainStatus(run).uncertainty?.let { " (±%.2f %%)".format(it * 100) } ?: ""
             "Gains ready$gain for $count: write the corrections."
         } else {
-            val t = precision(run).temperature?.let { "±%.2f °C".fmt(it) } ?: session.target.label
+            val t = precision(run).temperature?.let { "±%.2f °C".format(it) } ?: session.target.label
             "$t reached for $count: write the corrections, or move them to a second place for the gains."
         }
     }
@@ -625,10 +625,10 @@ class ThermoModel(
         val run = result.getOrElse { error ->
             return head + (firstEstimateIn(error)?.let { " · first estimate in ${formatEta(it)}" } ?: " · ${error.message}")
         }
-        val now = precision(run).temperature?.let { " · ±%.3f °C now".fmt(it) } ?: ""
+        val now = precision(run).temperature?.let { " · ±%.3f °C now".format(it) } ?: ""
         if (session.stage == Stage.SecondPlace) {
             val steady = run.places.getOrNull(1)?.steady ?: 0
-            val gain = gainStatus(run).uncertainty?.let { "gain ±%.2f %%".fmt(it * 100) } ?: "no gain yet"
+            val gain = gainStatus(run).uncertainty?.let { "gain ±%.2f %%".format(it * 100) } ?: "no gain yet"
             return "$head · second place · ${formatAge(steady)} steady there · $gain"
         }
         val place = ""
@@ -660,7 +660,7 @@ class ThermoModel(
         if (heard.size >= 2 && !settling) {
             val middle = dev.artur.thermo.calibration.median(heard.map { it.second })
             for ((address, t) in heard) {
-                if (abs(t - middle) > STRAY_TEMPERATURE) strays += Stray(address, "reads %+.1f °C from the others: still next to them?".fmt(t - middle))
+                if (abs(t - middle) > STRAY_TEMPERATURE) strays += Stray(address, "reads %+.1f °C from the others: still next to them?".format(t - middle))
             }
         }
         return strays

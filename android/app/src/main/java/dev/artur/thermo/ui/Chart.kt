@@ -172,7 +172,12 @@ fun HistoryChart(
         val stroke = Stroke(width = 1.8.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round)
         for ((s, range) in visible) {
             if (points) drawPoints(s, range, metric, plot, yScale, from, to)
-            else drawPath(linePath(s, range, metric, plot, yScale, from, to), s.color, style = stroke)
+            else {
+                val lone = mutableListOf<Offset>()
+                drawPath(linePath(s, range, metric, plot, yScale, from, to, lone), s.color, style = stroke)
+                // A device heard only now and then would otherwise not show at all.
+                for (dot in lone) drawCircle(s.color, LONE_READING_DP.dp.toPx(), dot)
+            }
         }
 
         cursor?.let { drawCursor(it, visible, metric, plot, from, to, measurer, tooltipBackground, tooltipText, cursorLine) }
@@ -204,10 +209,21 @@ private fun visibleRange(samples: List<Sample>, from: Long, to: Long): IntRange 
     return firstAtOrAfter(from) until firstAtOrAfter(to + 1)
 }
 
-/** A line through every pixel column's first, lowest, highest and last value, broken at gaps. */
-private fun linePath(s: ChartSeries, range: IntRange, metric: Metric, plot: PlotArea, y: YScale, from: Long, to: Long): Path {
+/** Radius of the dot for a reading with no neighbours (no other within the gap), dp. */
+private const val LONE_READING_DP = 2.5f
+
+/**
+ * A line through every pixel column's first, lowest, highest and last value, broken at gaps;
+ * readings with no neighbour on either side go to [lone] instead, as a line can't show them.
+ */
+private fun linePath(
+    s: ChartSeries, range: IntRange, metric: Metric, plot: PlotArea, y: YScale, from: Long, to: Long,
+    lone: MutableList<Offset>,
+): Path {
     val path = Path()
     var previous: Sample? = null
+    var runStart: Offset? = null
+    var runLength = 0
     var column = Int.MIN_VALUE
     var colMin = 0f
     var colMax = 0f
@@ -231,6 +247,9 @@ private fun linePath(s: ChartSeries, range: IntRange, metric: Metric, plot: Plot
         val c = x.toInt()
         if (gap) {
             flush()
+            if (runLength == 1) runStart?.let(lone::add)
+            runStart = Offset(x, py)
+            runLength = 0
             path.moveTo(x, py)
             column = c
             colMin = py; colMax = py; colX = x
@@ -243,9 +262,11 @@ private fun linePath(s: ChartSeries, range: IntRange, metric: Metric, plot: Plot
             colMin = min(colMin, py)
             colMax = max(colMax, py)
         }
+        runLength++
         previous = sample
     }
     flush()
+    if (runLength == 1) runStart?.let(lone::add)
     return path
 }
 

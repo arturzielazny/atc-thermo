@@ -16,6 +16,7 @@ import android.bluetooth.BluetoothGattCallback
 import android.bluetooth.BluetoothGattCharacteristic
 import android.bluetooth.BluetoothGattDescriptor
 import android.bluetooth.BluetoothProfile
+import android.bluetooth.BluetoothStatusCodes
 import android.content.Context
 import android.os.Build
 import kotlinx.coroutines.CompletableDeferred
@@ -265,7 +266,7 @@ class Thermometer private constructor(
             BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
         }
         val started = if (Build.VERSION.SDK_INT >= 33) {
-            gatt.writeCharacteristic(command, payload, writeType) == BluetoothGatt.GATT_SUCCESS
+            gatt.writeCharacteristic(command, payload, writeType) == BluetoothStatusCodes.SUCCESS
         } else {
             @Suppress("DEPRECATION")
             command.writeType = writeType

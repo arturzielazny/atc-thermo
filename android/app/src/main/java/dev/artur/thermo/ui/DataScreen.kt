@@ -79,9 +79,10 @@ fun DataScreen(controller: Controller, snackbar: SnackbarHostState, onBack: () -
             Section("Recording") {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
-                        Text("Keep recording when closed", style = MaterialTheme.typography.bodyLarge)
+                        Text("Record all the time", style = MaterialTheme.typography.bodyLarge)
                         Text(
-                            "Calibration needs hours of live readings. A notification shows while recording.",
+                            "Also with the app closed, and again after a reboot or an update: calibration needs " +
+                                "hours of live readings. A notification shows while recording.",
                             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }

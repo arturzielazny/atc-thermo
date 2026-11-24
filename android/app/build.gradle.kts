@@ -19,8 +19,8 @@ android {
         // Android 8: BluetoothLeScanner with service-data filters and foreground services.
         minSdk = 26
         targetSdk = 36
-        versionCode = 3
-        versionName = "0.3.0"
+        versionCode = 4
+        versionName = "0.3.1"
     }
 
     signingConfigs {

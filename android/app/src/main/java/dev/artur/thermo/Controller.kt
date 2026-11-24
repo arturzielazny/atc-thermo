@@ -17,6 +17,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.PowerManager
 import android.provider.OpenableColumns
 import androidx.core.content.ContextCompat
 import dev.artur.thermo.ble.JobRunner
@@ -35,8 +36,14 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.concurrent.Executors
 
-/** Name of the preference that keeps recording while the app is closed. */
-private const val PREF_BACKGROUND = "record_in_background"
+/**
+ * Name of the preference that keeps recording while the app is closed. Before 0.3.1 it was
+ * `record_in_background`, which the notification's Stop button turned off; the new name
+ * starts everyone at the default, on.
+ */
+private const val PREF_BACKGROUND = "record_always"
+/** Name of the preference saying the battery optimisation exemption was asked for once. */
+private const val PREF_ASKED_BATTERY = "asked_battery_exemption"
 private const val PREFS = "thermo"
 /** Seconds between widget redraws; readings arrive every 10 s or so. */
 private const val WIDGET_INTERVAL_S = 30
@@ -79,6 +86,17 @@ class Controller(private val app: Application) {
             prefs.edit().putBoolean(PREF_BACKGROUND, value).apply()
             if (value) MonitorService.start(app) else MonitorService.stop(app)
         }
+
+    /**
+     * Whether to ask for the battery optimisation exemption now: recording is on, the app
+     * isn't exempt, and it hasn't asked before. Without the exemption Android may refuse to
+     * restart the service after it killed the process.
+     */
+    fun shouldAskBatteryExemption(): Boolean =
+        recordInBackground && !prefs.getBoolean(PREF_ASKED_BATTERY, false) &&
+            app.getSystemService(PowerManager::class.java)?.isIgnoringBatteryOptimizations(app.packageName) == false
+
+    fun markBatteryExemptionAsked() = prefs.edit().putBoolean(PREF_ASKED_BATTERY, true).apply()
 
     val adapter: BluetoothAdapter? get() = app.getSystemService(BluetoothManager::class.java)?.adapter
 

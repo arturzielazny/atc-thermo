@@ -93,13 +93,11 @@ class MainActivity : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
-        App.visible = true
         permitted = controller.hasPermissions()
         controller.startIfReady()
     }
 
     override fun onStop() {
-        App.visible = false
         // Without background recording, scanning ends with the app; queued jobs still finish.
         if (!controller.recordInBackground && !isChangingConfigurations) controller.stopScanning()
         super.onStop()
@@ -157,6 +155,16 @@ class MainActivity : ComponentActivity() {
                 },
             )
             return
+        }
+        LaunchedEffect(Unit) {
+            if (controller.shouldAskBatteryExemption()) {
+                controller.markBatteryExemptionAsked()
+                runCatching {
+                    startActivity(
+                        Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName"))
+                    )
+                }
+            }
         }
         val model = controller.model
         // Redraw at once, then at most every REDRAW_INTERVAL_MS: StateFlow keeps only the latest

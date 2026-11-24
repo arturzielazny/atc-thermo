@@ -28,8 +28,9 @@ Everything the terminal app does, laid out for touch:
 | status line, Job column | subtitle (“Listening · 2 of 2 in range · connecting”), snackbars for problems, a spinner and the last result with its age on each card (greyed after 10 min) |
 
 It also downloads a device's log the first time it is heard if recent history has a
-gap, keeps recording with the app closed (a foreground service with a notification and a
-Stop action), restarts a stuck scan, and follows Bluetooth being switched off and on.
+gap, keeps recording with the app closed (a foreground service with a notification; it
+starts again after a reboot or an update and is switched off on the Data screen), restarts
+a stuck scan, and follows Bluetooth being switched off and on.
 
 ## History files
 

@@ -136,6 +136,8 @@ class Controller(private val app: Application) {
                 refitCalibration()
                 model.takeCalibrationAnnouncement()?.let { MonitorService.announce(app, it) }
                 if (calibrating && model.calibration == null) MonitorService.clearAnnouncement(app)
+                // Its title says whether a calibration runs: follow at once, not at its next redraw.
+                if (calibrating != (model.calibration != null)) MonitorService.refresh(app)
                 calibrating = model.calibration != null
                 if (ticks++ % WIDGET_INTERVAL_S == 0) ThermoWidget.update(app)
             }

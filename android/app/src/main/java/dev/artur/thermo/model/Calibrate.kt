@@ -141,8 +141,11 @@ fun notes(t: Fit, h: Fit): String = buildList {
     if (correction(t) == null && !t.outlier) add("too little data")
 }.joinToString(", ")
 
-/** Temperature lag behind the group, e.g. `"+2.5 min"`, or `"–"` if not estimated. */
-fun formatLag(lag: Double?): String = lag?.let { "%+.1f min".fmt(it / 60.0) } ?: "–"
+/**
+ * Temperature lag behind the group, e.g. `"+2.5 min"`, or `"–"` if not estimated; in the
+ * phone's language, like the numbers next to it on screen.
+ */
+fun formatLag(lag: Double?): String = lag?.let { "%+.1f min".format(it / 60.0) } ?: "–"
 
 /**
  * What a fit adds at [at], typically the middle of the covered range: with a gain the

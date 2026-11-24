@@ -34,7 +34,7 @@ class MonitorService : Service() {
     private val handler = Handler(Looper.getMainLooper())
     private val update = object : Runnable {
         override fun run() {
-            getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification())
+            getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification(this@MonitorService))
             handler.postDelayed(this, UPDATE_INTERVAL_MS)
         }
     }
@@ -45,13 +45,14 @@ class MonitorService : Service() {
         createChannel()
         val type = if (Build.VERSION.SDK_INT >= 29) ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE else 0
         try {
-            ServiceCompat.startForeground(this, NOTIFICATION_ID, notification(), type)
+            ServiceCompat.startForeground(this, NOTIFICATION_ID, notification(this), type)
         } catch (e: Exception) {
             // Not allowed right now (started from the background without a battery
             // optimisation exemption); the app still records while it is open.
             stopSelf()
             return START_NOT_STICKY
         }
+        running = true
         controller.startIfReady()
         handler.removeCallbacks(update)
         handler.postDelayed(update, UPDATE_INTERVAL_MS)
@@ -59,6 +60,7 @@ class MonitorService : Service() {
     }
 
     override fun onDestroy() {
+        running = false
         handler.removeCallbacks(update)
         super.onDestroy()
     }
@@ -72,29 +74,37 @@ class MonitorService : Service() {
         getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
     }
 
-    private fun notification(): Notification {
-        val model = controller.model
-        val open = PendingIntent.getActivity(
-            this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE,
-        )
-        val now = System.currentTimeMillis()
-        val heard = model.devices.all().count { now - it.lastSeen < 5 * 60_000 }
-        val range = model.devices.all().mapNotNull { it.temperature }.let { temps ->
-            if (temps.isEmpty()) "" else " · %.1f–%.1f °C".format(temps.min(), temps.max())
-        }
-        val calibrating = model.calibrationStatus()
-        return NotificationCompat.Builder(this, CHANNEL)
-            .setSmallIcon(R.drawable.ic_thermometer)
-            .setContentTitle(if (calibrating != null) "Calibrating thermometers" else "Recording thermometers")
-            .setContentText(calibrating?.substringAfter(" · ") ?: "$heard of ${model.devices.size} heard recently$range")
-            .setContentIntent(open)
-            .setOngoing(true)
-            .setOnlyAlertOnce(true)
-            .setSilent(true)
-            .build()
-    }
-
     companion object {
+        /** Whether the service is in the foreground, so that its notification may be redrawn. */
+        @Volatile private var running = false
+
+        /** Redraws the ongoing notification now, e.g. when a calibration starts or ends. */
+        fun refresh(context: Context) {
+            if (running) runCatching { context.getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification(context)) }
+        }
+
+        private fun notification(context: Context): Notification {
+            val model = context.controller.model
+            val open = PendingIntent.getActivity(
+                context, 0, Intent(context, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE,
+            )
+            val now = System.currentTimeMillis()
+            val heard = model.devices.all().count { now - it.lastSeen < 5 * 60_000 }
+            val range = model.devices.all().mapNotNull { it.temperature }.let { temps ->
+                if (temps.isEmpty()) "" else " · %.1f–%.1f °C".format(temps.min(), temps.max())
+            }
+            val calibrating = model.calibrationStatus()
+            return NotificationCompat.Builder(context, CHANNEL)
+                .setSmallIcon(R.drawable.ic_thermometer)
+                .setContentTitle(if (calibrating != null) "Calibrating thermometers" else "Recording thermometers")
+                .setContentText(calibrating?.substringAfter(" · ") ?: "$heard of ${model.devices.size} heard recently$range")
+                .setContentIntent(open)
+                .setOngoing(true)
+                .setOnlyAlertOnce(true)
+                .setSilent(true)
+                .build()
+        }
+
         fun start(context: Context) {
             if (!context.controller.hasPermissions()) return
             runCatching {

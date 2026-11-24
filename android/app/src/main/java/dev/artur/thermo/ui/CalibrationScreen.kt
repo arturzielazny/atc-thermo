@@ -364,7 +364,8 @@ private fun FirstPlace(
             }
             Spacer(Modifier.height(6.dp))
             Text(
-                "Keep the phone in range, e.g. a balcony or a cold room. There, the first hour is skipped while the cases catch up; plan on 1½–2 hours.",
+                "Keep the phone in range, e.g. a balcony or a cold room. Readings there count once the thermometers have caught up, " +
+                    "about an hour for temperature: plan on 1½–2 hours, and some hours more for the humidity of slow sensors.",
                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
@@ -436,7 +437,7 @@ private fun LevelsCard(model: ThermoModel, session: CalibrationSession, run: Cal
         }
         Text(
             "Times assume they stay as steady as so far. You get a notification when your choice is reached, also with the app closed. " +
-                "The screens show 0.1 °C: at ±0.05 °C two thermometers rarely differ by more than a digit.",
+                "The screens show %.1f °C: at ±%.2f °C two thermometers rarely differ by more than a digit.".format(0.1, 0.05),
             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(top = 4.dp),
         )

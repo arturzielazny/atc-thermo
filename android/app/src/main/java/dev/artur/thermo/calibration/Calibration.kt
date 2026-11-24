@@ -15,7 +15,9 @@
 package dev.artur.thermo.calibration
 
 import kotlin.math.abs
+import kotlin.math.exp
 import kotlin.math.floor
+import kotlin.math.ln
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.sqrt
@@ -36,6 +38,18 @@ data class Options(
     val settleTime: Double = 60 * 60.0,
     val bigTemperatureChange: Double = 2.0,
     val bigHumidityChange: Double = 10.0,
+    /**
+     * Android only: after a change of half a big change or more within 30 minutes, also
+     * hold back each sensor until its offset to the others is within [settledTemperature] /
+     * [settledHumidity] of where it is heading ([Settling]). The Rust crate has
+     * [settleTime] alone.
+     */
+    val holdUntilSettled: Boolean = false,
+    val settledTemperature: Double = 0.03,
+    val settledHumidity: Double = 0.15,
+    /** Slowest a sensor's offset is taken to catch up with the others: its time constant, s. */
+    val slowestTemperatureSettling: Double = 40 * 60.0,
+    val slowestHumiditySettling: Double = 3 * 3600.0,
     /** Model case lag only with at least this drift (°C/h, 10th to 90th percentile). */
     val minTemperatureDrift: Double = 0.3,
     val minHumidityDrift: Double = 1.5,
@@ -111,6 +125,19 @@ data class QuantityReport(
     val inflation: Double = 1.0,
     /** Start times of the bins with at least two steady sensors, the readings fitted. */
     val steadyBins: List<Double> = emptyList(),
+    /** Per sensor, whether it is held back at the end of the readings after a change; `null` if not. */
+    val settling: List<Settling?> = emptyList(),
+)
+
+/**
+ * A sensor whose readings don't count yet after a big change ([Options.settleTime]), or
+ * whose offset to the others is still on its way to a new level ([Options.holdUntilSettled]):
+ * cases catch up with the air at their own speed, humidity sensors much slower than
+ * temperature ones.
+ */
+data class Settling(
+    /** When its readings are expected to count, s on the readings' clock; `null` while that can't be told yet. */
+    val until: Double?,
 )
 
 /** A stretch of steady conditions, e.g. "inside" or "outside". */
@@ -180,13 +207,15 @@ fun calibrate(sensors: List<List<Reading>>, options: Options = Options()): Repor
     if (span < options.shortestSpan) throw CalibrationError.TooShort(span, options.shortestSpan)
 
     val rawT = resample(sensors, t0, bin, Quantity.Temperature)
-    val temperature = settled(rawT, Quantity.Temperature, options)
+    val settledT = settled(rawT, Quantity.Temperature, options, t0)
+    val temperature = settledT.grid
     val temperatureRates = rates(rawT, bin)
     val steady = bin * steadyBinCount(temperature)
     if (steady < options.minSteady) throw CalibrationError.NotEnoughSteadyData(steady, options.minSteady)
     val rawH = resample(sensors, t0, bin, Quantity.Humidity)
     val humidityRates = rates(rawH, bin)
-    val humidity = settled(rawH, Quantity.Humidity, options).map { row ->
+    val settledH = settled(rawH, Quantity.Humidity, options, t0)
+    val humidity = settledH.grid.map { row ->
         row.map { cell -> cell?.takeIf { it <= options.maxHumidity } }
     }
 
@@ -207,8 +236,8 @@ fun calibrate(sensors: List<List<Reading>>, options: Options = Options()): Repor
     val goodT = tFits.map { !it.outlier }
     return Report(
         sensors = tFits.zip(hFits) { t, h -> SensorReport(t, h) },
-        temperature = tReport,
-        humidity = hReport,
+        temperature = tReport.copy(settling = settledT.settling),
+        humidity = hReport.copy(settling = settledH.settling),
         phases = phases(temperature, goodT, t0, bin),
     )
 }
@@ -303,31 +332,192 @@ private fun consensus(row: List<Double?>, include: List<Boolean>): Double? {
     return if (values.size >= needed) median(values) else null
 }
 
+/** A quantity's readings that count, and which sensors are still held back at the end. */
+private class Settled(val grid: Grid, val settling: List<Settling?>)
+
 /**
  * Keeps only readings taken while both the group median and the sensor itself stayed
  * within [Quantity.maxChange] over the steady window, and not shortly after a big
- * change of the group median.
+ * change of the group median, nor (with [Options.holdUntilSettled]) while the sensor's
+ * offset to the others still settles after a change.
  */
-private fun settled(grid: Grid, quantity: Quantity, options: Options): Grid {
+private fun settled(grid: Grid, quantity: Quantity, options: Options, t0: Double): Settled {
     val bin = options.bin
     val half = binIndex(options.steadyWindow / 2.0, bin)
     val settle = binIndex(options.settleTime, bin)
     val limit = quantity.maxChange(options)
+    val big = quantity.bigChange(options)
     val sensors = grid.firstOrNull()?.size ?: 0
     val allIncluded = List(sensors) { true }
     val group = grid.map { consensus(it, allIncluded) }
     val settling = grid.indices.map { b ->
-        range(group.subList(max(b - settle, 0), b + 1)) >= quantity.bigChange(options)
+        range(group.subList(max(b - settle, 0), b + 1)) >= big
     }
+    val holds = if (options.holdUntilSettled) List(sensors) { i -> hold(grid, group, i, quantity, options, t0) } else null
     val calmCells = (0 until sensors).map { i ->
         val own = grid.map { it[i] }
-        grid.indices.map { b -> !settling[b] && calm(group, b, half, limit) && calm(own, b, half, limit) }
+        val held = holds?.get(i)?.held
+        grid.indices.map { b ->
+            !settling[b] && held?.get(b) != true && calm(group, b, half, limit) && calm(own, b, half, limit)
+        }
     }
-    return grid.mapIndexed { b, row ->
+    val kept = grid.mapIndexed { b, row ->
         val masked = row.mapIndexed { i, cell -> cell?.takeIf { calmCells[i][b] } }
         // A bin needs at least two sensors to compare anything.
         if (masked.count { it != null } >= 2) masked else List(row.size) { null }
     }
+    // Still settling at the end: until the last bin a big change away leaves the settle window.
+    val last = grid.lastIndex
+    val fixedUntil = if (last >= 0 && settling[last]) {
+        val far = (last downTo max(last - settle, 0)).first { j -> range(group.subList(j, last + 1)) >= big }
+        t0 + (far + settle + 1) * bin
+    } else {
+        null
+    }
+    val report = List(sensors) { i ->
+        val hold = holds?.get(i)?.takeIf { it.atEnd }
+        when {
+            hold == null && fixedUntil == null -> null
+            hold == null -> Settling(fixedUntil)
+            hold.until == null -> Settling(null)
+            else -> Settling(max(hold.until, fixedUntil ?: hold.until))
+        }
+    }
+    return Settled(kept, report)
+}
+
+/** A move shows as half a big change or more within this long, s. */
+private const val CHANGE_WINDOW = 30 * 60.0
+/** Fastest time constant tried for a sensor's offset settling, s: a few bins. */
+private const val FASTEST_SETTLING = 3 * 60.0
+/** Fewest bins after a change to tell anything from; until then the sensor is held back. */
+private const val SETTLING_POINTS = 4
+/** Standard errors by which a decay must stand out of the noise to hold a sensor back. */
+private const val SETTLING_SIGNIFICANCE = 3.0
+/** The decay is fitted over this many of the slowest time constants after a change. */
+private const val SETTLING_HORIZON = 3.0
+
+private fun Quantity.settledWithin(o: Options) = if (this == Quantity.Temperature) o.settledTemperature else o.settledHumidity
+private fun Quantity.slowestSettling(o: Options) =
+    if (this == Quantity.Temperature) o.slowestTemperatureSettling else o.slowestHumiditySettling
+
+/**
+ * Bins [held] back for one sensor; whether it is still held back [atEnd] of the readings and
+ * [until] when, if that can be told.
+ */
+private class Hold(val held: BooleanArray, val atEnd: Boolean, val until: Double?)
+
+/**
+ * Where sensor [i] is held back after changes ([Options.holdUntilSettled]).
+ *
+ * A change is half a big change or more, of the group median or of the sensor itself,
+ * within [CHANGE_WINDOW]: the devices were moved, or this one alone (put next to the others,
+ * or handled). After it, the sensor's offset to the group median is fitted as
+ * `c + A · exp(−t / τ)`, with τ up to [Quantity.slowestSettling]: on the Oct 29 move of 8
+ * LYWSD03MMC (21 → 16 °C, 60 → 72 %RH), temperature offsets settled with τ of 2–20 min,
+ * humidity ones with 3–75 min, and some crept for hours (one 5 %RH behind after 15 min and
+ * 0.5 after 3 h). Bins count once less than [Quantity.settledWithin] is left of the decay. Before
+ * [SETTLING_POINTS] bins, the sensor is held back; a decay within [SETTLING_SIGNIFICANCE]
+ * standard errors of none holds nothing. Readings before the first change are not tested:
+ * offsets wander by a few hundredths over hours, which would look like slow decays.
+ */
+private fun hold(grid: Grid, group: List<Double?>, i: Int, quantity: Quantity, options: Options, t0: Double): Hold {
+    val bin = options.bin
+    val n = grid.size
+    val own = grid.map { it[i] }
+    val window = binIndex(CHANGE_WINDOW, bin)
+    val change = quantity.bigChange(options) / 2
+    val changing = BooleanArray(n) { b ->
+        val from = max(b - window, 0)
+        range(group.subList(from, b + 1)) >= change || range(own.subList(from, b + 1)) >= change
+    }
+    val left = quantity.settledWithin(options)
+    val slowest = quantity.slowestSettling(options)
+    val held = BooleanArray(n)
+    var until: Double? = null
+    var b = 1
+    while (b < n) {
+        if (!changing[b - 1] || changing[b]) {
+            b++
+            continue
+        }
+        val start = b
+        var end = b
+        while (end < n && !changing[end]) end++
+        val ts = ArrayList<Double>()
+        val ys = ArrayList<Double>()
+        for (k in start until end) {
+            val x = own[k] ?: continue
+            val g = group[k] ?: continue
+            val t = (k - start) * bin
+            if (t <= SETTLING_HORIZON * slowest) {
+                ts += t
+                ys += x - g
+            }
+        }
+        val decay = if (ts.size >= SETTLING_POINTS) fitDecay(ts, ys, slowest) else null
+        for (k in start until end) {
+            held[k] = decay == null || decay.left((k - start) * bin - ts[0]) > left
+        }
+        if (end == n) {
+            // Told only once the readings span one time constant: less is guesswork.
+            until = decay?.takeIf { ts.last() - ts[0] >= it.tau }?.let { t0 + start * bin + ts[0] + it.after(left) }
+        }
+        b = end
+    }
+    val atEnd = n > 0 && (changing[n - 1] || held[n - 1])
+    return Hold(held, atEnd, if (atEnd && n > 0 && !changing[n - 1]) until else null)
+}
+
+/** `|amplitude| · exp(−t / tau)` left of a decay `t` s after its first point. */
+private class Decay(val tau: Double, val amplitude: Double) {
+    fun left(t: Double): Double = abs(amplitude) * exp(-t / tau)
+
+    /** Seconds after the first point until less than [left] is left. */
+    fun after(left: Double): Double = if (abs(amplitude) <= left) 0.0 else tau * ln(abs(amplitude) / left)
+}
+
+/**
+ * Least squares `y ≈ c + A · exp(−(t − t₀) / τ)` over τ from [FASTEST_SETTLING] to [slowest]
+ * in one-minute steps; `A` is 0 unless it stands out of the noise by [SETTLING_SIGNIFICANCE].
+ */
+private fun fitDecay(ts: List<Double>, ys: List<Double>, slowest: Double): Decay {
+    val n = ts.size
+    var best = Double.POSITIVE_INFINITY
+    var bestTau = FASTEST_SETTLING
+    var bestA = 0.0
+    var bestDet = 0.0
+    val sy = ys.sum()
+    val syy = ys.sumOf { it * it }
+    var tau = FASTEST_SETTLING
+    while (tau <= slowest) {
+        var se = 0.0
+        var see = 0.0
+        var sey = 0.0
+        for (k in 0 until n) {
+            val e = exp(-(ts[k] - ts[0]) / tau)
+            se += e
+            see += e * e
+            sey += e * ys[k]
+        }
+        val det = n * see - se * se
+        if (det > 1e-9) {
+            val a = (n * sey - se * sy) / det
+            val c = (sy - a * se) / n
+            val sse = syy - c * sy - a * sey
+            if (sse < best) {
+                best = sse
+                bestTau = tau
+                bestA = a
+                bestDet = det
+            }
+        }
+        tau += 60.0
+    }
+    if (bestDet <= 0.0) return Decay(bestTau, 0.0)
+    val variance = max(best, 0.0) / max(n - 3, 1)
+    val stderr = sqrt(variance * n / bestDet)
+    return Decay(bestTau, if (abs(bestA) >= SETTLING_SIGNIFICANCE * stderr) bestA else 0.0)
 }
 
 /** Whether `series` around bin `b` is mostly observed and varies by at most `limit`. */

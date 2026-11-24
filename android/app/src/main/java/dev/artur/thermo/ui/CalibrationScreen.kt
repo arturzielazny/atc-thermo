@@ -24,6 +24,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.HourglassTop
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
@@ -82,6 +83,7 @@ import dev.artur.thermo.model.firstEstimateIn
 import dev.artur.thermo.model.formatEta
 import dev.artur.thermo.model.formatLag
 import dev.artur.thermo.model.gainStatus
+import dev.artur.thermo.model.heldBack
 import dev.artur.thermo.model.netCorrection
 import dev.artur.thermo.model.notes
 import dev.artur.thermo.model.precision
@@ -163,7 +165,7 @@ fun CalibrationScreen(
             ChartCard(model, session, run, revision, now, metric) { metric = it }
             when (session.stage) {
                 Stage.FirstPlace -> FirstPlace(model, session, run, now, onWrite = { confirm = "apply" }, onMoved = { model.markMoved(); onChanged() }, onChanged = onChanged)
-                Stage.SecondPlace -> SecondPlace(session, run, now, writable = model.calibrationWrites().isNotEmpty(), onWrite = { confirm = "apply" }, onBackToFirst = { model.unmarkMoved(); onChanged() })
+                Stage.SecondPlace -> SecondPlace(model, session, run, now, writable = model.calibrationWrites().isNotEmpty(), onWrite = { confirm = "apply" }, onBackToFirst = { model.unmarkMoved(); onChanged() })
                 Stage.Checking -> Checking(model, session, run, now, onFinish = { model.endCalibration(); onBack() })
             }
             if (run != null) CorrectionsCard(model, run, checking = session.stage == Stage.Checking)
@@ -296,8 +298,8 @@ private fun fittedOrProgress(session: CalibrationSession, now: Long): Boolean {
             Text("A first estimate in about ${formatEta(wait)}, if they stay steady.", style = MaterialTheme.typography.bodyLarge)
             Spacer(Modifier.height(6.dp))
             Text(
-                "Only steady readings count: the first ${(SESSION_OPTIONS.steadyWindow / 120).toInt()} minutes, " +
-                    "and the hour after a big change, don't. This goes on with the app closed.",
+                "Only steady readings count: not the first ${(SESSION_OPTIONS.steadyWindow / 120).toInt()} minutes, " +
+                    "nor a thermometer's readings while it catches up after being moved. This goes on with the app closed.",
                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         } else {
@@ -318,6 +320,7 @@ private fun FirstPlace(
     onChanged: () -> Unit,
 ) {
     if (!fittedOrProgress(session, now) || run == null) return
+    SettlingNote(model, run, now)
     PrecisionCard(run, session)
     LevelsCard(model, session, run, onChanged)
     val place = run.places.firstOrNull()
@@ -442,6 +445,7 @@ private fun LevelsCard(model: ThermoModel, session: CalibrationSession, run: Cal
 
 @Composable
 private fun SecondPlace(
+    model: ThermoModel,
     session: CalibrationSession,
     run: CalibrationRun?,
     now: Long,
@@ -467,13 +471,7 @@ private fun SecondPlace(
                 "Now %.0f %%RH: %+.0f %%RH".format(second.latestHumidity, dh) +
                     if (abs(dh) >= GAIN_SPAN_H) ", so the humidity gain too" else "; the humidity gain needs ${GAIN_SPAN_H.toInt()}",
             )
-            val settleEnd = moved + (SESSION_OPTIONS.settleTime * 1000).toLong()
-            if (now < settleEnd && (abs(dt) >= SESSION_OPTIONS.bigTemperatureChange || abs(dh) >= SESSION_OPTIONS.bigHumidityChange)) {
-                Text(
-                    "The first hour after a big change is skipped while the cases catch up: readings here count from ${formatMoment(settleEnd, now)}.",
-                    style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(top = 6.dp),
-                )
-            }
+            if (run != null) SettlingNote(model, run, now)
             Spacer(Modifier.height(8.dp))
             Text(
                 (if (second.steady > 0) "${formatDuration(second.steady)} of steady readings here" else "No steady readings here yet") +
@@ -507,6 +505,42 @@ private fun SecondPlace(
     Column {
         Button(onClick = onWrite, enabled = writable) { Text("Write corrections") }
         OutlinedButton(onClick = onBackToFirst) { Text("Not moved after all") }
+    }
+}
+
+/**
+ * Who is still catching up with the others after a move, per quantity, and when they are
+ * expected to count; nothing if no one is.
+ */
+@Composable
+private fun SettlingNote(model: ThermoModel, run: CalibrationRun, now: Long) {
+    val held = listOf("Temperature" to heldBack(run, temperature = true), "Humidity" to heldBack(run, temperature = false))
+        .mapNotNull { (label, devices) -> devices?.let { label to it } }
+    if (held.isEmpty()) return
+    fun short(i: Int): String {
+        val address = run.devices[i].first
+        return model.deviceNumber(address)?.let { "#$it" } ?: run.devices[i].second
+    }
+    Column(Modifier.padding(top = 6.dp)) {
+        for ((label, devices) in held) {
+            val untils = devices.map { it.second }.distinct()
+            val who = if (devices.size == run.devices.size && untils.size == 1) {
+                "all" + (untils[0]?.let { if (it > now) ", counting from ${formatMoment(it, now)}" else "" } ?: "")
+            } else {
+                devices.joinToString(", ") { (i, until) ->
+                    short(i) + (until?.takeIf { it > now }?.let { " (about ${formatEta(it - now)} more)" } ?: "")
+                }
+            }
+            Row(Modifier.padding(top = 2.dp)) {
+                Icon(Icons.Default.HourglassTop, null, tint = Marginal, modifier = Modifier.padding(top = 2.dp).size(16.dp))
+                Text("$label still settling: $who.", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f).padding(start = 8.dp))
+            }
+        }
+        Text(
+            "A thermometer's readings count once it has caught up with the others: within about an hour of a move for temperature, " +
+                "but some humidity sensors take hours.",
+            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 2.dp),
+        )
     }
 }
 

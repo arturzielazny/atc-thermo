@@ -387,6 +387,19 @@ fun places(
     }
 }
 
+/**
+ * Devices of a fit still held back at the end of its readings while they catch up with the
+ * others after a change ([dev.artur.thermo.calibration.Settling]): `(index in
+ * [CalibrationRun.devices], when its readings are expected to count in ms or null if that
+ * can't be told yet)`; `null` if none.
+ */
+fun heldBack(run: CalibrationRun, temperature: Boolean): List<Pair<Int, Long?>>? {
+    val settling = if (temperature) run.report.temperature.settling else run.report.humidity.settling
+    return settling.withIndex()
+        .mapNotNull { (i, s) -> s?.let { i to it.until?.let { until -> (until * 1000).toLong() } } }
+        .ifEmpty { null }
+}
+
 /** A device in a session that seems not to be with the others, and why. */
 data class Stray(val address: String, val reason: String)
 

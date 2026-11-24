@@ -18,8 +18,14 @@ import dev.artur.thermo.calibration.calibrate
  * minutes and the precision estimate, not a fixed minimum, says whether it is good enough.
  * On real data (indoor sessions of 8 and 6 devices) 45-minute windows came within 0.011
  * and 0.024 °C RMS of fits over 10 and 18 hours.
+ *
+ * After a move each device also waits until it has caught up with the others
+ * ([Options.holdUntilSettled]). On the Oct 29 move, the hour after it was enough for
+ * temperatures (offsets in the next 15 min were within 0.005 °C of the following half hour,
+ * as without a move) but not for humidity: 0.31 %RH RMS and 0.8 at worst, against 0.07 with
+ * each device held back until settled, and nothing held back in 26 h without a move.
  */
-val SESSION_OPTIONS = Options(steadyWindow = 20 * 60.0, minSteady = 20 * 60.0)
+val SESSION_OPTIONS = Options(steadyWindow = 20 * 60.0, minSteady = 20 * 60.0, holdUntilSettled = true)
 
 /** A fit for some devices over a time window. */
 data class CalibrationRun(

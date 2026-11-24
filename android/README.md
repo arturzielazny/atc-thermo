@@ -48,9 +48,9 @@ home screen starts one, and while it runs the app opens on it.
    notification, also with the app closed. Then: write the corrections, or move the devices
    for the gains; the app says where (at least 5 °C warmer or colder than now, and for the
    humidity gain 15 %RH apart).
-3. **Second place** (optional): how far it is from the first, when readings there start
-   to count (the first hour after a big change is skipped), steady time there, and the
-   fitted gains with their precision.
+3. **Second place** (optional): how far it is from the first, which devices are still
+   settling there and roughly how much longer, steady time there, and the fitted gains
+   with their precision.
 4. **Written:** writes that fail can be retried; keeping the devices together shows what
    is left to correct. **Finish** ends it.
 
@@ -65,6 +65,16 @@ with `PrecisionDataTest` on two indoor sessions (8 and 6 devices, 10 and 18 h): 
 45 min to 3 h compared with the rest of their session at a similar temperature fell within
 the stated ± 96–99 % of the time. At other temperatures they agree less (88–94 %), which is
 what the second place's gains are for.
+
+Also Android-only: after a move each device is held back until it has caught up with the
+others (`Options.holdUntilSettled`), on top of the hour after a big change. After a change
+of 1 °C or 5 %RH within 30 minutes, each device's offset to the group median is fitted as
+an exponential decay, and its readings count once less than 0.03 °C / 0.15 %RH of it is
+left. On the 2026-10-29 move (8 devices, 21 → 16 °C, 60 → 72 %RH) temperatures had settled
+within the hour, but humidity offsets in the second place were still 0.31 %RH RMS off (0.8
+at worst) after it, against 0.07 with the hold: some sensors' humidity creeps for hours,
+one was still 0.5 %RH behind after 3 h. The two indoor sessions, without a move, lost no
+readings to it. `SettlingDataTest` replays a move from real history.
 
 ## History files
 
@@ -133,7 +143,8 @@ The JVM unit tests port the Rust tests with the same fixtures. `RealDataTest` fi
 window of real history when `THERMO_DATA_DIR`, `THERMO_FROM` and `THERMO_TO` are set; on
 the 2026-10-28/29 eight-device session it matches the Rust crate to four decimals.
 `PrecisionDataTest` checks the precision estimate against real sessions when
-`THERMO_DATA_DIR` and `THERMO_SESSIONS` are set (see the file).
+`THERMO_DATA_DIR` and `THERMO_SESSIONS` are set, and `SettlingDataTest` the hold after a
+move with `THERMO_MOVE` (see the files).
 
 Debug builds only: `adb shell am start -n dev.artur.thermo/.MainActivity --ez demo true`
 adds five simulated devices with a 14 h session (nothing is saved), and `--es screen

@@ -69,6 +69,12 @@ with `PrecisionDataTest` on two indoor sessions (8 and 6 devices, 10 and 18 h): 
 the stated ± 96–99 % of the time. At other temperatures they agree less (88–94 %), which is
 what the second place's gains are for.
 
+The time to each level assumes the statistical error keeps shrinking with the square root
+of the steady time. Replaying the same two sessions minute by minute (`SessionReplayTest`),
+every time under 2 h came true, mostly within ±50 %; longer ones all came true in one
+session and 1 of 140 in the other, where the room didn't stay as steady. So beyond 2 h the
+app says only "over 2 h, if at all".
+
 Also Android-only: after a move each device is held back until it has caught up with the
 others (`Options.holdUntilSettled`), on top of the hour after a big change. After a change
 of 1 °C or 5 %RH within 30 minutes, each device's offset to the group median is fitted as
@@ -146,8 +152,9 @@ The JVM unit tests port the Rust tests with the same fixtures. `RealDataTest` fi
 window of real history when `THERMO_DATA_DIR`, `THERMO_FROM` and `THERMO_TO` are set; on
 the 2026-10-28/29 eight-device session it matches the Rust crate to four decimals.
 `PrecisionDataTest` checks the precision estimate against real sessions when
-`THERMO_DATA_DIR` and `THERMO_SESSIONS` are set, and `SettlingDataTest` the hold after a
-move with `THERMO_MOVE` (see the files).
+`THERMO_DATA_DIR` and `THERMO_SESSIONS` are set, `SettlingDataTest` the hold after a move
+with `THERMO_MOVE`, and `SessionReplayTest` replays a whole session as the app would have
+shown it, with `THERMO_REPLAY` (see the files).
 
 Debug builds only: `adb shell am start -n dev.artur.thermo/.MainActivity --ez demo true`
 adds five simulated devices with 14 h of history, the last 2 h after a move (nothing is

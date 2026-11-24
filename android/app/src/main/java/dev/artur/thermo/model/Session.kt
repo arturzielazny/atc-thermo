@@ -175,12 +175,22 @@ data class Place(
 sealed interface Eta {
     data object Reached : Eta
     data class In(val ms: Long) : Eta
+    /** Further off than [ETA_SURE_MS]: it may come, or not. */
+    data object Later : Eta
     /** The error that time doesn't remove is larger, or it would take more than [ETA_LIMIT_MS]. */
     data object Unlikely : Eta
 }
 
 /** Estimates further out than this aren't worth stating. */
 const val ETA_LIMIT_MS = 12 * 3600_000L
+
+/**
+ * Estimates further out than this are only "later": replaying two real sessions
+ * (`SessionReplayTest`), every time under 2 h given for a level came true, mostly within
+ * ±50 %, but of longer ones all came true in one session and 1 of 140 in the other: the
+ * square-root law assumes the next hours are as steady as the last, and rooms often aren't.
+ */
+const val ETA_SURE_MS = 2 * 3600_000L
 
 /** ± two standard errors of the corrections that would be written, typical over the devices. */
 data class Precision(val temperature: Double?, val humidity: Double?)
@@ -260,7 +270,7 @@ fun eta(run: CalibrationRun, level: Level): Eta? {
     return when {
         results.any { it == Eta.Unlikely } -> Eta.Unlikely
         results.all { it == Eta.Reached } -> Eta.Reached
-        else -> Eta.In(results.filterIsInstance<Eta.In>().maxOf { it.ms })
+        else -> results.filterIsInstance<Eta.In>().maxOf { it.ms }.let { if (it > ETA_SURE_MS) Eta.Later else Eta.In(it) }
     }
 }
 

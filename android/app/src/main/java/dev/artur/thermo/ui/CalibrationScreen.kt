@@ -69,6 +69,7 @@ import androidx.compose.ui.unit.sp
 import dev.artur.thermo.calibration.Fit
 import dev.artur.thermo.model.CalibrationRun
 import dev.artur.thermo.model.CalibrationSession
+import dev.artur.thermo.model.ETA_SURE_MS
 import dev.artur.thermo.model.Eta
 import dev.artur.thermo.model.GAIN_SPAN_H
 import dev.artur.thermo.model.GAIN_SPAN_T
@@ -346,6 +347,11 @@ private fun FirstPlace(
                 "${target.label} (±%.2f °C) in about ${formatEta(wait.ms)}; you'll get a notification.".format(target.temperature),
                 style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            Eta.Later -> Text(
+                "${target.label} (±%.2f °C) would take over ${formatEta(ETA_SURE_MS)}, and may not come: ".format(target.temperature) +
+                    "a room seldom stays as steady for that long. Pick a lower precision above, or wait and see; you'll get a notification.",
+                style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
             Eta.Unlikely -> Text(
                 "${target.label} is unlikely here: they don't stay steady enough. Pick a lower precision above.",
                 style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -442,6 +448,7 @@ private fun LevelsCard(model: ThermoModel, session: CalibrationSession, run: Cal
                         Text(" now", color = Fine, style = MaterialTheme.typography.bodyMedium)
                     }
                     is Eta.In -> Text("in ~${formatEta(eta.ms)}", style = MaterialTheme.typography.bodyMedium)
+                    Eta.Later -> Text("over ${formatEta(ETA_SURE_MS)}, if at all", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.outline)
                     Eta.Unlikely -> Text("unlikely here", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.outline)
                     null -> Text("–")
                 }

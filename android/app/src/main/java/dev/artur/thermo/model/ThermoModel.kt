@@ -635,6 +635,7 @@ class ThermoModel(
         val target = when (val eta = eta(run, session.target)) {
             Eta.Reached -> " · ${session.target.label} reached"
             is Eta.In -> " · ${session.target.label} in ${formatEta(eta.ms)}"
+            Eta.Later -> " · ${session.target.label} in over ${formatEta(ETA_SURE_MS)}, if at all"
             Eta.Unlikely, null -> ""
         }
         return head + place + now + target

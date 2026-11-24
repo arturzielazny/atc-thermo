@@ -204,6 +204,20 @@ class SessionTest {
     }
 
     @Test
+    fun timesBeyondTwoHoursAreOnlyLater() {
+        fun run(stderr: Double): CalibrationRun {
+            val fit = Fit(offset = 0.1, steady = 3 * 3600.0, stderr = stderr)
+            val quantity = QuantityReport(3 * 3600.0, 21.0 to 22.0, Spread(0.2, 0.01))
+            val report = Report(listOf(SensorReport(fit, fit), SensorReport(fit, fit)), quantity, quantity, emptyList())
+            return CalibrationRun(listOf(A to "A", B to "B"), now - 3 * HOUR, now, report)
+        }
+        // ±0.03 °C: (0.015² − 0.009²) against (1.5 · stderr)² over 3 h steady.
+        val soon = eta(run(0.010), Level.Fine)
+        assertTrue(soon is Eta.In && soon.ms in 3_600_000..7_200_000, "$soon")
+        assertEquals(Eta.Later, eta(run(0.012), Level.Fine), "3.75 h: a room seldom stays that steady")
+    }
+
+    @Test
     fun aReferenceAddsItsOwnError() {
         val fit = Fit(offset = 0.1, steady = 3 * 3600.0, stderr = 0.01)
         val quantity = QuantityReport(3 * 3600.0, 21.0 to 22.0, Spread(0.2, 0.01))

@@ -147,6 +147,7 @@ the 2026-10-28/29 eight-device session it matches the Rust crate to four decimal
 move with `THERMO_MOVE` (see the files).
 
 Debug builds only: `adb shell am start -n dev.artur.thermo/.MainActivity --ez demo true`
-adds five simulated devices with a 14 h session (nothing is saved), and `--es screen
+adds five simulated devices with 14 h of history, the last 2 h after a move (nothing is
+saved; `--ez demo_session true` also starts a calibration of them), and `--es screen
 calibration|leveling|data|<address>` opens a screen. Debug builds also show over the lock
 screen, so they can be driven over adb on a locked phone.

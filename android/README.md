@@ -57,6 +57,9 @@ home screen starts one, and while it runs the app opens on it.
 The fit is the terminal app's (`crates/calibration`), with 20 minutes of steady data and a
 20-minute steadiness window instead of 60 and 30, so a first result comes after about
 40 minutes and the precision estimate, rather than a fixed minimum, says if it is enough.
+A gain's span leaves out 15 minutes of steady readings at each end rather than 5 %
+(`Options.spanTrim`), so a second place counts after half an hour however long the first
+lasted; with 5 %, a day in the first place needed more than an hour in the second.
 
 The estimate is Android-only: each correction's standard error from the residuals,
 inflated for their correlation over 30 minutes (pooled over devices), times 1.5, plus a

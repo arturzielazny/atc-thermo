@@ -24,8 +24,16 @@ import dev.artur.thermo.calibration.calibrate
  * temperatures (offsets in the next 15 min were within 0.005 °C of the following half hour,
  * as without a move) but not for humidity: 0.31 %RH RMS and 0.8 at worst, against 0.07 with
  * each device held back until settled, and nothing held back in 26 h without a move.
+ *
+ * A gain's span leaves out 15 min of steady readings at each end ([Options.spanTrim]) rather
+ * than 5 %, so a second place counts after [SECOND_PLACE_STEADY_MS] however long the first was.
  */
-val SESSION_OPTIONS = Options(steadyWindow = 20 * 60.0, minSteady = 20 * 60.0, holdUntilSettled = true)
+val SESSION_OPTIONS = Options(
+    steadyWindow = 20 * 60.0,
+    minSteady = 20 * 60.0,
+    holdUntilSettled = true,
+    spanTrim = 15 * 60.0,
+)
 
 /** A fit for some devices over a time window. */
 data class CalibrationRun(

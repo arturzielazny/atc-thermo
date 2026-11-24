@@ -56,6 +56,13 @@ data class Options(
     /** Fit a gain only if steady data spans at least this many °C / %RH. */
     val minTemperatureSpan: Double = 5.0,
     val minHumiditySpan: Double = 15.0,
+    /**
+     * Android only: steady time at each end of the readings left out of their span (for a
+     * gain and [QuantityReport.range]), so that a few stray bins don't make one; `null` for
+     * the 5th to 95th percentile, as in the Rust crate. With percentiles a second place
+     * counts only once it holds 5 % of the steady time, an hour after a day in the first.
+     */
+    val spanTrim: Double? = null,
     /** Humidity readings above this are left out (sensor saturation and creep). */
     val maxHumidity: Double = 95.0,
     /** Robust z-score above which a sensor counts as an outlier. */
@@ -112,7 +119,7 @@ data class Spread(val before: Double, val after: Double)
 data class QuantityReport(
     /** Time with at least two steady sensors. */
     val steady: Double,
-    /** 5th to 95th percentile of the steady consensus. */
+    /** 5th to 95th percentile of the steady consensus, or without [Options.spanTrim] at each end. */
     val range: Pair<Double, Double>,
     val spread: Spread,
     /**
@@ -225,7 +232,7 @@ fun calibrate(sensors: List<List<Reading>>, options: Options = Options()): Repor
         fitQuantity(humidity, humidityRates, Quantity.Humidity, options, t0)
     } else {
         val identity = List(sensors.size) { Fit.IDENTITY }
-        identity to quantityReport(humidity, identity, bin, t0)
+        identity to quantityReport(humidity, identity, options, t0)
     }
     options.reference?.let { r ->
         val referenceSteady = min(tFits[r].steady, if (humidityFitted) hFits[r].steady else Double.MAX_VALUE)
@@ -291,18 +298,31 @@ private fun fitQuantity(
         val r = residuals[i]
         fit.copy(residualRms = rms(r.values), stderr = stderr(r.values, inflation))
     }
-    return fits to quantityReport(grid, fits, options.bin, t0).copy(inflation = inflation)
+    return fits to quantityReport(grid, fits, options, t0).copy(inflation = inflation)
 }
 
-private fun quantityReport(grid: Grid, fits: List<Fit>, bin: Double, t0: Double): QuantityReport {
+private fun quantityReport(grid: Grid, fits: List<Fit>, options: Options, t0: Double): QuantityReport {
+    val bin = options.bin
     val good = fits.map { !it.outlier }
     val consensus = grid.mapNotNull { consensus(it, good) }
     return QuantityReport(
         steady = bin * steadyBinCount(grid),
-        range = percentile(consensus, 0.05) to percentile(consensus, 0.95),
+        range = spanEnds(consensus, options),
         spread = spread(grid, good, fits),
         steadyBins = grid.indices.filter { b -> grid[b].count { it != null } >= 2 }.map { t0 + it * bin },
     )
+}
+
+/**
+ * Lowest and highest of steady [values] (one per bin) that count for a span: without
+ * [Options.spanTrim] of them at each end, or the 5th and 95th percentiles.
+ */
+private fun spanEnds(values: List<Double>, options: Options): Pair<Double, Double> {
+    val trim = options.spanTrim
+    if (trim == null || values.isEmpty()) return percentile(values, 0.05) to percentile(values, 0.95)
+    val sorted = values.sorted()
+    val k = binIndex(trim, options.bin).coerceAtMost((sorted.size - 1) / 2)
+    return sorted[k] to sorted[sorted.size - 1 - k]
 }
 
 /** Averages one quantity into fixed-width bins starting at `t0`. */
@@ -649,7 +669,8 @@ private fun fitSensor(pairs: Pairs, quantity: Quantity, options: Options): Fit {
         if (model != null) Fit(offset = model.coef[0], lag = model.coef.getOrNull(1))
         else Fit(offset = median(diffs))
     }
-    if (percentile(p.xs, 0.95) - percentile(p.xs, 0.05) < quantity.minSpan(options)) return offsetOnly
+    val (low, high) = spanEnds(p.xs, options)
+    if (high - low < quantity.minSpan(options)) return offsetOnly
     // y ≈ gain·x + offset (+ k·rate), with lag = k / gain
     val rows = p.xs.indices.map { j ->
         if (withLag) doubleArrayOf(p.xs[j], 1.0, rate(j)) else doubleArrayOf(p.xs[j], 1.0)

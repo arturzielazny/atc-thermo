@@ -8,7 +8,7 @@ firmware (THB1, THB2, BTH01, TH05, …; ported from the terminal app, not yet tr
 phone). Kotlin and Jetpack Compose (Material 3), no other dependencies. Android 8 and
 newer.
 
-**Install:** download the APK from the [Android release](https://github.com/arturzielazny/atc-thermo/releases/tag/android-v0.3.0) and open it on
+**Install:** download the APK from the [Android release](https://github.com/arturzielazny/atc-thermo/releases/tag/android-v0.4.0) and open it on
 the phone (allow installing from your browser or file manager when asked).
 
 ## What it does

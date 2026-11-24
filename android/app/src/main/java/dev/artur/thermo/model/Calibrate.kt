@@ -12,6 +12,15 @@ import dev.artur.thermo.calibration.Report
 import dev.artur.thermo.calibration.SensorReport
 import dev.artur.thermo.calibration.calibrate
 
+/**
+ * Fit options for a calibration session: a steadiness window of 20 min instead of 30 and
+ * 20 min of steady data instead of an hour, so a first result comes after about 40
+ * minutes and the precision estimate, not a fixed minimum, says whether it is good enough.
+ * On real data (indoor sessions of 8 and 6 devices) 45-minute windows came within 0.011
+ * and 0.024 °C RMS of fits over 10 and 18 hours.
+ */
+val SESSION_OPTIONS = Options(steadyWindow = 20 * 60.0, minSteady = 20 * 60.0)
+
 /** A fit for some devices over a time window. */
 data class CalibrationRun(
     /** `(address, name)` per sensor, in [Report.sensors] order. */
@@ -21,6 +30,8 @@ data class CalibrationRun(
     val report: Report,
     /** The device the others were corrected to match, or `null` for the group average. */
     val reference: String? = null,
+    /** Conditions in each place of the session: one, or two once the devices were moved. */
+    val places: List<Place> = emptyList(),
 ) {
     fun isReference(index: Int): Boolean = reference != null && devices.getOrNull(index)?.first == reference
 
@@ -43,9 +54,16 @@ fun windowStart(requested: Long, devices: List<String>, lastCalibrations: Map<St
  * @throws dev.artur.thermo.calibration.CalibrationError with too few devices or too
  * little steady data, also from the reference.
  */
-fun runCalibration(devices: Devices, addresses: List<String>, since: Long, until: Long, reference: String? = null): CalibrationRun {
+fun runCalibration(
+    devices: Devices,
+    addresses: List<String>,
+    since: Long,
+    until: Long,
+    reference: String? = null,
+    moved: Long? = null,
+): CalibrationRun {
     val (names, readings) = calibrationReadings(devices, addresses, since, until)
-    return fitCalibration(names, readings, since, until, reference)
+    return fitCalibration(names, readings, since, until, reference, moved)
 }
 
 /** Fits [readings] from [calibrationReadings]; safe on any thread. */
@@ -55,11 +73,13 @@ fun fitCalibration(
     since: Long,
     until: Long,
     reference: String?,
+    moved: Long? = null,
 ): CalibrationRun {
     // A reference that isn't among the devices (never heard) leaves the average.
     val index = names.indexOfFirst { it.first == reference }.takeIf { it >= 0 }
-    val report = calibrate(readings, Options(reference = index))
-    return CalibrationRun(names, since, until, report, reference.takeIf { index != null })
+    val report = calibrate(readings, SESSION_OPTIONS.copy(reference = index))
+    val places = places(readings, report.temperature.steadyBins, SESSION_OPTIONS.bin, since, until, moved)
+    return CalibrationRun(names, since, until, report, reference.takeIf { index != null }, places)
 }
 
 /**
@@ -98,7 +118,7 @@ fun corrections(sensor: SensorReport): Pair<Correction?, Correction?> {
 
 /** The correction for one fit, or `null` with too little data for this device. */
 private fun correction(fit: Fit): Correction? =
-    if (fit.steady >= Options().minSteady) Correction(fit.gain, fit.offset) else null
+    if (fit.steady >= SESSION_OPTIONS.minSteady) Correction(fit.gain, fit.offset) else null
 
 /** Why a device's corrections are not (all) written, or empty. */
 fun notes(t: Fit, h: Fit): String = buildList {

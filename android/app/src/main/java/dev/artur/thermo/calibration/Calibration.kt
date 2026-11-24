@@ -7,6 +7,10 @@
  * all sensors agree, anchored so the corrections average to zero over the sensors that
  * are not outliers, or to one reference sensor ([Options.reference]) declared correct.
  * Durations are in seconds throughout.
+ *
+ * Unlike the Rust crate, this port also estimates how precise each correction is
+ * ([Fit.stderr], [QuantityReport.inflation]), for the app's live guidance; the fit itself is
+ * the same.
  */
 package dev.artur.thermo.calibration
 
@@ -72,6 +76,12 @@ data class Fit(
     val outlier: Boolean = false,
     /** Seconds of steady data this fit is based on. */
     val steady: Double = 0.0,
+    /**
+     * Standard error of the correction at the mean of the steady readings, from how much
+     * the residuals scatter and how long they stay correlated ([QuantityReport.inflation]);
+     * `null` without at least two steady bins.
+     */
+    val stderr: Double? = null,
 ) {
     fun apply(value: Double) = gain * value + offset
 
@@ -91,6 +101,16 @@ data class QuantityReport(
     /** 5th to 95th percentile of the steady consensus. */
     val range: Pair<Double, Double>,
     val spread: Spread,
+    /**
+     * How much residuals correlated over time inflate the variance of a mean, compared with
+     * independent bins (1 if they are independent), pooled over the non-outlier sensors.
+     * A room drifting slowly leaves long runs of residuals of the same sign, so each bin
+     * tells less than it seems. It also applies to [Fit.gainStderr], which assumes
+     * independent bins: multiply that by its square root.
+     */
+    val inflation: Double = 1.0,
+    /** Start times of the bins with at least two steady sensors, the readings fitted. */
+    val steadyBins: List<Double> = emptyList(),
 )
 
 /** A stretch of steady conditions, e.g. "inside" or "outside". */
@@ -170,13 +190,13 @@ fun calibrate(sensors: List<List<Reading>>, options: Options = Options()): Repor
         row.map { cell -> cell?.takeIf { it <= options.maxHumidity } }
     }
 
-    val (tFits, tReport) = fitQuantity(temperature, temperatureRates, Quantity.Temperature, options)
+    val (tFits, tReport) = fitQuantity(temperature, temperatureRates, Quantity.Temperature, options, t0)
     val humidityFitted = bin * steadyBinCount(humidity) >= options.minSteady
     val (hFits, hReport) = if (humidityFitted) {
-        fitQuantity(humidity, humidityRates, Quantity.Humidity, options)
+        fitQuantity(humidity, humidityRates, Quantity.Humidity, options, t0)
     } else {
         val identity = List(sensors.size) { Fit.IDENTITY }
-        identity to quantityReport(humidity, identity, bin)
+        identity to quantityReport(humidity, identity, bin, t0)
     }
     options.reference?.let { r ->
         val referenceSteady = min(tFits[r].steady, if (humidityFitted) hFits[r].steady else Double.MAX_VALUE)
@@ -198,6 +218,7 @@ private fun fitQuantity(
     rates: Grid,
     quantity: Quantity,
     options: Options,
+    t0: Double,
 ): Pair<List<Fit>, QuantityReport> {
     val sensors = grid.firstOrNull()?.size ?: 0
     var good = List(sensors) { true }
@@ -235,19 +256,23 @@ private fun fitQuantity(
         }
     }
     corrected = correctedGrid(grid, fits)
+    val residuals = fits.mapIndexed { i, fit -> residuals(pairs(grid, rates, corrected, good, i, itself = false), fit) }
+    val inflation = inflation(residuals.filterIndexed { i, _ -> good[i] })
     fits = fits.mapIndexed { i, fit ->
-        fit.copy(residualRms = residualRms(pairs(grid, rates, corrected, good, i, itself = false), fit))
+        val r = residuals[i]
+        fit.copy(residualRms = rms(r.values), stderr = stderr(r.values, inflation))
     }
-    return fits to quantityReport(grid, fits, options.bin)
+    return fits to quantityReport(grid, fits, options.bin, t0).copy(inflation = inflation)
 }
 
-private fun quantityReport(grid: Grid, fits: List<Fit>, bin: Double): QuantityReport {
+private fun quantityReport(grid: Grid, fits: List<Fit>, bin: Double, t0: Double): QuantityReport {
     val good = fits.map { !it.outlier }
     val consensus = grid.mapNotNull { consensus(it, good) }
     return QuantityReport(
         steady = bin * steadyBinCount(grid),
         range = percentile(consensus, 0.05) to percentile(consensus, 0.95),
         spread = spread(grid, good, fits),
+        steadyBins = grid.indices.filter { b -> grid[b].count { it != null } >= 2 }.map { t0 + it * bin },
     )
 }
 
@@ -368,8 +393,8 @@ private fun rates(raw: Grid, bin: Double): Grid {
 private fun correctedGrid(grid: Grid, fits: List<Fit>): Grid =
     grid.map { row -> row.mapIndexed { i, cell -> cell?.let { fits[i].apply(it) } } }
 
-/** Readings of one sensor paired with the median of a group of sensors, see [pairs]. */
-private class Pairs(val xs: List<Double>, val ys: List<Double>, val rates: List<Double?>)
+/** Readings of one sensor paired with the median of a group of sensors, see [pairs]; [bins] are their grid indices. */
+private class Pairs(val xs: List<Double>, val ys: List<Double>, val rates: List<Double?>, val bins: List<Int> = emptyList())
 
 /**
  * Readings of sensor [i] paired with the median of the other included sensors in
@@ -393,6 +418,7 @@ private fun pairs(
     val xs = mutableListOf<Double>()
     val ys = mutableListOf<Double>()
     val rs = mutableListOf<Double?>()
+    val bins = mutableListOf<Int>()
     for (b in grid.indices) {
         val x = grid[b][i] ?: continue
         val values = reference[b].filterIndexed { j, _ -> others[j] }.filterNotNull().toMutableList()
@@ -402,8 +428,9 @@ private fun pairs(
         xs += x
         ys += median(values)
         rs += rates[b][i]
+        bins += b
     }
-    return Pairs(xs, ys, rs)
+    return Pairs(xs, ys, rs, bins)
 }
 
 /** Fits one sensor's readings to the medians they are paired with. */
@@ -473,17 +500,70 @@ private fun anchor(fits: List<Fit>, include: List<Boolean>): List<Fit> {
     }
 }
 
-/** RMS of what the fit (including lag, where modelled) leaves unexplained. */
-private fun residualRms(p: Pairs, fit: Fit): Double {
-    if (p.xs.isEmpty()) return 0.0
-    var sum = 0.0
-    for (j in p.xs.indices) {
+/** What the fit (including lag, where modelled) leaves unexplained, per bin. */
+private class Residuals(val bins: List<Int>, val values: List<Double>)
+
+private fun residuals(p: Pairs, fit: Fit): Residuals = Residuals(
+    p.bins,
+    p.xs.indices.map { j ->
         val rate = p.rates[j]
         val lagTerm = if (fit.lag != null && rate != null) fit.gain * fit.lag * rate else 0.0
-        val r = fit.apply(p.xs[j]) + lagTerm - p.ys[j]
-        sum += r * r
+        fit.apply(p.xs[j]) + lagTerm - p.ys[j]
+    },
+)
+
+private fun rms(values: List<Double>): Double =
+    if (values.isEmpty()) 0.0 else sqrt(values.sumOf { it * it } / values.size)
+
+/**
+ * Lags, in bins, over which [inflation] sums the residuals' autocorrelation: 30 min with
+ * 5-minute bins, about as long as a room's small drifts and the cases' lag last.
+ */
+private const val CORRELATION_LAGS = 6
+
+/**
+ * Variance inflation of a mean of correlated residuals: `1 + 2 Σ w_k ρ_k` over lags of 1 to
+ * [CORRELATION_LAGS] bins, with Bartlett weights `w_k = 1 − k / (K + 1)` that keep it
+ * positive. The autocorrelations ρ_k are pooled over sensors, as the room's drifts are
+ * shared and a single sensor has too few bins in a short window. At least 1.
+ */
+private fun inflation(sensors: List<Residuals>): Double {
+    var variance = 0.0
+    var count = 0
+    val products = DoubleArray(CORRELATION_LAGS + 1)
+    val pairs = IntArray(CORRELATION_LAGS + 1)
+    for (r in sensors) {
+        if (r.values.size < 2) continue
+        val mean = r.values.average()
+        val byBin = HashMap<Int, Double>()
+        r.bins.zip(r.values).forEach { (b, v) -> byBin[b] = v - mean }
+        for ((b, v) in byBin) {
+            variance += v * v
+            count++
+            for (k in 1..CORRELATION_LAGS) {
+                val later = byBin[b + k] ?: continue
+                products[k] += v * later
+                pairs[k]++
+            }
+        }
     }
-    return sqrt(sum / p.xs.size)
+    if (count < 2 || variance <= 0.0) return 1.0
+    val perBin = variance / count
+    var inflation = 1.0
+    for (k in 1..CORRELATION_LAGS) {
+        if (pairs[k] == 0) continue
+        val rho = products[k] / pairs[k] / perBin
+        inflation += 2.0 * (1.0 - k / (CORRELATION_LAGS + 1.0)) * rho
+    }
+    return max(inflation, 1.0)
+}
+
+/** Standard error of the mean of [values], inflated for correlation; `null` with fewer than two. */
+private fun stderr(values: List<Double>, inflation: Double): Double? {
+    if (values.size < 2) return null
+    val mean = values.average()
+    val variance = values.sumOf { (it - mean) * (it - mean) } / (values.size - 1)
+    return sqrt(inflation * variance / values.size)
 }
 
 private fun spread(grid: Grid, include: List<Boolean>, fits: List<Fit>): Spread {

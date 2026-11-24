@@ -51,6 +51,7 @@ import androidx.compose.ui.unit.dp
 import dev.artur.thermo.model.ScanStatus
 import dev.artur.thermo.model.ThermoModel
 import dev.artur.thermo.ui.CalibrationScreen
+import dev.artur.thermo.ui.CalibrationSetupScreen
 import dev.artur.thermo.ui.DataScreen
 import dev.artur.thermo.ui.DeviceScreen
 import dev.artur.thermo.ui.HomeActions
@@ -82,6 +83,8 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         DebugHooks.onCreate(this)
         permitted = controller.hasPermissions()
+        // A calibration in progress is what the app is for until it ends.
+        if (savedInstanceState == null && controller.model.calibration != null) stack.add(Screen.Calibration)
         handle(intent)
         setContent { ThermoTheme { Surface { Root() } } }
     }
@@ -117,10 +120,7 @@ class MainActivity : ComponentActivity() {
 
     private fun open(screen: Screen, model: ThermoModel) {
         when (screen) {
-            Screen.Calibration -> if (model.calibration == null) {
-                model.openCalibration()
-                controller.refitNow()
-            }
+            Screen.Calibration -> if (model.calibration != null) controller.refitNow()
             Screen.Leveling -> if (model.leveling == null) model.openLeveling()
             else -> {}
         }
@@ -131,7 +131,6 @@ class MainActivity : ComponentActivity() {
     private fun back() {
         val model = controller.model
         when (stack.removeAt(stack.lastIndex)) {
-            Screen.Calibration -> model.closeCalibration()
             Screen.Leveling -> model.closeLeveling()
             else -> {}
         }
@@ -214,8 +213,9 @@ class MainActivity : ComponentActivity() {
                 onSettings = { settingsFor = listOf(screen.address) },
                 onRename = { renaming = screen.address },
             )
-            Screen.Calibration -> model.calibration?.let {
-                CalibrationScreen(model, it, revision, now, snackbar, onWindowChanged = controller::refitNow, onBack = ::back)
+            Screen.Calibration -> when (val session = model.calibration) {
+                null -> CalibrationSetupScreen(model, revision, now, snackbar, onStarted = controller::refitNow, onBack = ::back)
+                else -> CalibrationScreen(model, session, revision, now, snackbar, onChanged = controller::refitNow, onBack = ::back)
             }
             Screen.Leveling -> model.leveling?.let { LevelingScreen(model, it, revision, now, snackbar, onBack = ::back) }
             Screen.Data -> DataScreen(controller, snackbar, onBack = ::back)

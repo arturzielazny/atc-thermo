@@ -31,9 +31,7 @@ const val RECENTLY_HEARD_MS = 2 * 60_000L
 /** Rows of devices not heard from for this long are shown as stale. */
 const val STALE_AFTER_MS = 2 * 60_000L
 
-/** Calibration window when the screen opens: the last 6 h. */
-const val DEFAULT_CALIBRATION_SPAN_MS = 6 * 3600_000L
-/** Calibration window edges move in steps of this much. */
+/** The start of a calibration's readings moves in steps of this much. */
 const val WINDOW_STEP_MS = 15 * 60_000L
 /** How often the calibration screen refits as new data arrives. */
 const val CALIBRATION_REFRESH_MS = 60_000L
@@ -87,29 +85,8 @@ data class DeviceState(
     val coefficients: dev.artur.thermo.atc.Coefficients? = null,
 )
 
-/** The calibration screen: which devices, over which window, and the latest fit. */
-class CalibrationSession(
-    /** The devices picked, or `null` for every known device. */
-    var chosen: List<String>?,
-    private val all: () -> List<String>,
-    /** First moment of data to fit; never before the devices' last calibration. */
-    var start: Long,
-    /** Last moment of data to fit; `null` follows the current time. */
-    var end: Long?,
-) {
-    /** The device the others are corrected to match, or `null` for their average. */
-    var reference: String? = null
-    /** The devices compared, in list order. */
-    val devices: List<String> get() = chosen ?: all()
-    var result: Result<CalibrationRun>? = null
-    var computing = false
-    var computedAt: Long? = null
-    /** The devices of the last fit; a change (e.g. history loaded) refits right away. */
-    internal var fitted: List<String>? = null
-}
-
 /** Readings handed to a background fit; see [ThermoModel.calibrationInput]. */
-class CalibrationInput(val devices: List<String>, val since: Long, val until: Long, val end: Long?, val reference: String?)
+class CalibrationInput(val devices: List<String>, val since: Long, val until: Long, val reference: String?, val moved: Long?)
 
 class ThermoModel(
     /** Runs a job on a device; `false` if the worker is gone. `null` disables device commands. */
@@ -119,6 +96,8 @@ class ThermoModel(
     /** Runs a problem report from [io] back on the main thread. */
     private val main: (() -> Unit) -> Unit = { it() },
     private val clock: () -> Long = System::currentTimeMillis,
+    /** Keeps the calibration session ([CalibrationSession.encode]) for the next start; `null` when it ends. */
+    private val saveCalibration: (String?) -> Unit = {},
 ) {
     val devices = Devices()
     var metric = Metric.Temperature
@@ -140,6 +119,8 @@ class ThermoModel(
 
     var calibration: CalibrationSession? = null
         private set
+    /** Said once when a session's target is reached, until [takeCalibrationAnnouncement]. */
+    private var announcement: String? = null
     var leveling: Leveling? = null
         private set
     /** The devices levelled, or `null` for every known device. */
@@ -193,6 +174,11 @@ class ThermoModel(
         lastDownloads.putAll(downloads)
         for ((address, offset) in clocks) update(address) { it.copy(clockOffset = offset) }
         this.store = store
+        calibration?.let {
+            it.start = windowStart(it.start, it.devices, lastCalibrations)
+            // Fitted before history arrived: refit now rather than in a minute.
+            it.computedAt = null
+        }
         changed()
     }
 
@@ -246,6 +232,10 @@ class ThermoModel(
                     onFailure = { JobResult(false, it.message ?: it.toString(), clock()) },
                 )
                 update(event.address) { it.copy(queued = (it.queued - 1).coerceAtLeast(0), busy = null, last = message) }
+                // A correction still pending once the device's jobs are done didn't get written.
+                calibration?.let { session ->
+                    if (state(event.address).queued == 0) session.pending.remove(event.address)?.let { session.failed[event.address] = it }
+                }
             }
         }
         changed()
@@ -346,8 +336,14 @@ class ThermoModel(
         persist("calibration log") { it.recordCalibration(record) }
         // Data before the change is now in other units; refit from scratch.
         calibration?.let {
+            if (outcome is Outcome.Calibrated && it.pending.remove(address) != null) {
+                it.written = at
+                it.moved = null
+            }
             it.start = windowStart(it.start, it.devices, lastCalibrations)
             it.computedAt = null
+            it.result = null
+            saveCalibration(it.encode())
         }
     }
 
@@ -454,58 +450,114 @@ class ThermoModel(
 
     // ------------------------------------------------------------ calibration
 
-    fun openCalibration(): CalibrationSession {
-        // Compared by default: the selected devices if at least two, else all.
-        val chosen = if (marked.size >= 2) selectedInOrder() else null
-        val session = CalibrationSession(chosen, { devices.all().map { it.address } }, start = 0, end = null)
-        session.start = windowStart(clock() - DEFAULT_CALIBRATION_SPAN_MS, session.devices, lastCalibrations)
+    /**
+     * Where a calibration of [devices] would start: since they have read alike, but not
+     * before their last calibration or the history kept.
+     */
+    fun suggestedCalibrationStart(devices: List<String>): Long {
+        val now = clock()
+        return togetherSince(this.devices, devices, now, maxOf(earliestCalibrationStart(devices), now - HISTORY_SPAN_MS))
+    }
+
+    /** Starts calibrating [devices] (at least two), using their readings from [start]. */
+    fun startCalibration(devices: List<String>, reference: String? = null, start: Long = suggestedCalibrationStart(devices)) {
+        val ordered = this.devices.all().map { it.address }.filter { it in devices }
+        if (ordered.size < 2) return warn("pick at least two thermometers")
+        val now = clock()
+        calibration = CalibrationSession(
+            ordered,
+            reference?.takeIf { it in ordered },
+            windowStart(minOf(start, now), ordered, lastCalibrations),
+            began = now,
+        )
+        announcement = null
+        marked.clear()
+        calibrationChanged()
+    }
+
+    /** A session saved by an earlier run of the app. */
+    fun restoreCalibration(text: String?) {
+        val session = text?.let(CalibrationSession::decode) ?: return
+        session.start = windowStart(session.start, session.devices, lastCalibrations)
         calibration = session
         changed()
-        return session
     }
 
-    fun closeCalibration() {
+    fun endCalibration() {
         calibration = null
+        announcement = null
+        saveCalibration(null)
         changed()
     }
 
-    /** Where the calibration window may start at the earliest: the devices' last calibration. */
+    private fun calibrationChanged() {
+        calibration?.let { saveCalibration(it.encode()) }
+        changed()
+    }
+
+    /** The devices were moved to a second place, to fit gains: [at], by default now. */
+    fun markMoved(at: Long = clock()) {
+        val session = calibration ?: return
+        if (session.stage != Stage.FirstPlace) return
+        session.moved = at.coerceIn(session.start, clock())
+        session.announced = false
+        session.computedAt = null
+        calibrationChanged()
+    }
+
+    /** Back to one place: the move was a mistake. */
+    fun unmarkMoved() {
+        val session = calibration ?: return
+        session.moved = null
+        session.computedAt = null
+        calibrationChanged()
+    }
+
+    /** Where the readings of [devices] may start at the earliest: their last calibration. */
     fun earliestCalibrationStart(devices: List<String>): Long = windowStart(0, devices, lastCalibrations)
 
-    /** Earliest moment with history of any of [devices], for the window slider. */
+    /** Earliest moment with history of any of [devices]. */
     fun historyStart(devices: List<String>): Long? =
         devices.mapNotNull { this.devices[it]?.history?.firstOrNull()?.at }.minOrNull()
 
-    /** Sets the window, snapped to [WINDOW_STEP_MS] and kept after the last calibration. */
-    fun setCalibrationWindow(start: Long, end: Long?) {
+    /** Uses readings from [start], snapped to [WINDOW_STEP_MS] and kept after the last calibration. */
+    fun setCalibrationStart(start: Long) {
         val session = calibration ?: return
-        val now = clock()
-        val earliest = earliestCalibrationStart(session.devices)
-        val snappedEnd = end?.let { snapToStep(it) }?.takeIf { it < now }
-        val limit = (snappedEnd ?: now) - WINDOW_STEP_MS
-        session.start = maxOf(earliest, minOf(snapToStep(start), limit))
-        session.end = snappedEnd?.coerceAtLeast(session.start + WINDOW_STEP_MS)
+        val latest = (session.moved ?: clock()) - WINDOW_STEP_MS
+        session.start = maxOf(earliestCalibrationStart(session.devices), minOf(snapToStep(start), latest))
         session.computedAt = null
-        changed()
+        calibrationChanged()
     }
 
+    /** Changes the devices calibrated; at least two. */
     fun setCalibrationDevices(devices: List<String>) {
         val session = calibration ?: return
-        session.chosen = devices.takeIf { it.size < this.devices.size }
-        session.start = windowStart(session.start, devices, lastCalibrations)
+        val ordered = this.devices.all().map { it.address }.filter { it in devices }
+        if (ordered.size < 2) return
+        session.devices = ordered
+        session.start = windowStart(session.start, ordered, lastCalibrations)
+        if (session.reference !in ordered) session.reference = null
         session.computedAt = null
-        changed()
+        calibrationChanged()
     }
 
-    /** Corrects the others to match [address], one of the compared devices, or `null` for their average. */
+    /** Corrects the others to match [address], one of the devices, or `null` for their average. */
     fun setCalibrationReference(address: String?) {
         val session = calibration ?: return
         session.reference = address?.takeIf { it in session.devices }
         session.computedAt = null
-        changed()
+        calibrationChanged()
     }
 
-    /** What to fit, if the calibration screen's result is due for a refresh. */
+    /** Aims for [level]; one already reached isn't announced again. */
+    fun setCalibrationTarget(level: Level) {
+        val session = calibration ?: return
+        session.target = level
+        session.announced = session.result?.getOrNull()?.let { ready(session, it) } ?: false
+        calibrationChanged()
+    }
+
+    /** What to fit, if the session's result is due for a refresh. */
     fun calibrationInput(force: Boolean = false): CalibrationInput? {
         val session = calibration ?: return null
         val now = clock()
@@ -516,28 +568,108 @@ class ThermoModel(
         session.fitted = session.devices
         session.start = windowStart(session.start, session.devices, lastCalibrations)
         if (session.reference !in session.devices) session.reference = null
-        return CalibrationInput(session.devices, session.start, session.end ?: now, session.end, session.reference)
+        return CalibrationInput(session.devices, session.start, now, session.reference, session.moved)
     }
 
     /** Fits [input] here; the app fits [calibrationReadings] off the main thread instead. */
     fun fit(input: CalibrationInput): Result<CalibrationRun> =
-        runCatching { runCalibration(devices, input.devices, input.since, input.until, input.reference) }
+        runCatching { runCalibration(devices, input.devices, input.since, input.until, input.reference, input.moved) }
 
     fun onCalibrationResult(input: CalibrationInput, result: Result<CalibrationRun>) {
         val session = calibration ?: return
         session.computing = false
-        // A fit of a window or devices changed since is stale.
-        if (session.devices != input.devices || session.start != input.since || session.end != input.end ||
-            session.reference != input.reference
+        // A fit of devices or settings changed since is stale.
+        if (session.devices != input.devices || session.start != input.since || session.reference != input.reference ||
+            session.moved != input.moved
         ) return
         session.result = result
         session.computedAt = clock()
+        val run = result.getOrNull()
+        if (run != null && !session.announced && session.stage != Stage.Checking && ready(session, run)) {
+            session.announced = true
+            announcement = announce(session, run)
+            calibrationChanged()
+        }
         changed()
     }
 
-    /** Corrections that "apply" writes: `(address, temperature, humidity)`. */
+    /** Whether the session's target is reached: precision, and in a second place also the gains. */
+    private fun ready(session: CalibrationSession, run: CalibrationRun): Boolean {
+        if (eta(run, session.target) != Eta.Reached) return false
+        if (session.stage != Stage.SecondPlace) return true
+        val second = run.places.getOrNull(1) ?: return false
+        return second.steady >= SECOND_PLACE_STEADY_MS && gainStatus(run).fitted > 0
+    }
+
+    private fun announce(session: CalibrationSession, run: CalibrationRun): String {
+        val count = "${session.devices.size} thermometers"
+        return if (session.stage == Stage.SecondPlace) {
+            val gain = gainStatus(run).uncertainty?.let { " (±%.2f %%)".fmt(it * 100) } ?: ""
+            "Gains ready$gain for $count: write the corrections."
+        } else {
+            val t = precision(run).temperature?.let { "±%.2f °C".fmt(it) } ?: session.target.label
+            "$t reached for $count: write the corrections, or move them to a second place for the gains."
+        }
+    }
+
+    /** The text to show once when a session's target was reached, or `null`. */
+    fun takeCalibrationAnnouncement(): String? = announcement.also { announcement = null }
+
+    /** One line on the session's progress, for a notification. */
+    fun calibrationStatus(): String? {
+        val session = calibration ?: return null
+        val head = "Calibrating ${session.devices.size}"
+        if (session.pending.isNotEmpty()) return "$head · writing to ${session.pending.size}"
+        if (session.stage == Stage.Checking) return "$head · written, checking"
+        val result = session.result ?: return "$head · fitting"
+        val run = result.getOrElse { error ->
+            return head + (firstEstimateIn(error)?.let { " · first estimate in ${formatEta(it)}" } ?: " · ${error.message}")
+        }
+        val now = precision(run).temperature?.let { " · ±%.3f °C now".fmt(it) } ?: ""
+        if (session.stage == Stage.SecondPlace) {
+            val steady = run.places.getOrNull(1)?.steady ?: 0
+            val gain = gainStatus(run).uncertainty?.let { "gain ±%.2f %%".fmt(it * 100) } ?: "no gain yet"
+            return "$head · second place · ${formatAge(steady)} steady there · $gain"
+        }
+        val place = ""
+        val target = when (val eta = eta(run, session.target)) {
+            Eta.Reached -> " · ${session.target.label} reached"
+            is Eta.In -> " · ${session.target.label} in ${formatEta(eta.ms)}"
+            Eta.Unlikely, null -> ""
+        }
+        return head + place + now + target
+    }
+
+    /** Devices of the session that seem out of range or not next to the others. */
+    fun calibrationStrays(): List<Stray> {
+        val session = calibration ?: return emptyList()
+        val now = clock()
+        val strays = mutableListOf<Stray>()
+        val heard = session.devices.mapNotNull { address ->
+            val device = devices[address]
+            if (device == null || now - device.lastSeen > SESSION_SILENT_MS) {
+                val ago = device?.let { " for ${formatAge(now - it.lastSeen)}" } ?: " yet"
+                strays += Stray(address, "not heard$ago: still in range?")
+                null
+            } else {
+                device.temperature?.let { address to it.toDouble() }
+            }
+        }
+        // Right after a move the cases catch up at their own speed.
+        val settling = session.moved?.let { now - it < SESSION_OPTIONS.settleTime * 1000 } ?: false
+        if (heard.size >= 2 && !settling) {
+            val middle = dev.artur.thermo.calibration.median(heard.map { it.second })
+            for ((address, t) in heard) {
+                if (abs(t - middle) > STRAY_TEMPERATURE) strays += Stray(address, "reads %+.1f °C from the others: still next to them?".fmt(t - middle))
+            }
+        }
+        return strays
+    }
+
+    /** Corrections that "write" sends: `(address, temperature, humidity)`. */
     fun calibrationWrites(): List<Triple<String, Correction, Correction>> {
         val run = calibration?.result?.getOrNull() ?: return emptyList()
+        if (calibration?.stage == Stage.Checking) return emptyList()
         return run.devices.indices.mapNotNull { i ->
             val (t, h) = run.corrections(i)
             if (t == null && h == null) null
@@ -546,7 +678,25 @@ class ThermoModel(
     }
 
     fun applyCalibration() {
-        for ((address, t, h) in calibrationWrites()) enqueue(address, Action.Calibrate(t, h))
+        val session = calibration ?: return
+        session.failed.clear()
+        for ((address, t, h) in calibrationWrites()) {
+            session.pending[address] = t to h
+            enqueue(address, Action.Calibrate(t, h))
+        }
+        changed()
+    }
+
+    /** Writes again the corrections that failed, e.g. once the device is back in range. */
+    fun retryCalibrationWrites() {
+        val session = calibration ?: return
+        val retry = session.failed.toMap()
+        session.failed.clear()
+        for ((address, correction) in retry) {
+            session.pending[address] = correction
+            enqueue(address, Action.Calibrate(correction.first, correction.second))
+        }
+        changed()
     }
 
     fun resetCalibration(devices: Collection<String>) {

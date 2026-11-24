@@ -20,6 +20,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.DrawScope
@@ -69,6 +70,10 @@ fun HistoryChart(
     points: Boolean = false,
     /** Shade what lies outside this time range, e.g. a calibration window. */
     window: Pair<Long, Long>? = null,
+    /** Moments marked with a dashed line, e.g. when the devices were moved. */
+    marks: List<Long> = emptyList(),
+    /** Time ranges drawn as a strip along the bottom, e.g. the readings a fit used. */
+    used: List<Pair<Long, Long>> = emptyList(),
 ) {
     val measurer = rememberTextMeasurer()
     var cursor by remember { mutableStateOf<Float?>(null) }
@@ -79,6 +84,7 @@ fun HistoryChart(
     val tooltipBackground = colors.inverseSurface.copy(alpha = 0.92f)
     val tooltipText = colors.inverseOnSurface
     val cursorLine = colors.onSurface.copy(alpha = 0.6f)
+    val usedColor = colors.primary.copy(alpha = 0.6f)
 
     Canvas(
         modifier
@@ -149,6 +155,18 @@ fun HistoryChart(
             if (x0 > plot.left) drawRect(shade, Offset(plot.left, plot.top), Size(x0 - plot.left, plot.height))
             if (x1 < plot.right) drawRect(shade, Offset(x1, plot.top), Size(plot.right - x1, plot.height))
             for (x in listOf(x0, x1)) drawLine(colors.primary, Offset(x, plot.top), Offset(x, plot.bottom), 2.dp.toPx())
+        }
+        val strip = 4.dp.toPx()
+        for ((a, b) in used) {
+            if (b < from || a > to) continue
+            val x0 = plot.xOf(a, from, to).coerceIn(plot.left, plot.right)
+            val x1 = plot.xOf(b, from, to).coerceIn(plot.left, plot.right)
+            drawRect(usedColor, Offset(x0, plot.bottom - strip), Size(max(x1 - x0, 1f), strip))
+        }
+        for (t in marks) {
+            if (t < from || t > to) continue
+            val x = plot.xOf(t, from, to)
+            drawLine(colors.tertiary, Offset(x, plot.top), Offset(x, plot.bottom), 1.5.dp.toPx(), pathEffect = PathEffect.dashPathEffect(floatArrayOf(10f, 8f)))
         }
 
         val stroke = Stroke(width = 1.8.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round)

@@ -24,6 +24,9 @@ import androidx.core.content.ContextCompat
 
 private const val CHANNEL = "recording"
 private const val NOTIFICATION_ID = 1
+/** Channel and id of the notification that a calibration is ready, which alerts unlike the ongoing one. */
+private const val CALIBRATION_CHANNEL = "calibration"
+private const val CALIBRATION_NOTIFICATION_ID = 2
 /** How often the notification's text follows the readings. */
 private const val UPDATE_INTERVAL_MS = 30_000L
 
@@ -79,10 +82,11 @@ class MonitorService : Service() {
         val range = model.devices.all().mapNotNull { it.temperature }.let { temps ->
             if (temps.isEmpty()) "" else " · %.1f–%.1f °C".format(temps.min(), temps.max())
         }
+        val calibrating = model.calibrationStatus()
         return NotificationCompat.Builder(this, CHANNEL)
             .setSmallIcon(R.drawable.ic_thermometer)
-            .setContentTitle("Recording thermometers")
-            .setContentText("$heard of ${model.devices.size} heard recently$range")
+            .setContentTitle(if (calibrating != null) "Calibrating thermometers" else "Recording thermometers")
+            .setContentText(calibrating?.substringAfter(" · ") ?: "$heard of ${model.devices.size} heard recently$range")
             .setContentIntent(open)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
@@ -100,6 +104,30 @@ class MonitorService : Service() {
 
         fun stop(context: Context) {
             context.stopService(Intent(context, MonitorService::class.java))
+        }
+
+        fun clearAnnouncement(context: Context) {
+            context.getSystemService(NotificationManager::class.java).cancel(CALIBRATION_NOTIFICATION_ID)
+        }
+
+        /** Says that a calibration reached its target, with a sound, also with the app closed. */
+        fun announce(context: Context, text: String) {
+            val manager = context.getSystemService(NotificationManager::class.java)
+            manager.createNotificationChannel(
+                NotificationChannel(CALIBRATION_CHANNEL, "Calibration ready", NotificationManager.IMPORTANCE_DEFAULT).apply {
+                    description = "When a calibration reaches the precision chosen"
+                },
+            )
+            val open = PendingIntent.getActivity(context, 2, Intent(context, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
+            val notification = NotificationCompat.Builder(context, CALIBRATION_CHANNEL)
+                .setSmallIcon(R.drawable.ic_thermometer)
+                .setContentTitle("Calibration ready")
+                .setContentText(text)
+                .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+                .setContentIntent(open)
+                .setAutoCancel(true)
+                .build()
+            runCatching { manager.notify(CALIBRATION_NOTIFICATION_ID, notification) }
         }
     }
 }

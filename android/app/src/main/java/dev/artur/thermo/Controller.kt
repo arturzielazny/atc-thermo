@@ -42,6 +42,8 @@ import java.util.concurrent.Executors
  * starts everyone at the default, on.
  */
 private const val PREF_BACKGROUND = "record_always"
+/** Name of the preference holding the calibration in progress ([dev.artur.thermo.model.CalibrationSession.encode]). */
+private const val PREF_CALIBRATION = "calibration_session"
 /** Name of the preference saying the battery optimisation exemption was asked for once. */
 private const val PREF_ASKED_BATTERY = "asked_battery_exemption"
 private const val PREFS = "thermo"
@@ -67,17 +69,20 @@ class Controller(private val app: Application) {
     private var runner: JobRunner? = null
     private var scanner: Scanner? = null
     private var loaded = false
+    /** Whether a calibration was in progress at the last tick, to clear its notification when it ends. */
+    private var calibrating = false
+
+    private val prefs = app.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
     val model = ThermoModel(
         jobs = { job -> runner?.submit(job) ?: false },
         io = { io.execute(it) },
         main = { mainHandler.post(it) },
+        saveCalibration = { text -> prefs.edit().putString(PREF_CALIBRATION, text).apply() },
     )
 
     /** Where the CSV history lives: app storage on shared storage, reachable over USB. */
     val dataDir: File = File(app.getExternalFilesDir(null) ?: app.filesDir, "thermo")
-
-    private val prefs = app.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
     /** Whether recording goes on with the app closed, through [MonitorService]. */
     var recordInBackground: Boolean
@@ -120,6 +125,8 @@ class Controller(private val app: Application) {
         ContextCompat.registerReceiver(
             app, bluetoothState, IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED), ContextCompat.RECEIVER_NOT_EXPORTED,
         )
+        // Before history: the activity opens on a calibration in progress.
+        model.restoreCalibration(prefs.getString(PREF_CALIBRATION, null))
         loadHistory()
         scope.launch {
             var ticks = 0
@@ -127,6 +134,9 @@ class Controller(private val app: Application) {
                 delay(1_000)
                 model.onTick()
                 refitCalibration()
+                model.takeCalibrationAnnouncement()?.let { MonitorService.announce(app, it) }
+                if (calibrating && model.calibration == null) MonitorService.clearAnnouncement(app)
+                calibrating = model.calibration != null
                 if (ticks++ % WIDGET_INTERVAL_S == 0) ThermoWidget.update(app)
             }
         }
@@ -171,7 +181,7 @@ class Controller(private val app: Application) {
         val (names, readings) = calibrationReadings(model.devices, input.devices, input.since, input.until)
         scope.launch {
             val result = withContext(Dispatchers.Default) {
-                runCatching { fitCalibration(names, readings, input.since, input.until, input.reference) }
+                runCatching { fitCalibration(names, readings, input.since, input.until, input.reference, input.moved) }
             }
             model.onCalibrationResult(input, result)
         }

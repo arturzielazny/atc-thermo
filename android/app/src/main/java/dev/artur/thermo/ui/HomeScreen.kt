@@ -134,6 +134,9 @@ fun HomeScreen(model: ThermoModel, revision: Long, now: Long, snackbar: Snackbar
             contentPadding = PaddingValues(start = 12.dp, end = 12.dp, bottom = 24.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
+            item(key = "calibration") {
+                CalibrationCard(model, now, actions::openCalibration)
+            }
             item(key = "chart") {
                 ChartCard(model, devices, revision, now, points, onTogglePoints = { points = !points })
             }
@@ -181,7 +184,7 @@ private fun SelectionBar(model: ThermoModel, actions: HomeActions) {
                 if (targets.size == 1) {
                     DropdownMenuItem(text = { Text("Rename") }, onClick = { menu = false; actions.openRename(targets[0]) })
                 }
-                if (targets.size >= 2) {
+                if (targets.size >= 2 && model.calibration == null) {
                     DropdownMenuItem(text = { Text("Calibrate these") }, onClick = { menu = false; actions.openCalibration() })
                 }
                 DropdownMenuItem(text = { Text("Level signal of these") }, onClick = { menu = false; actions.openLeveling() })

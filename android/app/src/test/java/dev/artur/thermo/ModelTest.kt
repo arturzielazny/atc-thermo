@@ -402,8 +402,9 @@ class ThermoModelTest {
         model.toggleSelected(C)
         model.identify(model.selected)
         assertEquals(setOf(C to 1, A to 2), drain().map { it.address to (it.action as Action.Identify).number }.toSet())
-        assertEquals(listOf(C, A), model.openCalibration().devices)
-        model.closeCalibration()
+        model.startCalibration(model.selected.toList())
+        assertEquals(listOf(C, A), model.calibration!!.devices)
+        model.endCalibration()
 
         model.toggleOrder()
         assertEquals(3, model.deviceNumber(C), "back to address order")
@@ -488,13 +489,12 @@ class ThermoModelTest {
     }
 
     @Test
-    fun screensOpenedBeforeDevicesAreKnownFollowAllDevices() {
+    fun levellingOpenedBeforeDevicesAreKnownFollowsAllDevices() {
         val model = ThermoModel(jobs = { jobs += it; true }, clock = { now })
-        val session = model.openCalibration()
+        model.startCalibration(emptyList())
+        assertNull(model.calibration, "a calibration needs two devices")
         model.openLeveling()
-        assertEquals(emptyList(), session.devices)
         for (address in listOf(A, B)) model.onAdvert(advert(MEASUREMENT, now, address))
-        assertEquals(listOf(A, B), session.devices)
         assertEquals(setOf(A, B), model.levelingDevices)
         // Devices heard while levelling get their settings read, once.
         assertEquals(2, drain().count { it.action == Action.ReadConfig })
@@ -503,17 +503,16 @@ class ThermoModelTest {
 
         model.levelingDevices = setOf(A)
         assertEquals(setOf(A), model.levelingDevices)
-        model.setCalibrationDevices(listOf(A, B))
-        assertEquals(listOf(A, B), session.devices)
     }
 
     @Test
     fun staleCalibrationResultsAreDropped() {
         val model = model()
-        val session = model.openCalibration()
+        model.startCalibration(listOf(A, B), start = now - 6 * 3_600_000)
+        val session = model.calibration!!
         val first = model.calibrationInput()!!
         assertNull(model.calibrationInput(), "a fit is already running")
-        model.setCalibrationWindow(now - 3 * 3_600_000, null)
+        model.setCalibrationStart(now - 3 * 3_600_000)
         val second = model.calibrationInput(force = true)!!
         model.onCalibrationResult(first, Result.failure(Exception("old window")))
         assertNull(session.result)
@@ -525,7 +524,8 @@ class ThermoModelTest {
     fun theReferenceGoesWithTheFitAndGetsNothingWritten() {
         val model = model()
         drain()
-        val session = model.openCalibration()
+        model.startCalibration(listOf(A, B))
+        val session = model.calibration!!
         model.setCalibrationReference("A4:C1:38:00:00:99")
         assertNull(session.reference, "not a compared device")
         model.setCalibrationReference(A)

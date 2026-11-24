@@ -23,7 +23,7 @@ Everything the terminal app does, laid out for touch:
 | `↑` `↓`, `space`, `a`, `Esc` | tap a card for its detail screen; long-press to select, tap to add more, ✕ or Back to clear |
 | `i` `s` `d` `e` `n` | Identify, Sync clock, Download log, Settings, Rename: in the selection bar or on the device screen |
 | `e` settings form | bottom sheet with a drop-down per field, “Keep” by default; a single device's current values are read and shown |
-| `c` calibration, `Tab` `←` `→`, `r` | Calibration screen: device chips, “Correct to” chips (group average or one trusted device), a range slider over the shaded chart (snapped to 15 min), summary, corrections with bars; Write asks first; menu: restore factory calibration, sync clocks |
+| `c` calibration, `Tab` `←` `→`, `r` | a guided calibration of the devices you pick, see [Calibration](#calibration) |
 | `l` levelling, `←` `→`, `Enter`, `x`, `r` | Signal levelling screen: target slider with ±1 dB buttons, a checkbox per device, Change asks first; menu: factory TX power; ⟳ listens anew |
 | status line, Job column | subtitle (“Listening · 2 of 2 in range · connecting”), snackbars for problems, a spinner and the last result with its age on each card (greyed after 10 min) |
 
@@ -31,6 +31,40 @@ It also downloads a device's log the first time it is heard if recent history ha
 gap, keeps recording with the app closed (a foreground service with a notification; it
 starts again after a reboot or an update and is switched off on the Data screen), restarts
 a stuck scan, and follows Bluetooth being switched off and on.
+
+## Calibration
+
+The app is built around calibrating a set of thermometers. The card at the top of the
+home screen starts one, and while it runs the app opens on it.
+
+1. **Pick** the thermometers placed side by side, nearest (strongest signal) first; the eye
+   shows a device's number on its screen. Choose what they are corrected to (their
+   average, or one you trust). If they have read alike for a while already, those
+   readings count from the start.
+2. **Together.** The chart shows only these devices, with a strip marking the steady
+   readings the fit uses. **If you write now** says how precise the corrections would be
+   (± two standard errors, °C and %RH), and **Precision or time** how long each level
+   takes (Rough ±0.10 °C … Best ±0.02 °C). The level you pick is announced by a
+   notification, also with the app closed. Then: write the corrections, or move the devices
+   for the gains; the app says where (at least 5 °C warmer or colder than now, and for the
+   humidity gain 15 %RH apart).
+3. **Second place** (optional): how far it is from the first, when readings there start
+   to count (the first hour after a big change is skipped), steady time there, and the
+   fitted gains with their precision.
+4. **Written:** writes that fail can be retried; keeping the devices together shows what
+   is left to correct. **Finish** ends it.
+
+The fit is the terminal app's (`crates/calibration`), with 20 minutes of steady data and a
+20-minute steadiness window instead of 60 and 30, so a first result comes after about
+40 minutes and the precision estimate, rather than a fixed minimum, says if it is enough.
+
+The estimate is Android-only: each correction's standard error from the residuals,
+inflated for their correlation over 30 minutes (pooled over devices), times 1.5, plus a
+floor that more time in one place doesn't remove (0.009 °C, 0.02 %RH). Both were fitted
+with `PrecisionDataTest` on two indoor sessions (8 and 6 devices, 10 and 18 h): windows of
+45 min to 3 h compared with the rest of their session at a similar temperature fell within
+the stated ± 96–99 % of the time. At other temperatures they agree less (88–94 %), which is
+what the second place's gains are for.
 
 ## History files
 
@@ -98,6 +132,8 @@ gh release create android-vX.Y.Z thermo-android-X.Y.Z.apk --title "Android X.Y.Z
 The JVM unit tests port the Rust tests with the same fixtures. `RealDataTest` fits a
 window of real history when `THERMO_DATA_DIR`, `THERMO_FROM` and `THERMO_TO` are set; on
 the 2026-10-28/29 eight-device session it matches the Rust crate to four decimals.
+`PrecisionDataTest` checks the precision estimate against real sessions when
+`THERMO_DATA_DIR` and `THERMO_SESSIONS` are set (see the file).
 
 Debug builds only: `adb shell am start -n dev.artur.thermo/.MainActivity --ez demo true`
 adds five simulated devices with a 14 h session (nothing is saved), and `--es screen

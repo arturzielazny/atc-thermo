@@ -54,6 +54,19 @@ home screen starts one, and while it runs the app opens on it.
 4. **Written:** writes that fail can be retried; keeping the devices together shows what
    is left to correct. **Finish** ends it.
 
+**Spoken progress**, for a phone lying next to the thermometers, is on unless the speaker
+button at the top turns it off.
+- **News** is said as it comes, at most every 2 minutes: the level picked reached, the gains
+  ready, a device not heard or apart from the others for 2 minutes, all caught up after the
+  move, the writes done.
+- **Otherwise** it says the progress 15 minutes after the last thing said, so about four
+  times an hour.
+- **How it sounds:** English at the media volume, like a navigation app, lowering other
+  audio meanwhile. It stays quiet during calls and while Do Not Disturb is on.
+
+The words and the timing are in `model/Speech.kt` and `ThermoModel.takeSpeech`, tested by
+`SpeechTest`.
+
 The fit is the terminal app's (`crates/calibration`), with 20 minutes of steady data and a
 20-minute steadiness window instead of 60 and 30, so a first result comes after about
 40 minutes and the precision estimate, rather than a fixed minimum, says if it is enough.

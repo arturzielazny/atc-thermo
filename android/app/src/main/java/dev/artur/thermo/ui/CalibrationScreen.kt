@@ -23,6 +23,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.VolumeOff
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
@@ -56,6 +58,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -88,12 +91,14 @@ import dev.artur.thermo.model.formatEta
 import dev.artur.thermo.model.formatLag
 import dev.artur.thermo.model.gainStatus
 import dev.artur.thermo.model.heldBack
+import dev.artur.thermo.model.leftToCorrect
 import dev.artur.thermo.model.netCorrection
 import dev.artur.thermo.model.notes
 import dev.artur.thermo.model.precision
 import dev.artur.thermo.model.secondPlaceAdvice
 import kotlin.math.abs
 import kotlin.math.max
+import kotlinx.coroutines.launch
 
 /** How a correction bar is scaled and colored, in the quantity's unit. */
 private class BarScale(
@@ -119,9 +124,13 @@ fun CalibrationScreen(
     revision: Long,
     now: Long,
     snackbar: SnackbarHostState,
+    /** Whether progress is said aloud, and turning that on or off. */
+    speak: Boolean,
+    onSpeak: (Boolean) -> Unit,
     onChanged: () -> Unit,
     onBack: () -> Unit,
 ) {
+    val scope = rememberCoroutineScope()
     var confirm by remember { mutableStateOf<String?>(null) }
     var dialog by remember { mutableStateOf<String?>(null) }
     var metric by remember { mutableStateOf(Metric.Temperature) }
@@ -142,6 +151,20 @@ fun CalibrationScreen(
                     }
                 },
                 actions = {
+                    IconButton(onClick = {
+                        onSpeak(!speak)
+                        val said = if (speak) "Progress won't be spoken" else
+                            "Progress is spoken about four times an hour, news at once; not during calls or Do Not Disturb"
+                        scope.launch {
+                            snackbar.currentSnackbarData?.dismiss()
+                            snackbar.showSnackbar(said, withDismissAction = true)
+                        }
+                    }) {
+                        Icon(
+                            if (speak) Icons.AutoMirrored.Filled.VolumeUp else Icons.AutoMirrored.Filled.VolumeOff,
+                            if (speak) "Progress spoken: turn off" else "Progress not spoken: turn on",
+                        )
+                    }
                     var menu by remember { mutableStateOf(false) }
                     IconButton(onClick = { menu = true }) { Icon(Icons.Default.MoreVert, "More") }
                     DropdownMenu(menu, onDismissRequest = { menu = false }) {
@@ -598,11 +621,7 @@ private fun Checking(model: ThermoModel, session: CalibrationSession, run: Calib
         if (session.failed.isNotEmpty()) {
             OutlinedButton(onClick = { model.retryCalibrationWrites() }) { Text("Retry ${session.failed.size}") }
         }
-        val left = run?.let { r ->
-            val midT = (r.report.temperature.range.first + r.report.temperature.range.second) / 2
-            val midH = (r.report.humidity.range.first + r.report.humidity.range.second) / 2
-            r.report.sensors.maxOfOrNull { abs(netCorrection(it.temperature, midT)) } to r.report.sensors.maxOfOrNull { abs(netCorrection(it.humidity, midH)) }
-        }
+        val left = run?.let(::leftToCorrect)
         when {
             left != null -> Text(
                 "Left to correct now: up to %.2f °C and %.1f %%RH.".format(left.first ?: 0.0, left.second ?: 0.0),

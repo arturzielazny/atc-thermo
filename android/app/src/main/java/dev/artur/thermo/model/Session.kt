@@ -317,6 +317,25 @@ fun gainStatus(run: CalibrationRun): GainStatus {
     return GainStatus(fitted.size, written.size, uncertainty, humidity, span)
 }
 
+/** Whether [session]'s target is reached: precision, and in a second place also the gains. */
+internal fun targetReached(session: CalibrationSession, run: CalibrationRun): Boolean {
+    if (eta(run, session.target) != Eta.Reached) return false
+    if (session.stage != Stage.SecondPlace) return true
+    val second = run.places.getOrNull(1) ?: return false
+    return second.steady >= SECOND_PLACE_STEADY_MS && gainStatus(run).fitted > 0
+}
+
+/**
+ * The largest correction any device still needs in the middle of the range fitted, °C and
+ * %RH: after writing, what is left should stay small.
+ */
+fun leftToCorrect(run: CalibrationRun): Pair<Double?, Double?> {
+    val t = run.report.temperature.range.let { (it.first + it.second) / 2 }
+    val h = run.report.humidity.range.let { (it.first + it.second) / 2 }
+    return run.report.sensors.maxOfOrNull { abs(netCorrection(it.temperature, t)) } to
+        run.report.sensors.maxOfOrNull { abs(netCorrection(it.humidity, h)) }
+}
+
 /** Readings that would take the devices to a place different enough for gains. */
 data class SecondPlaceAdvice(
     val colderThan: Double,
@@ -412,8 +431,14 @@ fun heldBack(run: CalibrationRun, temperature: Boolean): List<Pair<Int, Long?>>?
         .ifEmpty { null }
 }
 
-/** A device in a session that seems not to be with the others, and why. */
-data class Stray(val address: String, val reason: String)
+/**
+ * A device in a session that seems not to be with the others, and why: not heard lately, or
+ * reading [offset] °C from the others' median.
+ */
+data class Stray(val address: String, val reason: String, val offset: Double? = null) {
+    /** The same device astray the same way. */
+    internal val key: String get() = if (offset == null) "$address silent" else "$address apart"
+}
 
 /** `"4 min"`, `"2 h"`: how long ago, rounded down. */
 fun formatAge(ms: Long): String {

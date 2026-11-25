@@ -226,6 +226,7 @@ class MainActivity : ComponentActivity() {
         }
 
         var settingsFor by remember { mutableStateOf<List<String>?>(null) }
+        var speak by remember { mutableStateOf(controller.speakCalibration) }
         var renaming by remember { mutableStateOf<String?>(null) }
         BackHandler(enabled = stack.size > 1 || model.selected.isNotEmpty()) {
             if (stack.size > 1) back() else model.clearSelection()
@@ -250,7 +251,13 @@ class MainActivity : ComponentActivity() {
             )
             Screen.Calibration -> when (val session = model.calibration) {
                 null -> CalibrationSetupScreen(model, revision, now, snackbar, onStarted = controller::refitNow, onBack = ::back)
-                else -> CalibrationScreen(model, session, revision, now, snackbar, onChanged = controller::refitNow, onBack = ::back)
+                else -> CalibrationScreen(
+                    model, session, revision, now, snackbar,
+                    speak = speak,
+                    onSpeak = { speak = it; controller.speakCalibration = it },
+                    onChanged = controller::refitNow,
+                    onBack = ::back,
+                )
             }
             Screen.Leveling -> model.leveling?.let { LevelingScreen(model, it, revision, now, snackbar, onBack = ::back) }
             Screen.Data -> DataScreen(controller, snackbar, onBack = ::back)

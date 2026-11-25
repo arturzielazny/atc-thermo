@@ -44,6 +44,8 @@ import java.util.concurrent.Executors
 private const val PREF_BACKGROUND = "record_always"
 /** Name of the preference holding the calibration in progress ([dev.artur.thermo.model.CalibrationSession.encode]). */
 private const val PREF_CALIBRATION = "calibration_session"
+/** Name of the preference saying whether a calibration's progress is spoken ([Speaker]); on unless turned off. */
+private const val PREF_SPEAK = "speak_calibration"
 /** Name of the preference saying the battery optimisation exemption was asked for once. */
 private const val PREF_ASKED_BATTERY = "asked_battery_exemption"
 private const val PREFS = "thermo"
@@ -75,6 +77,7 @@ class Controller(private val app: Application) {
     private var shownStatus: String? = null
 
     private val prefs = app.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+    private val speaker = Speaker(app)
 
     val model = ThermoModel(
         jobs = { job -> runner?.submit(job) ?: false },
@@ -102,6 +105,14 @@ class Controller(private val app: Application) {
     fun shouldAskBatteryExemption(): Boolean =
         recordInBackground && !prefs.getBoolean(PREF_ASKED_BATTERY, false) &&
             app.getSystemService(PowerManager::class.java)?.isIgnoringBatteryOptimizations(app.packageName) == false
+
+    /** Whether a calibration's progress is said aloud: news as it comes, otherwise about four times an hour. */
+    var speakCalibration: Boolean
+        get() = prefs.getBoolean(PREF_SPEAK, true)
+        set(value) {
+            prefs.edit().putBoolean(PREF_SPEAK, value).apply()
+            if (value) model.sayProgressNow()?.let(speaker::say) else speaker.shutdown()
+        }
 
     fun markBatteryExemptionAsked() = prefs.edit().putBoolean(PREF_ASKED_BATTERY, true).apply()
 
@@ -137,7 +148,11 @@ class Controller(private val app: Application) {
                 model.onTick()
                 refitCalibration()
                 model.takeCalibrationAnnouncement()?.let { MonitorService.announce(app, it) }
-                if (calibrating && model.calibration == null) MonitorService.clearAnnouncement(app)
+                model.takeSpeech()?.let { if (speakCalibration) speaker.say(it) }
+                if (calibrating && model.calibration == null) {
+                    MonitorService.clearAnnouncement(app)
+                    speaker.shutdown()
+                }
                 calibrating = model.calibration != null
                 // The notification shows the session's progress: follow it at once, not at the next redraw.
                 val status = model.calibrationStatus()

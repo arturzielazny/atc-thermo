@@ -121,6 +121,8 @@ class ThermoModel(
         private set
     /** Said once when a session's target is reached, until [takeCalibrationAnnouncement]. */
     private var announcement: String? = null
+    /** What was said aloud about the session ([takeSpeech]). */
+    private var spoken: Spoken? = null
     var leveling: Leveling? = null
         private set
     /** The devices levelled, or `null` for every known device. */
@@ -235,6 +237,10 @@ class ThermoModel(
                 // A correction still pending once the device's jobs are done didn't get written.
                 calibration?.let { session ->
                     if (state(event.address).queued == 0) session.pending.remove(event.address)?.let { session.failed[event.address] = it }
+                    spoken?.takeIf { it.writes > 0 && session.pending.isEmpty() }?.let {
+                        it.news += sayWritten(it.writes, session.failed.size, session.failed.keys.mapNotNull(::deviceNumber))
+                        it.writes = 0
+                    }
                 }
             }
         }
@@ -471,6 +477,7 @@ class ThermoModel(
             began = now,
         )
         announcement = null
+        spoken = Spoken(null).apply { news += sayStarted(ordered.size) }
         marked.clear()
         calibrationChanged()
     }
@@ -480,12 +487,15 @@ class ThermoModel(
         val session = text?.let(CalibrationSession::decode) ?: return
         session.start = windowStart(session.start, session.devices, lastCalibrations)
         calibration = session
+        // Said before: the next progress in a while, and no first estimate again.
+        spoken = Spoken(clock(), fitted = session.stage)
         changed()
     }
 
     fun endCalibration() {
         calibration = null
         announcement = null
+        spoken = null
         saveCalibration(null)
         changed()
     }
@@ -501,6 +511,7 @@ class ThermoModel(
         if (session.stage != Stage.FirstPlace) return
         session.moved = at.coerceIn(session.start, clock())
         session.announced = false
+        spoken?.apply { settling = false; caughtUpSaid = false }
         session.computedAt = null
         calibrationChanged()
     }
@@ -553,7 +564,7 @@ class ThermoModel(
     fun setCalibrationTarget(level: Level) {
         val session = calibration ?: return
         session.target = level
-        session.announced = session.result?.getOrNull()?.let { ready(session, it) } ?: false
+        session.announced = session.result?.getOrNull()?.let { targetReached(session, it) } ?: false
         calibrationChanged()
     }
 
@@ -585,20 +596,78 @@ class ThermoModel(
         session.result = result
         session.computedAt = clock()
         val run = result.getOrNull()
-        if (run != null && !session.announced && session.stage != Stage.Checking && ready(session, run)) {
+        val reached = run != null && !session.announced && session.stage != Stage.Checking && targetReached(session, run)
+        if (reached) {
             session.announced = true
-            announcement = announce(session, run)
+            announcement = announce(session, run!!)
             calibrationChanged()
         }
+        if (run != null) spoken?.let { noteSpeech(it, session, run, reached) }
         changed()
     }
 
-    /** Whether the session's target is reached: precision, and in a second place also the gains. */
-    private fun ready(session: CalibrationSession, run: CalibrationRun): Boolean {
-        if (eta(run, session.target) != Eta.Reached) return false
-        if (session.stage != Stage.SecondPlace) return true
-        val second = run.places.getOrNull(1) ?: return false
-        return second.steady >= SECOND_PLACE_STEADY_MS && gainStatus(run).fitted > 0
+    /** News from a new fit: the target reached, a first estimate, the devices caught up after the move. */
+    private fun noteSpeech(spoken: Spoken, session: CalibrationSession, run: CalibrationRun, reached: Boolean) {
+        val first = spoken.fitted == null || (session.stage == Stage.Checking && spoken.fitted != Stage.Checking)
+        spoken.fitted = session.stage
+        if (reached) {
+            spoken.news += sayReached(session, run)
+        } else if (first) {
+            sayProgress(session, ::deviceNumber)?.let { spoken.news += if (session.stage == Stage.Checking) it else "First estimate. $it" }
+        }
+        if (session.stage == Stage.SecondPlace) {
+            if (heldBack(run, true) != null || heldBack(run, false) != null) {
+                spoken.settling = true
+            } else if (spoken.settling && !spoken.caughtUpSaid) {
+                spoken.caughtUpSaid = true
+                spoken.news += "All thermometers have caught up in the second place."
+            }
+        }
+    }
+
+    /**
+     * Something to say aloud about the session now, or `null`: news (a level reached, a
+     * device astray, the writes done) [SPEAK_GAP_MS] after the last thing said at the
+     * earliest, otherwise its progress [SPEAK_EVERY_MS] after it. Called about once a second.
+     */
+    fun takeSpeech(): String? {
+        val session = calibration ?: return null
+        val now = clock()
+        val spoken = this.spoken ?: Spoken(now).also { this.spoken = it }
+        // At the start, wait for the first fit, to say both at once.
+        if (spoken.at == null && session.result == null) return null
+        val strays = straysToSay(spoken, now)
+        val since = spoken.at?.let { now - it } ?: Long.MAX_VALUE
+        val text = when {
+            (spoken.news.isNotEmpty() || strays.isNotEmpty()) && since >= SPEAK_GAP_MS -> {
+                for (stray in strays) spoken.straySaid[stray.key] = now
+                (spoken.news + sayStrays(strays, ::deviceNumber)).joinToString(" ").also { spoken.news.clear() }
+            }
+            since >= SPEAK_EVERY_MS -> sayProgress(session, ::deviceNumber)
+            else -> null
+        } ?: return null
+        spoken.at = now
+        return text
+    }
+
+    /** The session's progress to say right away, as speaking is turned on; the next comes [SPEAK_EVERY_MS] later. */
+    fun sayProgressNow(): String? {
+        val session = calibration ?: return null
+        val spoken = this.spoken ?: Spoken(null).also { this.spoken = it }
+        spoken.at = clock()
+        return sayProgress(session, ::deviceNumber) ?: "Progress will be spoken about four times an hour."
+    }
+
+    /** The devices astray for a while and not said lately. */
+    private fun straysToSay(spoken: Spoken, now: Long): List<Stray> {
+        val strays = calibrationStrays()
+        val keys = strays.map { it.key }.toSet()
+        spoken.strayFrom.keys.retainAll(keys)
+        for (key in keys) spoken.strayFrom.putIfAbsent(key, now)
+        return strays.filter { stray ->
+            now - spoken.strayFrom.getValue(stray.key) >= STRAY_SAID_AFTER_MS &&
+                spoken.straySaid[stray.key]?.let { now - it >= STRAY_SAID_AGAIN_MS } ?: true
+        }
     }
 
     private fun announce(session: CalibrationSession, run: CalibrationRun): String {
@@ -661,7 +730,7 @@ class ThermoModel(
         if (heard.size >= 2 && !settling) {
             val middle = dev.artur.thermo.calibration.median(heard.map { it.second })
             for ((address, t) in heard) {
-                if (abs(t - middle) > STRAY_TEMPERATURE) strays += Stray(address, "reads %+.1f °C from the others: still next to them?".format(t - middle))
+                if (abs(t - middle) > STRAY_TEMPERATURE) strays += Stray(address, "reads %+.1f °C from the others: still next to them?".format(t - middle), t - middle)
             }
         }
         return strays
@@ -685,6 +754,7 @@ class ThermoModel(
             session.pending[address] = t to h
             enqueue(address, Action.Calibrate(t, h))
         }
+        spoken?.writes = session.pending.size
         changed()
     }
 
@@ -697,6 +767,7 @@ class ThermoModel(
             session.pending[address] = correction
             enqueue(address, Action.Calibrate(correction.first, correction.second))
         }
+        spoken?.writes = session.pending.size
         changed()
     }
 

@@ -3,9 +3,9 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>thermo · Calibrate Xiaomi LYWSD03MMC thermometers on Linux and Android</title>
-<meta name="description" content="Free, open-source Linux terminal dashboard and Android app for Xiaomi LYWSD03MMC and other pvvx ATC_MiThermometer BLE thermometers: live BTHome v2 readings, charts, log download, clock sync and automatic calibration that writes corrections into every device.">
-<meta name="keywords" content="LYWSD03MMC, LYWSD03MMC calibration, Xiaomi thermometer calibration, pvvx ATC_MiThermometer, ATC firmware, BTHome v2, Bluetooth thermometer Linux, BlueZ, Home Assistant BTHome, humidity sensor calibration, Mi Temperature and Humidity Monitor 2, Rust TUI, LYWSD03MMC Android app">
+<title>thermo · Calibrate Xiaomi LYWSD03MMC thermometers with your Android phone</title>
+<meta name="description" content="Free, open-source Android app for Xiaomi LYWSD03MMC and other pvvx ATC_MiThermometer BLE thermometers: live BTHome v2 readings, charts, log download, clock sync and a guided calibration that writes corrections into every device.">
+<meta name="keywords" content="LYWSD03MMC, LYWSD03MMC calibration, Xiaomi thermometer calibration, pvvx ATC_MiThermometer, ATC firmware, BTHome v2, LYWSD03MMC Android app, Bluetooth thermometer Android, Home Assistant BTHome, humidity sensor calibration, Mi Temperature and Humidity Monitor 2">
 <link rel="canonical" href="https://arturzielazny.github.io/atc-thermo/">
 <meta name="theme-color" content="#14151e">
 <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
@@ -13,7 +13,7 @@
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="thermo">
 <meta property="og:title" content="thermo · make every Xiaomi thermometer in the house agree">
-<meta property="og:description" content="Linux dashboard, Android app and automatic calibration for LYWSD03MMC thermometers on pvvx firmware. Live BTHome readings, log download, clock sync, one-key calibration.">
+<meta property="og:description" content="An Android app that calibrates LYWSD03MMC thermometers on pvvx firmware against each other. Live BTHome readings, log download, clock sync, guided calibration.">
 <meta property="og:url" content="https://arturzielazny.github.io/atc-thermo/">
 <meta property="og:image" content="https://arturzielazny.github.io/atc-thermo/assets/og.png">
 <meta property="og:image:width" content="1200">
@@ -26,15 +26,15 @@
   "name": "thermo",
   "alternateName": "atc-thermo",
   "applicationCategory": "UtilitiesApplication",
-  "operatingSystem": "Linux, Android",
-  "description": "Terminal dashboard, Android app and consensus calibration for Xiaomi LYWSD03MMC and other BLE thermometers running the pvvx ATC_MiThermometer firmware with BTHome v2.",
+  "operatingSystem": "Android",
+  "description": "Android app with a dashboard and consensus calibration for Xiaomi LYWSD03MMC and other BLE thermometers running the pvvx ATC_MiThermometer firmware with BTHome v2.",
   "url": "https://arturzielazny.github.io/atc-thermo/",
-  "downloadUrl": "https://github.com/arturzielazny/atc-thermo",
+  "downloadUrl": "https://github.com/arturzielazny/atc-thermo/releases",
   "codeRepository": "https://github.com/arturzielazny/atc-thermo",
-  "programmingLanguage": ["Rust", "Kotlin"],
+  "programmingLanguage": "Kotlin",
   "license": "https://opensource.org/licenses/MIT",
   "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
-  "screenshot": "https://arturzielazny.github.io/atc-thermo/assets/temperature.webp"
+  "screenshot": "https://arturzielazny.github.io/atc-thermo/assets/android-dashboard.webp"
 }
 </script>
 <script type="application/ld+json">
@@ -43,13 +43,13 @@
   "@type": "FAQPage",
   "mainEntity": [
     { "@type": "Question", "name": "Can I calibrate Xiaomi LYWSD03MMC thermometers without a reference thermometer?",
-      "acceptedAnswer": { "@type": "Answer", "text": "Yes, relative to each other. Put all thermometers side by side; thermo fits a gain and offset per device so that every one agrees with the group's average, then writes the coefficients into each device's flash through the pvvx firmware. The average of several sensors is usually closer to the truth than any single one. For absolute humidity accuracy add a salt test (75 %RH over saturated table salt)." } },
+      "acceptedAnswer": { "@type": "Answer", "text": "Yes, relative to each other. Put all thermometers side by side; the thermo app fits a gain and offset per device so that every one agrees with the group's average, then writes the coefficients into each device's flash through the pvvx firmware. The average of several sensors is usually closer to the truth than any single one. For absolute humidity accuracy add a salt test (75 %RH over saturated table salt)." } },
     { "@type": "Question", "name": "Do calibrated values show up in Home Assistant?",
-      "acceptedAnswer": { "@type": "Answer", "text": "Yes. The corrections are stored in the thermometer itself, so every BTHome receiver, including Home Assistant's BTHome integration and ESPHome Bluetooth proxies, receives the corrected values. thermo only listens to adverts and can run alongside Home Assistant." } },
+      "acceptedAnswer": { "@type": "Answer", "text": "Yes. The corrections are stored in the thermometer itself, so every BTHome receiver, including Home Assistant's BTHome integration and ESPHome Bluetooth proxies, receives the corrected values. The app only listens to adverts and can run alongside Home Assistant." } },
     { "@type": "Question", "name": "Which devices are supported?",
       "acceptedAnswer": { "@type": "Answer", "text": "Tested with eight Xiaomi LYWSD03MMC (Mi Temperature and Humidity Monitor 2) on pvvx firmware 5.9, with both sensor variants. Other devices running the pvvx ATC_MiThermometer firmware with BTHome v2 advertising should work but are untested." } },
-    { "@type": "Question", "name": "Does it run on macOS, Windows, a Raspberry Pi or a phone?",
-      "acceptedAnswer": { "@type": "Answer", "text": "It runs on any Linux with BlueZ, including a Raspberry Pi, and there is an Android app with the same features, built from the same repository. macOS and Windows need the Bluetooth layer swapped; the BTHome decoder and the calibration maths are plain portable Rust. The project ships instructions for doing the port with an AI coding agent." } }
+    { "@type": "Question", "name": "Is there a version for a computer?",
+      "acceptedAnswer": { "@type": "Answer", "text": "thermo started as a terminal app for Linux and macOS. It is no longer developed and is kept, unchanged, in the repository's archive. An AI coding agent can bring it up to the Android app's features, with the app's code as the reference." } }
   ]
 }
 </script>
@@ -65,7 +65,6 @@
     <nav class="links" aria-label="Main">
       <a href="#features" class="opt">Features</a>
       <a href="#install">Install</a>
-      <a href="#android" class="opt">Android</a>
       <a href="calibration.html">Calibration guide</a>
       <a href="agents.html" class="opt">AI agents</a>
       <a href="https://github.com/arturzielazny/atc-thermo">GitHub</a>
@@ -77,17 +76,16 @@
 <section class="hero">
   <div class="wrap grid">
     <div>
-      <p class="eyebrow">Open source · Linux · Android</p>
+      <p class="eyebrow">Open source · Android</p>
       <h1>Make every Xiaomi thermometer in the house agree.</h1>
-      <p class="lead"><strong>thermo</strong> is a terminal dashboard for <strong>LYWSD03MMC</strong> and other thermometers running the
+      <p class="lead"><strong>thermo</strong> is an Android app for <strong>LYWSD03MMC</strong> and other thermometers running the
         <a href="https://github.com/pvvx/ATC_MiThermometer">pvvx ATC_MiThermometer</a> firmware. It charts their live
-        <strong>BTHome v2</strong> readings and fills gaps from each device's own log. Put them side by side, press <kbd>c</kbd>,
-        and it calibrates them all at once, writing the corrections into the thermometers. Home Assistant sees the fixed values too.
-        The <a href="#android">Android app</a> does the same from your phone.</p>
+        <strong>BTHome v2</strong> readings and fills gaps from each device's own log. Put them side by side and start a calibration:
+        the app tells you how precise the corrections already are, then writes them into the thermometers. Home Assistant sees the fixed values too.</p>
       <div class="cta">
-        <a class="btn primary" href="#install">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 17l6-5-6-5M12 19h8"/></svg>
-          Install
+        <a class="btn primary" href="https://github.com/arturzielazny/atc-thermo/releases/tag/android-v0.4.0">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg>
+          Download the APK
         </a>
         <a class="btn" href="https://github.com/arturzielazny/atc-thermo">
           <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .5a11.5 11.5 0 0 0-3.6 22.4c.6.1.8-.3.8-.6v-2c-3.2.7-3.9-1.5-3.9-1.5-.5-1.3-1.3-1.7-1.3-1.7-1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1 1.8 2.8 1.3 3.5 1 .1-.8.4-1.3.7-1.6-2.6-.3-5.3-1.3-5.3-5.7 0-1.3.5-2.3 1.2-3.1-.1-.3-.5-1.5.1-3.1 0 0 1-.3 3.2 1.2a11 11 0 0 1 5.8 0c2.2-1.5 3.2-1.2 3.2-1.2.6 1.6.2 2.8.1 3.1.8.8 1.2 1.8 1.2 3.1 0 4.4-2.7 5.4-5.3 5.7.4.4.8 1.1.8 2.2v3.2c0 .3.2.7.8.6A11.5 11.5 0 0 0 12 .5z"/></svg>
@@ -96,9 +94,9 @@
       </div>
     </div>
 
-    <!-- Symbolic: three thermometers disagree, their adverts reach the terminal, and after the calibration mark their lines merge. -->
+    <!-- Symbolic: three thermometers disagree, their adverts reach the app's chart, and after the calibration mark their lines merge. -->
     <svg class="ill" viewBox="0 0 560 420" role="img" aria-labelledby="hero-t">
-      <title id="hero-t">Three thermometers showing 21.4, 21.9 and 21.1 °C send Bluetooth adverts to a terminal chart where their lines merge after calibration</title>
+      <title id="hero-t">Three thermometers showing 21.4, 21.9 and 21.1 °C send Bluetooth adverts to the app's chart, where their lines merge after calibration</title>
       <g>
         <rect class="shell" x="10" y="20" width="132" height="116" rx="22" stroke-width="2"/>
         <rect class="lcd" x="24" y="32" width="104" height="66" rx="6"/>
@@ -135,9 +133,8 @@
         <path class="wave d3 astroke" d="M176 318 q22 24 0 48"/>
       </g>
       <g>
-        <rect class="term" x="214" y="60" width="336" height="300" rx="14"/>
-        <circle cx="236" cy="80" r="5" fill="#d9474e"/><circle cx="252" cy="80" r="5" fill="#d9b02c"/><circle cx="268" cy="80" r="5" fill="#3fae4f"/>
-        <text x="296" y="84" font-size="12" fill="#9a9db5">thermo</text>
+        <rect class="term" x="214" y="60" width="336" height="300" rx="28"/>
+        <text x="236" y="86" font-size="13" fill="#9a9db5">Calibration</text>
         <g stroke-width="1" class="termline">
           <line x1="234" y1="140" x2="530" y2="140"/><line x1="234" y1="190" x2="530" y2="190"/>
           <line x1="234" y1="240" x2="530" y2="240"/><line x1="234" y1="290" x2="530" y2="290"/>
@@ -162,20 +159,16 @@
 <section class="alt" aria-labelledby="see">
   <div class="wrap">
     <h2 id="see">What it looks like</h2>
-    <p class="section-lead">Real screenshots from eight LYWSD03MMC thermometers. They sat side by side indoors overnight, went to a cooler room in the morning, and were calibrated. Afterwards some of them moved to other rooms. In Ghostty or kitty the chart is a crisp image; other terminals and SSH get braille.</p>
-    <div class="tabs" role="tablist" aria-label="Screenshots">
-      <button role="tab" aria-selected="true" data-src="assets/temperature.webp" data-cap="Temperature, last 24 h: the side-by-side group is calibrated, then three devices go to other rooms. The table shows battery, latest and 5-minute median signal strength, and each device's clock offset.">Temperature</button>
-      <button role="tab" aria-selected="false" data-src="assets/humidity.webp" data-cap="Humidity, last 24 h: before calibration the out-of-the-box readings spread over 4–5 %RH.">Humidity</button>
-      <button role="tab" aria-selected="false" data-src="assets/calibration.webp" data-cap="Calibration screen: a window covering the indoor night and the cool morning, a fitted gain and offset per device with bars showing how big each correction is, and the agreement before → after.">Calibration</button>
+    <p class="section-lead">A card per thermometer, a chart you can scrub with a finger, long-press to select several devices for clock sync, log download or settings. Every write to a thermometer asks first.</p>
+    <div class="phones">
+      <figure class="shot"><img src="assets/android-dashboard.webp" width="540" height="1085" alt="thermo Android dashboard: temperature chart of two thermometers with a touch tooltip, time span chips, and a card per device with temperature, humidity, battery and signal" loading="eager"><figcaption>Dashboard: drag across the chart to read every device at one moment.</figcaption></figure>
+      <figure class="shot"><img src="assets/android-calibration.webp" width="540" height="1085" alt="thermo Android calibration screen in the second place: steps Together, Second place and Written, a chart of five thermometers moved from 21 °C to 8 °C with a dashed line at the move and a strip under the steady readings, and checks that the place is 13.5 °C colder and 20 %RH more humid, that one device's humidity is still settling, and that 35 minutes of steady readings were collected" loading="lazy"><figcaption>Calibration: after a move to a second place for the gains, the app waits for each thermometer to catch up. Shown with the app's simulated demo devices.</figcaption></figure>
+      <figure class="shot"><img src="assets/android-levelling.webp" width="540" height="1085" alt="thermo Android signal levelling screen: a target of −70 dBm, per-device progress and planned TX power change, and a signal strength chart" loading="lazy"><figcaption>Signal levelling: listens, then proposes a TX power change per device.</figcaption></figure>
     </div>
-    <figure class="shot">
-      <img id="shot" src="assets/temperature.webp" width="1600" height="1014" alt="thermo terminal dashboard showing a temperature chart of eight Xiaomi LYWSD03MMC thermometers over 24 hours above a table of live readings" loading="eager">
-      <figcaption id="shot-cap">Temperature, last 24 h: the side-by-side group is calibrated, then three devices go to other rooms. The table shows battery, latest and 5-minute median signal strength, and each device's clock offset.</figcaption>
-    </figure>
     <div class="stats">
       <div class="stat"><div class="num">0.078 → 0.012 <small>°C</small></div><p>Disagreement in temperature (rms against the group) over the fitted window, before and after calibrating 8 devices.</p></div>
       <div class="stat"><div class="num">1.76 → 0.40 <small>%RH</small></div><p>The same for humidity. Out of the box, readings spread over 4–5 %RH.</p></div>
-      <div class="stat"><div class="num">~200 <small>ppm</small></div><p>Clock drift measured on the thermometers. <kbd>s</kbd> syncs them and trims each clock's rate.</p></div>
+      <div class="stat"><div class="num">~200 <small>ppm</small></div><p>Clock drift measured on the thermometers. Syncing their clocks also trims each one's rate.</p></div>
     </div>
   </div>
 </section>
@@ -183,27 +176,27 @@
 <section id="features" aria-labelledby="feat">
   <div class="wrap">
     <h2 id="feat">Everything for a houseful of cheap BLE thermometers</h2>
-    <p class="section-lead">Every action works on one device or on all marked devices at once, so eight thermometers are as easy as one.</p>
+    <p class="section-lead">Every action works on one device or on all selected devices at once, so eight thermometers are as easy as one.</p>
     <div class="features">
       <div class="card">
         <svg class="icon ill" viewBox="0 0 44 44" fill="none" stroke-width="2.5" stroke-linecap="round" aria-hidden="true"><rect class="line" x="2" y="2" width="40" height="40" rx="9" stroke="currentColor" fill="none"/><path d="M8 30 L16 22 L22 26 L36 12" stroke="#3d86d6"/><path d="M8 34 L16 28 L22 30 L36 20" stroke="#e08a2e"/></svg>
         <h3>Live dashboard</h3>
-        <p>One line per thermometer, a chart above a table: temperature, humidity, battery, voltage and signal strength, updated as BTHome v2 adverts arrive. History is saved as plain CSV.</p>
+        <p>A chart above a card per thermometer: temperature, humidity, battery and signal strength, updated as BTHome v2 adverts arrive. History is saved as plain CSV, one file per day, and a home-screen widget shows the latest readings.</p>
       </div>
       <div class="card">
         <svg class="icon ill" viewBox="0 0 44 44" fill="none" stroke-width="2.5" stroke-linecap="round" aria-hidden="true"><circle cx="10" cy="12" r="3" fill="#3d86d6" stroke="none"/><circle cx="34" cy="10" r="3" fill="#e08a2e" stroke="none"/><circle cx="8" cy="34" r="3" fill="#3fae4f" stroke="none"/><circle cx="36" cy="34" r="3" fill="#9a68cf" stroke="none"/><path class="mstroke" d="M13 14l6 6M31 12l-6 8M11 32l8-8M33 32l-8-8" stroke-width="1.6" stroke-dasharray="2 3"/><circle class="astroke" cx="22" cy="22" r="4" stroke-width="3"/></svg>
-        <h3>Consensus calibration</h3>
-        <p>No reference instrument needed. A robust fit pulls every device onto the group average, rejects outliers, and writes a gain and offset to each thermometer's flash.</p>
+        <h3>Guided calibration</h3>
+        <p>No reference instrument needed. A robust fit pulls every device onto the group average and rejects outliers. The app says how precise the corrections already are and how long a better level takes, then writes a gain and offset to each thermometer's flash.</p>
       </div>
       <div class="card">
         <svg class="icon ill" viewBox="0 0 44 44" fill="none" stroke-width="2.5" stroke-linecap="round" aria-hidden="true"><path class="mstroke" d="M22 4v22M14 18l8 8 8-8"/><path d="M6 32h32" stroke="#3fae4f"/><path d="M6 38h20" stroke="#3fae4f" opacity="0.5"/></svg>
         <h3>Log download, honest timestamps</h3>
-        <p>Missed the last 24 hours? thermo downloads each device's own log and corrects for its wrong clock. Device clocks are usually off, and nothing assumes they aren't.</p>
+        <p>Phone out of range for a while? The app downloads each device's own log and corrects for its wrong clock. Device clocks are usually off, and nothing assumes they aren't.</p>
       </div>
       <div class="card">
         <svg class="icon ill" viewBox="0 0 44 44" fill="none" stroke-width="2.5" stroke-linecap="round" aria-hidden="true"><circle class="mstroke" cx="22" cy="22" r="17"/><path class="astroke" d="M22 11v11l7 5"/></svg>
         <h3>Clock sync and drift trim</h3>
-        <p>Sets every clock to the computer's time. After a day it measures how fast each one runs and trims the oscillator, which here ran about 20 s per day fast.</p>
+        <p>Sets every clock to the phone's time. A day later it measures how fast each one runs and trims the oscillator, which here ran about 20 s per day fast.</p>
       </div>
       <div class="card">
         <svg class="icon ill" viewBox="0 0 44 44" fill="none" stroke-width="2.5" stroke-linecap="round" aria-hidden="true"><rect class="mstroke" x="6" y="8" width="32" height="28" rx="5"/><path class="astroke" d="M12 18h20M12 26h12"/></svg>
@@ -213,17 +206,17 @@
       <div class="card">
         <svg class="icon ill" viewBox="0 0 44 44" aria-hidden="true"><rect class="shell" x="3" y="5" width="38" height="34" rx="8" stroke-width="2"/><rect class="lcd" x="8" y="9" width="28" height="17" rx="2"/><text class="ink" x="22" y="22.5" text-anchor="middle" font-size="11" font-weight="700">333</text><circle cx="13" cy="32" r="3" fill="#f0b43c"/></svg>
         <h3>Which one is which?</h3>
-        <p><kbd>i</kbd> shows the device's row number on its own LCD for thirty minutes, <code>333</code> with a smiley for #3, so you can label them.</p>
+        <p>Identify shows the device's number from the app on its own LCD for thirty minutes, <code>333</code> with a smiley for #3, so you can label them.</p>
       </div>
       <div class="card">
         <svg class="icon ill" viewBox="0 0 44 44" fill="none" stroke-width="2.5" stroke-linecap="round" aria-hidden="true"><path class="mstroke" d="M4 14h36" stroke-width="1.6" stroke-dasharray="2 3"/><path d="M10 38V14" stroke="#3d86d6"/><path d="M18 38V14" stroke="#e08a2e"/><path d="M26 38V14" stroke="#3fae4f"/><path d="M34 38V14" stroke="#9a68cf"/></svg>
         <h3>Signal levelling</h3>
-        <p><kbd>l</kbd> listens for a few minutes, then sets each thermometer's TX power so its signal arrives at about −70 dBm: reliable, without a louder radio than it needs. Near ones get quieter, far ones louder, after you confirm.</p>
+        <p>Listens for a few minutes, then sets each thermometer's TX power so its signal arrives at about −70 dBm: reliable, without a louder radio than it needs. Near ones get quieter, far ones louder, after you confirm.</p>
       </div>
       <div class="card">
         <svg class="icon ill" viewBox="0 0 44 44" fill="none" stroke-width="2.5" stroke-linecap="round" aria-hidden="true"><path class="mstroke" d="M35 26a13 13 0 1 1-3-13"/><path class="astroke" d="M33 5v9h-9"/></svg>
-        <h3>Keeps listening</h3>
-        <p>Bluetooth switched off and on, or <code>bluetoothd</code> restarted: scanning and device commands pick up again by themselves, and the status line says so while they wait.</p>
+        <h3>Keeps recording</h3>
+        <p>With the app closed it records in the background behind a notification, also after a reboot or an app update, and tells you when a calibration reaches the precision you picked. Bluetooth switched off and on: scanning picks up again by itself.</p>
       </div>
     </div>
   </div>
@@ -232,11 +225,11 @@
 <section class="alt" aria-labelledby="how">
   <div class="wrap split">
     <div>
-      <h2 id="how">Calibrating takes an afternoon and one keypress</h2>
+      <h2 id="how">Calibrating takes an afternoon and a few taps</h2>
       <ol class="steps">
-        <li><strong>Side by side, two hours.</strong><p>Put all thermometers a few centimetres apart, away from sun, radiators and laptop exhaust. That is enough for offsets.</p></li>
-        <li><strong>Somewhere 5 °C different, three hours.</strong><p>Move them all at once: outside in the shade, a cold room, a garage. The second temperature makes the gain measurable.</p></li>
-        <li><strong>Press <kbd>c</kbd>.</strong><p>Pick the window on the chart with <kbd>Tab</kbd> and <kbd>←</kbd> <kbd>→</kbd>, check the bars, press <kbd>Enter</kbd>. Each device gets its own correction in flash. <kbd>x</kbd> brings back the factory values.</p></li>
+        <li><strong>Side by side.</strong><p>Put all thermometers a few centimetres apart, the same way up, away from sun and radiators, and pick them in the app. After about 40 minutes it shows how precise corrections written now would be, and how long a better level takes. That is enough for offsets.</p></li>
+        <li><strong>Somewhere 5 °C different, optionally.</strong><p>Move them all at once: outside in the shade, a cold room, a garage. The second temperature makes the gain measurable. The app waits for each thermometer to catch up before its readings count.</p></li>
+        <li><strong>Write.</strong><p>One tap writes each device's own correction to its flash. Keep them together a while to see what is left. The factory values can always be restored.</p></li>
       </ol>
       <p><a href="calibration.html">Read the full calibration guide →</a> It covers what range to calibrate in, humidity, salt tests, and how the fit works.</p>
     </div>
@@ -259,8 +252,8 @@
         <rect x="50" y="250" width="190" height="6" rx="3"/>
         <rect x="296" y="250" width="180" height="6" rx="3"/>
       </g>
-      <text class="text" x="145" y="280" text-anchor="middle" font-size="13">indoors ≥ 2 h</text>
-      <text class="text" x="400" y="280" text-anchor="middle" font-size="13">cooler ≥ 3 h</text>
+      <text class="text" x="145" y="280" text-anchor="middle" font-size="13">indoors</text>
+      <text class="text" x="400" y="280" text-anchor="middle" font-size="13">cooler</text>
       <g class="ill">
         <path d="M120 40 l20 -16 l20 16 v18 h-40z" fill="none" class="mstroke" stroke-width="2"/>
         <circle cx="400" cy="34" r="9" fill="none" class="mstroke" stroke-width="2"/>
@@ -274,83 +267,32 @@
 <section id="install" aria-labelledby="inst">
   <div class="wrap narrow">
     <h2 id="inst">Install</h2>
-    <p>You need Linux with BlueZ (any desktop distro, or a Raspberry Pi), <a href="https://rustup.rs">Rust</a> 1.90 or newer, and the D-Bus development headers.</p>
-<pre><code><span class="c"># Debian / Ubuntu / Raspberry Pi OS</span>
-sudo apt install libdbus-1-dev pkg-config
-<span class="c"># Fedora</span>
-sudo dnf install dbus-devel pkgconf-pkg-config
-<span class="c"># Arch</span>
-sudo pacman -S --needed dbus pkgconf
-
-cargo install --git https://github.com/arturzielazny/atc-thermo thermo
-thermo</code></pre>
-    <p>Readings are saved to <code>~/.local/share/thermo/</code> as CSV, one file per day, and reloaded on start. <code>thermo calibrate 6</code> prints a calibration proposal for the last six hours without touching any device.</p>
-
-    <h3 id="flash">First, flash the thermometers</h3>
-    <p>thermo talks to the open <a href="https://github.com/pvvx/ATC_MiThermometer">pvvx ATC_MiThermometer</a> firmware. Stock Xiaomi firmware encrypts its adverts and has no calibration interface. Flashing is wireless, from a browser, with the <a href="https://pvvx.github.io/ATC_MiThermometer/TelinkMiFlasher.html">TelinkMiFlasher</a> page:</p>
-    <ol>
-      <li>Chrome on Linux keeps Web Bluetooth behind a flag. Enable <code>chrome://flags/#enable-experimental-web-platform-features</code> and restart, or use Chrome on Android.</li>
-      <li>Connect, activate, and flash the pvvx firmware for your model (version 5.9 or newer was used here).</li>
-      <li>Set the advertising type to <strong>BTHome v2</strong>. Each thermometer then shows up in thermo, Home Assistant and ESPHome.</li>
-    </ol>
-
-    <h3>Keys</h3>
-    <div class="table-scroll">
-    <table class="keys">
-      <tr><td><kbd>↑</kbd> <kbd>↓</kbd></td><td>select a device · <kbd>Esc</kbd> clears marks, then the selection</td></tr>
-      <tr><td><kbd>space</kbd> <kbd>a</kbd></td><td>mark one / all devices: actions apply to marked devices, or the selected one</td></tr>
-      <tr><td><kbd>c</kbd></td><td>calibration screen</td></tr>
-      <tr><td><kbd>l</kbd></td><td>signal levelling: the lowest TX power that still gives each device a reliable signal</td></tr>
-      <tr><td><kbd>s</kbd></td><td>sync clocks and trim their drift</td></tr>
-      <tr><td><kbd>d</kbd></td><td>download the device log for the last 24 h</td></tr>
-      <tr><td><kbd>n</kbd> <kbd>e</kbd></td><td>rename · settings (advertising, measurement and log interval, TX power)</td></tr>
-      <tr><td><kbd>i</kbd></td><td>identify: show the device's number on its screen</td></tr>
-      <tr><td><kbd>t</kbd> <kbd>h</kbd> <kbd>r</kbd> <kbd>w</kbd> <kbd>p</kbd></td><td>temperature / humidity / signal chart · time span · lines or points</td></tr>
-      <tr><td><kbd>q</kbd></td><td>quit</td></tr>
-    </table>
-    </div>
-  </div>
-</section>
-
-<section id="android" class="alt" aria-labelledby="andr">
-  <div class="wrap">
-    <h2 id="andr">On your phone too</h2>
-    <p class="section-lead">The Android app does what the terminal does, laid out for touch. A card per thermometer, a chart you can scrub with a finger, long-press to select several devices for clock sync, log download or settings. Calibration is a guided session that says how precise the corrections already are and how long a better level takes, signal levelling gets sliders instead of keys, and every write to a thermometer asks first.</p>
+    <p>Android 8 or newer. <a href="https://github.com/arturzielazny/atc-thermo/releases/tag/android-v0.4.0">Download the APK</a> from GitHub and open it on the phone, allowing your browser or file manager to install apps when asked. There's no store listing yet. Tested on a Galaxy S21 and a Pixel 10 Pro. To build it yourself, see <a href="https://github.com/arturzielazny/atc-thermo/tree/main/android"><code>android/</code></a>.</p>
     <p class="cta"><a class="btn primary" href="https://github.com/arturzielazny/atc-thermo/releases/tag/android-v0.4.0">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg>
       Download the APK
     </a></p>
-    <div class="phones">
-      <figure class="shot"><img src="assets/android-dashboard.webp" width="540" height="1085" alt="thermo Android dashboard: temperature chart of two thermometers with a touch tooltip, time span chips, and a card per device with temperature, humidity, battery and signal" loading="lazy"><figcaption>Dashboard: drag across the chart to read every device at one moment.</figcaption></figure>
-      <figure class="shot"><img src="assets/android-calibration.webp" width="540" height="1085" alt="thermo Android calibration screen in the second place: steps Together, Second place and Written, a chart of five thermometers moved from 21 °C to 8 °C with a dashed line at the move and a strip under the steady readings, and checks that the place is 13.5 °C colder and 20 %RH more humid, that one device's humidity is still settling, and that 35 minutes of steady readings were collected" loading="lazy"><figcaption>Calibration: after a move to a second place for the gains, the app waits for each thermometer to catch up. Shown with the app's simulated demo devices.</figcaption></figure>
-      <figure class="shot"><img src="assets/android-levelling.webp" width="540" height="1085" alt="thermo Android signal levelling screen: a target of −70 dBm, per-device progress and planned TX power change, and a signal strength chart" loading="lazy"><figcaption>Signal levelling: listens, then proposes a TX power change per device.</figcaption></figure>
-    </div>
-    <div class="features phone-notes">
-      <div class="card">
-        <h3>Keeps recording</h3>
-        <p>With the app closed it records in the background behind a notification, also after a reboot or an app update, and fills gaps from the device logs when it hears a thermometer again. It also tells you when a calibration reaches the precision you picked. A home-screen widget shows the latest readings.</p>
-      </div>
-      <div class="card">
-        <h3>Same files, same maths</h3>
-        <p>History is the same daily CSV as on the desktop, so it can be shared to a computer or imported from one. The calibration fit is a port of the Rust code and gives the same result on the same data; the phone runs it with shorter windows and estimates its precision as it goes.</p>
-      </div>
-      <div class="card">
-        <h3>Install the APK</h3>
-        <p>Android 8 or newer. <a href="https://github.com/arturzielazny/atc-thermo/releases/tag/android-v0.4.0">Download the APK</a> from GitHub and open it on the phone; there's no store listing yet. Reading has been tested on a Galaxy S21; writing from the phone is newer than on the desktop. To build it yourself, see <a href="https://github.com/arturzielazny/atc-thermo/tree/main/android"><code>android/</code></a>.</p>
-      </div>
-    </div>
+    <p>Readings are kept on the phone as CSV, one file per day; <strong>Data and recording</strong> in the menu shares them or imports more.</p>
+
+    <h3 id="flash">First, flash the thermometers</h3>
+    <p>thermo talks to the open <a href="https://github.com/pvvx/ATC_MiThermometer">pvvx ATC_MiThermometer</a> firmware. Stock Xiaomi firmware encrypts its adverts and has no calibration interface. Flashing is wireless, from a browser, with the <a href="https://pvvx.github.io/ATC_MiThermometer/TelinkMiFlasher.html">TelinkMiFlasher</a> page:</p>
+    <ol>
+      <li>Open it in Chrome on the phone (Web Bluetooth works there out of the box).</li>
+      <li>Connect, activate, and flash the pvvx firmware for your model (version 5.9 or newer was used here).</li>
+      <li>Set the advertising type to <strong>BTHome v2</strong>. Each thermometer then shows up in thermo, Home Assistant and ESPHome.</li>
+    </ol>
   </div>
 </section>
 
-<section aria-labelledby="agents">
+<section class="alt" aria-labelledby="agents">
   <div class="wrap split">
     <!-- Symbolic: one codebase branching to different targets. -->
     <svg class="ill" viewBox="0 0 520 300" role="img" aria-labelledby="ag-t">
-      <title id="ag-t">The thermo code base, shown as a terminal, branching through an AI agent to macOS, Windows, a Raspberry Pi exporter and a web dashboard</title>
+      <title id="ag-t">An AI agent in a terminal, changing thermo into a desktop version, a Home Assistant MQTT bridge, a Fahrenheit display or support for another thermometer</title>
       <rect class="term" x="20" y="100" width="170" height="110" rx="12"/>
       <text x="38" y="132" font-size="13" fill="#f0b43c">$ claude</text>
-      <text x="38" y="156" font-size="12" fill="#9a9db5">&gt; port thermo</text>
-      <text x="38" y="174" font-size="12" fill="#9a9db5">  to macOS…</text>
+      <text x="38" y="156" font-size="12" fill="#9a9db5">&gt; bring thermo</text>
+      <text x="38" y="174" font-size="12" fill="#9a9db5">  to my laptop…</text>
       <rect x="38" y="186" width="9" height="14" fill="#e3e5f0"/>
       <g fill="none" stroke-width="2.5" class="astroke" stroke-linecap="round">
         <path d="M190 155 C250 155 250 50 296 50"/>
@@ -360,39 +302,39 @@ thermo</code></pre>
       </g>
       <g>
         <rect class="shell" x="296" y="28" width="214" height="44" rx="10" stroke-width="1.5"/>
-        <text class="ink" x="312" y="56" font-size="14">macOS · CoreBluetooth</text>
+        <text class="ink" x="312" y="56" font-size="14">Linux · macOS</text>
         <rect class="shell" x="296" y="98" width="214" height="44" rx="10" stroke-width="1.5"/>
-        <text class="ink" x="312" y="126" font-size="14">Windows · WinRT</text>
+        <text class="ink" x="312" y="126" font-size="14">Home Assistant · MQTT</text>
         <rect class="shell" x="296" y="168" width="214" height="44" rx="10" stroke-width="1.5"/>
-        <text class="ink" x="312" y="196" font-size="14">Pi → MQTT / Influx</text>
+        <text class="ink" x="312" y="196" font-size="14">°F · your language</text>
         <rect class="shell" x="296" y="238" width="214" height="44" rx="10" stroke-width="1.5"/>
-        <text class="ink" x="312" y="266" font-size="14">web dashboard</text>
+        <text class="ink" x="312" y="266" font-size="14">another pvvx model</text>
       </g>
     </svg>
     <div>
       <h2 id="ag">Not quite what you need? Have an agent rewrite it.</h2>
-      <p>thermo is written to be changed by AI coding agents such as Claude Code, Codex or Cursor. The repository has an <code>AGENTS.md</code> that explains the architecture and what is platform-specific. The BTHome decoder and the calibration maths are dependency-free and fully unit-tested, so an agent can check its own work without hardware.</p>
-      <p>Port it to macOS or Windows, turn it into a headless MQTT exporter on a Raspberry Pi, or add your own sensor model. The Android app started this way: Claude Code ported the logic to Kotlin overnight, testing on a real phone over <code>adb</code>.</p>
+      <p>thermo is written to be changed by AI coding agents such as Claude Code, Codex or Cursor. The repository has an <code>AGENTS.md</code> that explains the architecture and the rules for working near real devices. The BTHome decoder, the calibration maths and the app's state are free of Android and covered by unit tests, so an agent can check its own work without hardware.</p>
+      <p>The app itself started this way: thermo began as a terminal app for Linux and macOS, and Claude Code ported it to Android overnight, testing on a real phone over <code>adb</code>. That terminal version is no longer developed, but it's still in the repository: if you want thermo on a computer, an agent can bring it up to the app's features.</p>
       <p><a class="btn" href="agents.html">Guide and ready-made prompts →</a></p>
     </div>
   </div>
 </section>
 
-<section class="alt" aria-labelledby="faq">
+<section aria-labelledby="faq">
   <div class="wrap narrow">
     <h2 id="faq">Questions</h2>
     <details><summary>Can I calibrate LYWSD03MMC thermometers without a reference thermometer?</summary>
-      <p>Yes, relative to each other: thermo makes all devices agree with their group average, which is usually closer to the truth than any single sensor. Agreement isn't absolute accuracy, though. For absolute humidity, a sealed box over saturated table salt holds 75 %RH and makes a cheap reference. The <a href="calibration.html">guide</a> explains the details.</p></details>
+      <p>Yes, relative to each other: the app makes all devices agree with their group average, which is usually closer to the truth than any single sensor. Agreement isn't absolute accuracy, though. For absolute humidity, a sealed box over saturated table salt holds 75 %RH and makes a cheap reference. The <a href="calibration.html">guide</a> explains the details.</p></details>
     <details><summary>Will Home Assistant see the calibrated values?</summary>
-      <p>Yes. The gain and offset are written into each thermometer, so every receiver of its BTHome adverts gets corrected values: Home Assistant's BTHome integration, ESPHome Bluetooth proxies and anything else that decodes BTHome. thermo only listens, so it runs fine next to them. Names set with <kbd>n</kbd> appear in Home Assistant when it scans actively.</p></details>
+      <p>Yes. The gain and offset are written into each thermometer, so every receiver of its BTHome adverts gets corrected values: Home Assistant's BTHome integration, ESPHome Bluetooth proxies and anything else that decodes BTHome. The app only listens, so it runs fine next to them. Names set in the app appear in Home Assistant when it scans actively.</p></details>
     <details><summary>Which thermometers work?</summary>
       <p>Tested with eight Xiaomi LYWSD03MMC (Mi Temperature and Humidity Monitor 2) on pvvx firmware 5.9, including both sensor variants (SHT4x-type and SHT3x-type coefficients). Other models running the pvvx firmware with BTHome v2, such as MHO-C401 or CGG1, should show up and be calibratable but are untested. Reports are welcome.</p></details>
-    <details><summary>macOS, Windows, Raspberry Pi, phones?</summary>
-      <p>Any Linux with BlueZ works, a Raspberry Pi included. Android has its <a href="#android">own app</a>. macOS and Windows need the Bluetooth layer replaced. See <a href="agents.html">porting with an AI agent</a>.</p></details>
+    <details><summary>Is there a version for a computer?</summary>
+      <p>thermo started as a terminal app for Linux and macOS. It is no longer developed and is kept, unchanged, in the repository's <a href="https://github.com/arturzielazny/atc-thermo/tree/main/archive/tui"><code>archive/tui</code></a>; the history files are the same as the app's. If you need it, an AI coding agent can bring it up to the app's features: see <a href="agents.html">the agents guide</a>.</p></details>
     <details><summary>Can I undo a calibration?</summary>
-      <p>Yes. <kbd>x</kbd> on the calibration screen restores the factory coefficients, and every change is logged with old and new values in <code>calibrations.csv</code>. Corrections compose, so you can calibrate again later on top of the last one.</p></details>
+      <p>Yes. <strong>Restore factory calibration</strong> in the calibration screen's menu brings back the factory coefficients, and every change is logged with old and new values in <code>calibrations.csv</code>. Corrections compose, so you can calibrate again later on top of the last one.</p></details>
     <details><summary>Does it drain the batteries?</summary>
-      <p>Listening is passive and costs the thermometers nothing. thermo only connects to a device when you ask for something: log download, clock sync, settings, rename, identify, calibration or signal levelling, whose screen reads each device's settings when it opens. Levelling can save battery: it turns down the radio of thermometers close to the computer.</p></details>
+      <p>Listening is passive and costs the thermometers nothing. The app connects to a device when you ask for something (clock sync, settings, rename, identify, calibration, signal levelling, whose screen reads each device's settings when it opens) and to download its log when a device's history has a gap. Levelling can save battery: it turns down the radio of thermometers close to the phone.</p></details>
   </div>
 </section>
 </main>
@@ -400,20 +342,9 @@ thermo</code></pre>
 <footer>
   <div class="wrap">
     <span>thermo · MIT or Apache-2.0 · by <a href="https://github.com/arturzielazny">Artur Zielazny</a>, written with Claude Code</span>
-    <span>Built on <a href="https://github.com/pvvx/ATC_MiThermometer">pvvx/ATC_MiThermometer</a>, <a href="https://bthome.io">BTHome</a>, <a href="https://github.com/bluez/bluer">bluer</a> and <a href="https://ratatui.rs">ratatui</a> and <a href="https://developer.android.com/compose">Jetpack Compose</a>. Not affiliated with Xiaomi.</span>
+    <span>Built on <a href="https://github.com/pvvx/ATC_MiThermometer">pvvx/ATC_MiThermometer</a>, <a href="https://bthome.io">BTHome</a> and <a href="https://developer.android.com/compose">Jetpack Compose</a>. Not affiliated with Xiaomi.</span>
   </div>
 </footer>
 
-<script>
-  const img = document.getElementById('shot');
-  const cap = document.getElementById('shot-cap');
-  for (const tab of document.querySelectorAll('.tabs button')) {
-    tab.addEventListener('click', () => {
-      for (const t of document.querySelectorAll('.tabs button')) t.setAttribute('aria-selected', String(t === tab));
-      img.src = tab.dataset.src;
-      cap.textContent = tab.dataset.cap;
-    });
-  }
-</script>
 </body>
 </html>

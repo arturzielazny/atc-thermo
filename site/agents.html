@@ -3,16 +3,16 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Customize or port thermo with an AI coding agent · thermo</title>
-<meta name="description" content="Use Claude Code, Codex or another AI coding agent to adapt thermo, the LYWSD03MMC thermometer dashboard: port it to macOS or Windows, build a Raspberry Pi MQTT or InfluxDB exporter, add °F, or support another pvvx device. Ready-made prompts included.">
-<meta name="keywords" content="AI coding agent, Claude Code, port Rust app to macOS, btleplug, BTHome MQTT, LYWSD03MMC Raspberry Pi, InfluxDB thermometer, customize open source with AI">
+<title>Customize thermo with an AI coding agent · thermo</title>
+<meta name="description" content="Use Claude Code, Codex or another AI coding agent to adapt thermo, the LYWSD03MMC thermometer app: bring the archived Linux and macOS terminal version up to date, publish readings to MQTT, add °F, or support another pvvx device. Ready-made prompts included.">
+<meta name="keywords" content="AI coding agent, Claude Code, LYWSD03MMC Android app, BTHome MQTT, Home Assistant, Linux thermometer dashboard, customize open source with AI">
 <link rel="canonical" href="https://arturzielazny.github.io/atc-thermo/agents.html">
 <meta name="theme-color" content="#14151e">
 <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="assets/style.css">
 <meta property="og:type" content="article">
 <meta property="og:title" content="Make thermo yours with an AI coding agent">
-<meta property="og:description" content="Ready-made prompts for porting the LYWSD03MMC dashboard to macOS or Windows, or turning it into a headless exporter.">
+<meta property="og:description" content="Ready-made prompts for changing the LYWSD03MMC thermometer app, or bringing its terminal version for Linux and macOS back.">
 <meta property="og:url" content="https://arturzielazny.github.io/atc-thermo/agents.html">
 <meta property="og:image" content="https://arturzielazny.github.io/atc-thermo/assets/og.png">
 <meta name="twitter:card" content="summary_large_image">
@@ -35,49 +35,44 @@
 
 <main class="wrap narrow prose" style="padding-top:3rem;padding-bottom:3rem">
   <p class="eyebrow">Make it yours</p>
-  <h1>Customize or port thermo with an AI coding agent</h1>
-  <p class="lead">thermo does what one household needed, on Linux. Yours may need macOS, a headless Raspberry Pi feeding Grafana, Fahrenheit, or a different thermometer. You don't have to wait for someone to add it. A coding agent can do most of the work, and the repository is set up to help it. The Android app in the repository was made this way.</p>
+  <h1>Customize thermo with an AI coding agent</h1>
+  <p class="lead">thermo does what one household needed, on an Android phone. Yours may need it on a laptop, readings in Home Assistant over MQTT, Fahrenheit, or a different thermometer. You don't have to wait for someone to add it. A coding agent can do most of the work, and the repository is set up to help it. The Android app itself was made this way, ported from a terminal version overnight.</p>
 
   <h2>Why this code base is agent-friendly</h2>
   <ul>
-    <li><strong><code>AGENTS.md</code></strong> at the root explains the layout, the build and test commands, the firmware protocol, the rules (never write to your devices unasked) and a step-by-step porting plan. Claude Code reads it through <code>CLAUDE.md</code>, and most other agents read <code>AGENTS.md</code> directly.</li>
-    <li><strong>The hard parts are pure.</strong> The BTHome decoder and the calibration maths have no dependencies and no I/O. They compile anywhere and are covered by unit tests that need no hardware.</li>
-    <li><strong>The platform-specific parts are small and named:</strong> one Bluetooth backend in the <code>ble</code> crate (scanning and the GATT transport), and shared-memory chart images. Everything else is ordinary Rust.</li>
-    <li><strong>Strict lints and many tests</strong> (<code>cargo clippy -- -D warnings</code> with pedantic lints, <code>cargo test --workspace</code>) give the agent fast, honest feedback.</li>
+    <li><strong><code>AGENTS.md</code></strong> at the root explains the layout, the build and test commands, the firmware protocol and the rules (never write to your devices unasked). Claude Code reads it through <code>CLAUDE.md</code>, and most other agents read <code>AGENTS.md</code> directly.</li>
+    <li><strong>The hard parts are pure.</strong> The BTHome decoder, the byte layouts of the firmware commands and the calibration maths don't touch Android, and the app's whole state lives in one I/O-free model. All of it is covered by unit tests that run on a computer, without a phone or thermometers.</li>
+    <li><strong>The platform-specific parts are small and named:</strong> the Bluetooth scanner and job worker, the GATT client, and the Compose screens.</li>
+    <li><strong>Tests on real data.</strong> Some tests replay real calibration sessions from history files, so a change to the fit is checked against what actually happened.</li>
+    <li><strong>A demo for the screens.</strong> Debug builds load simulated thermometers with hours of history, so an agent can drive the app on a phone over <code>adb</code> without touching yours.</li>
   </ul>
 
   <figure>
     <svg class="ill" viewBox="0 0 640 250" role="img" aria-labelledby="arch-t">
-      <title id="arch-t">Architecture: portable crates bthome and calibration, protocol encoding in atc, and the a Bluetooth backend per platform in ble, and the chart transfer that a port replaces</title>
+      <title id="arch-t">Architecture: Compose screens on top of an I/O-free model; the pure packages bthome, calibration and the firmware's byte layouts; and the Android Bluetooth layer at the bottom</title>
       <rect class="bg" width="640" height="250" rx="16"/>
       <g font-size="13">
         <rect x="24" y="26" width="592" height="54" rx="10" fill="none" class="mstroke" stroke-width="1.5"/>
-        <text class="text" x="40" y="50" font-weight="700">thermo</text>
-        <text class="muted" x="40" y="68" font-size="12">app state · keys · table · chart layout · CSV store</text>
-        <rect x="494" y="36" width="110" height="34" rx="8" fill="none" class="astroke" stroke-width="2" stroke-dasharray="5 4"/>
-        <text class="text" x="549" y="58" text-anchor="middle" font-size="12">kitty shm</text>
+        <text class="text" x="40" y="50" font-weight="700">ui · model</text>
+        <text class="muted" x="40" y="68" font-size="12">Compose screens · app state, session, CSV store: no I/O, unit-tested</text>
 
         <rect x="24" y="98" width="290" height="54" rx="10" fill="none" class="mstroke" stroke-width="1.5"/>
         <text class="text" x="40" y="122" font-weight="700">atc</text>
-        <text class="muted" x="40" y="140" font-size="12">protocol · commands as bytes · no I/O</text>
+        <text class="muted" x="40" y="140" font-size="12">protocol · commands as bytes</text>
 
         <rect x="326" y="98" width="140" height="54" rx="10" class="accent" opacity="0.18"/>
         <text class="text" x="342" y="122" font-weight="700">bthome</text>
-        <text class="muted" x="342" y="140" font-size="12">0 deps · pure</text>
+        <text class="muted" x="342" y="140" font-size="12">pure · tested</text>
         <rect x="476" y="98" width="140" height="54" rx="10" class="accent" opacity="0.18"/>
         <text class="text" x="492" y="122" font-weight="700">calibration</text>
-        <text class="muted" x="492" y="140" font-size="12">0 deps · pure</text>
+        <text class="muted" x="492" y="140" font-size="12">pure · tested</text>
 
         <rect x="24" y="170" width="592" height="54" rx="10" class="term"/>
-        <text x="40" y="196" fill="#e3e5f0" font-weight="700">ble · BlueZ backend (Linux)</text>
-        <text x="40" y="213" fill="#9a9db5" font-size="12">add one beside it: btleplug → CoreBluetooth (macOS) · WinRT (Windows)</text>
-      </g>
-      <g font-size="11">
-        <rect x="430" y="232" width="12" height="8" fill="none" class="astroke" stroke-width="1.5" stroke-dasharray="3 2"/>
-        <text class="muted" x="448" y="240">replace when porting</text>
+        <text x="40" y="196" fill="#e3e5f0" font-weight="700">ble · Android Bluetooth</text>
+        <text x="40" y="213" fill="#9a9db5" font-size="12">scanner, one-at-a-time job worker, GATT client</text>
       </g>
     </svg>
-    <figcaption>A port adds a backend to <code>ble</code> and replaces the dashed box. The filled crates come along unchanged.</figcaption>
+    <figcaption>The filled packages are plain Kotlin with nothing of Android in them; the archived terminal version has the same ones in Rust.</figcaption>
   </figure>
 
   <h2>How to do it</h2>
@@ -87,39 +82,35 @@
 cd atc-thermo
 claude</code></pre></li>
     <li><strong>Ask for a plan first.</strong><p>For anything bigger than a tweak, ask the agent to read <code>AGENTS.md</code> and propose a plan before editing. In Claude Code, plan mode (<kbd>Shift</kbd>+<kbd>Tab</kbd>) does exactly that.</p></li>
-    <li><strong>Let it build and test in a loop.</strong><p>Tell it the finish line: "<code>cargo test --workspace</code> and <code>cargo clippy -- -D warnings</code> pass". Agents work best when they can check themselves.</p></li>
-    <li><strong>You test with hardware.</strong><p>The agent can't see your thermometers. Run the result, check the readings, then try one write action (rename is the safest) on one device before calibrating all of them.</p></li>
+    <li><strong>Let it build and test in a loop.</strong><p>Tell it the finish line: "<code>./gradlew testDebugUnitTest</code> and <code>lintDebug</code> pass". Agents work best when they can check themselves. With a phone connected over USB, it can also install the app and look at the screens.</p></li>
+    <li><strong>You test with hardware.</strong><p>The agent can't see your thermometers. Check the readings, then try one write action (rename is the safest) on one device before calibrating all of them.</p></li>
   </ol>
 
   <h2>Prompts to start from</h2>
-  <p class="muted">Copy one, then add your details: OS version, terminal, how many devices, what you want to see.</p>
+  <p class="muted">Copy one, then add your details: phone, how many devices, what you want to see.</p>
 
   <div class="prompt">
-    <h3>Port to macOS</h3>
-    <blockquote>Read AGENTS.md. Port thermo to macOS following its "Porting to another OS" section: add a btleplug backend to the ble crate beside bluez.rs, with the same API, map CoreBluetooth ids back to MACs as that section describes, and send chart images with direct kitty transmission instead of /dev/shm. Keep the Linux backend unchanged. Plan first, then implement step by step, keeping cargo test and clippy green after each step.</blockquote>
+    <h3>thermo on a computer again</h3>
+    <blockquote>Read AGENTS.md and archive/tui/AGENTS.md. The terminal version of thermo in archive/tui (Rust, Linux and macOS) was archived when only the Android app was kept up. Bring it up to the Android app's features, with the Android code as the reference: first list what the app does that the terminal version doesn't (the guided calibration session with its precision estimate and times, the hold after a move, the salt box, and so on), then port them one at a time, with the app's tests ported too. Keep the CSV files compatible. Plan first, and keep cargo test and clippy green after each step.</blockquote>
   </div>
   <div class="prompt">
-    <h3>Port to Windows</h3>
-    <blockquote>Read AGENTS.md. Make thermo build and run on Windows 11 with a btleplug (WinRT) backend in the ble crate. Store history under %LOCALAPPDATA%. Windows Terminal has no kitty graphics, so make sure the braille chart fallback is used. Keep the Linux build unchanged. Plan first.</blockquote>
-  </div>
-  <div class="prompt">
-    <h3>Headless Raspberry Pi exporter</h3>
-    <blockquote>Read AGENTS.md. Add a new binary crate thermo-mqtt that reuses ble::Bluetooth::scan and the bthome crate, without the TUI, and publishes every reading to MQTT as JSON (topic thermo/&lt;name&gt;), with Home Assistant MQTT discovery. Add a systemd unit file and a README section for Raspberry Pi OS.</blockquote>
-  </div>
-  <div class="prompt">
-    <h3>InfluxDB / Grafana</h3>
-    <blockquote>Read AGENTS.md. Add an optional InfluxDB line-protocol writer to thermo, configured by environment variables, that sends each advert (temperature, humidity, battery, RSSI, device name). Don't block the UI on network errors.</blockquote>
+    <h3>Readings to Home Assistant over MQTT</h3>
+    <blockquote>Read AGENTS.md. Add an optional MQTT publisher to the app: a setting with the broker address, and each reading published as JSON (topic thermo/&lt;name&gt;) with Home Assistant MQTT discovery, also while recording in the background. Keep the model I/O-free and don't block on network errors.</blockquote>
   </div>
   <div class="prompt">
     <h3>Fahrenheit</h3>
-    <blockquote>Read AGENTS.md. Add a °F display option (key: u) to thermo. Keep storage and calibration in °C, convert only for display in the table, chart axis and calibration panel, and remember the choice across restarts.</blockquote>
+    <blockquote>Read AGENTS.md. Add a °F display option to the app's menu. Keep storage and calibration in °C, convert only for display (cards, chart axis, calibration screens, widget, notifications and spoken progress), and remember the choice.</blockquote>
   </div>
   <div class="prompt">
     <h3>Another pvvx device</h3>
-    <blockquote>Read AGENTS.md. I have &lt;model&gt; thermometers on pvvx firmware &lt;version&gt;. Compare its config layout and LCD limits in the pvvx sources with crates/atc/src/config.rs and screen.rs, and make identify, settings and calibration work for it. Don't connect to any device; I'll test.</blockquote>
+    <blockquote>Read AGENTS.md. I have &lt;model&gt; thermometers on pvvx firmware &lt;version&gt;. Compare its config layout and LCD limits in the pvvx sources with atc/Encodings.kt, and make identify, settings and calibration work for it. Don't connect to any device; I'll test.</blockquote>
+  </div>
+  <div class="prompt">
+    <h3>Your language</h3>
+    <blockquote>Read AGENTS.md. Move the app's texts into Android string resources and add a &lt;language&gt; translation, spoken progress included. Keep the wording plain, as in the English texts.</blockquote>
   </div>
 
-  <div class="callout"><p><strong>Keep your devices safe.</strong> Agents should never run write actions against your thermometers unasked, and <code>AGENTS.md</code> tells them so. Calibration is reversible (<kbd>x</kbd> restores factory coefficients), and a mistaken setting can be fixed again from thermo or the pvvx web flasher, but it's still your call.</p></div>
+  <div class="callout"><p><strong>Keep your devices safe.</strong> Agents should never run write actions against your thermometers unasked, and <code>AGENTS.md</code> tells them so. Calibration is reversible (Restore factory calibration brings back the factory coefficients), and a mistaken setting can be fixed again from the app or the pvvx web flasher, but it's still your call.</p></div>
 
   <h2>Share what you build</h2>
   <p>A port or a feature that others could use? Open a pull request or an issue on <a href="https://github.com/arturzielazny/atc-thermo">GitHub</a>. Say which agent you used and which hardware you tested on.</p>

@@ -47,7 +47,7 @@
     { "@type": "Question", "name": "Do calibrated values show up in Home Assistant?",
       "acceptedAnswer": { "@type": "Answer", "text": "Yes. The corrections are stored in the thermometer itself, so every BTHome receiver, including Home Assistant's BTHome integration and ESPHome Bluetooth proxies, receives the corrected values. The app only listens to adverts and can run alongside Home Assistant." } },
     { "@type": "Question", "name": "Which devices are supported?",
-      "acceptedAnswer": { "@type": "Answer", "text": "Tested with eight Xiaomi LYWSD03MMC (Mi Temperature and Humidity Monitor 2) on pvvx firmware 5.9, with both sensor variants. Other devices running the pvvx ATC_MiThermometer firmware with BTHome v2 advertising should work but are untested." } },
+      "acceptedAnswer": { "@type": "Answer", "text": "Tested with eight Xiaomi LYWSD03MMC (Mi Temperature and Humidity Monitor 2) on pvvx firmware 5.9, with both sensor variants. Other devices running the pvvx ATC_MiThermometer firmware with BTHome v2 advertising should work but are untested. So should THB1, THB2, BTH01, TH05 and other devices on pvvx's THB2 firmware, but they haven't been tested with the app." } },
     { "@type": "Question", "name": "Is there a version for a computer?",
       "acceptedAnswer": { "@type": "Answer", "text": "thermo started as a terminal app for Linux and macOS. It is no longer developed and is kept, unchanged, in the repository's archive. An AI coding agent can bring it up to the Android app's features, with the app's code as the reference." } }
   ]
@@ -333,7 +333,7 @@
     <details><summary>Will Home Assistant see the calibrated values?</summary>
       <p>Yes. The gain and offset are written into each thermometer, so every receiver of its BTHome adverts gets corrected values: Home Assistant's BTHome integration, ESPHome Bluetooth proxies and anything else that decodes BTHome. The app only listens, so it runs fine next to them. Names set in the app appear in Home Assistant when it scans actively.</p></details>
     <details><summary>Which thermometers work?</summary>
-      <p>Tested with eight Xiaomi LYWSD03MMC (Mi Temperature and Humidity Monitor 2) on pvvx firmware 5.9, including both sensor variants (SHT4x-type and SHT3x-type coefficients). Other models running the pvvx firmware with BTHome v2, such as MHO-C401 or CGG1, should show up and be calibratable but are untested. Reports are welcome.</p></details>
+      <p>Tested with eight Xiaomi LYWSD03MMC (Mi Temperature and Humidity Monitor 2) on pvvx firmware 5.9, including both sensor variants (SHT4x-type and SHT3x-type coefficients). Other models running the pvvx firmware with BTHome v2, such as MHO-C401 or CGG1, should show up and be calibratable but are untested. So should THB1, THB2, BTH01, TH05 and other devices on pvvx's <a href="https://github.com/pvvx/THB2">THB2 firmware</a>: the app supports it, but it hasn't been tested with one yet. Reports are welcome.</p></details>
     <details><summary>Is there a version for a computer?</summary>
       <p>thermo started as a terminal app for Linux and macOS. It is no longer developed and is kept, unchanged, in the repository's <a href="https://github.com/arturzielazny/atc-thermo/tree/main/archive/tui"><code>archive/tui</code></a>; the history files are the same as the app's. If you need it, an AI coding agent can bring it up to the app's features: see <a href="agents.html">the agents guide</a>.</p></details>
     <details><summary>Can I undo a calibration?</summary>

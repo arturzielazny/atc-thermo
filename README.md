@@ -6,13 +6,13 @@
 An Android app for BLE thermometers running the
 [pvvx ATC_MiThermometer](https://github.com/pvvx/ATC_MiThermometer) firmware with
 **BTHome v2** advertising (tested on Xiaomi LYWSD03MMC), or the
-[pvvx THB2](https://github.com/pvvx/THB2) firmware (THB1, THB2, BTH01, TH05, …). It shows
-live readings, fills gaps from each device's own log even though the device clocks are
-wrong, syncs and trims those clocks, and renames devices and changes their settings in
-bulk. Put the thermometers side by side and it **calibrates them against each other** in
-a guided session that tells you how precise the corrections already are, then writes a
-gain and offset into each one, so Home Assistant and every other BTHome receiver get the
-corrected values too.
+[pvvx THB2](https://github.com/pvvx/THB2) firmware (THB1, THB2, BTH01, TH05, …; these
+should work, but haven't been tested with the app). It shows live readings, fills gaps
+from each device's own log even though the device clocks are wrong, syncs and trims those
+clocks, and renames devices and changes their settings in bulk. Put the thermometers side
+by side and it **calibrates them against each other** in a guided session that tells you
+how precise the corrections already are, then writes a gain and offset into each one, so
+Home Assistant and every other BTHome receiver get the corrected values too.
 
 **Website and guides:** https://arturzielazny.github.io/atc-thermo/
 

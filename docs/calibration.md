@@ -44,7 +44,7 @@ the device; the factory values are always recoverable with `0x26`.
 **On-device logger** (`0x35` read, `0x36` clear, `0x23` set clock): ~20 800
 records of `{time u32, temp i16, humi u16, vbat u16}`, each an average over
 `averaging_measurements × measure_interval`. At 1-minute averaging that is
-~14 days. This means data collection does not depend on the laptop being in
+~14 days. This means data collection does not depend on the phone being in
 radio range. The logger stores *calibrated* values, which is fine as long as
 coefficients do not change during a session.
 
@@ -63,7 +63,7 @@ be pinned by one of:
    (mean a = 1, mean b = 0). The devices then agree with their own average.
    With SHT4x (±0.2 °C, ±1.8 %RH typical) the average of four is usually
    better than any single one.
-2. **Reference device** (`r` on the calibration screen, `--match` offline): one
+2. **Reference device** ("Correct to…" in the calibration screen's menu): one
    thermometer is declared correct; the others are corrected to read like it. The
    fit is still the consensus one, so every device helps estimate how the others
    differ; only the anchor (§4, step 7) moves to the reference. The reference
@@ -71,7 +71,10 @@ be pinned by one of:
 3. **Reference values**: typed in from a trusted instrument at some moments,
    or a humidity salt test: a sealed box over saturated NaCl solution holds
    75.3 %RH (MgCl₂: 33 %RH) at room temperature. This is the cheap gold
-   standard for hygrometers and gives absolute humidity calibration.
+   standard for hygrometers and gives absolute humidity calibration. The app's
+   **salt box** does this for humidity: once the box has settled, every humidity
+   correction is shifted so the group reads NaCl's value (`model/Salt.kt`; see
+   `android/README.md` for when a box counts as settled).
 
 **Why your three-phase idea is right:**
 
@@ -87,28 +90,29 @@ be pinned by one of:
 ## 3. Procedure for the user
 
 Offsets need only one place; gains need steady data at two temperatures at least
-5 °C apart (15 %RH for humidity). Only live adverts are used, so the TUI must run
-the whole time, the laptop must not sleep, and the devices must stay in radio
-range (watch `Seen` and the signal chart, `r`).
+5 °C apart (15 %RH for humidity). Only live adverts are used, so the phone must stay in
+radio range of the devices; the app records with its screen off and when closed.
 
-1. **Inside, ≥ 2 h steady.** Devices side by side, a few cm apart, not touching,
-   away from radiators, sun, laptop exhaust and people.
-2. **Move all at once to the other place, ≥ 3 h.** E.g. outside: shaded, sheltered
-   from rain, free airflow, still in range. The first hour after a big change is
-   ignored while the cases catch up, and readings above 95 %RH are dropped, so
-   avoid fog and rain.
-3. **Calibrate** (`c`) while still there, or after another ≥ 2 h back inside.
-   Set the window to cover both places but none of the moves or handling:
-   `Tab` switches between its start and end, `←` `→` move the edge by 15 min
-   (Shift: 1 h), snapped to round times. The chart below the panel shades
-   what is left out and marks both edges; the device list makes room for it
-   on small terminals. The start
-   never reaches back past the last calibration of the devices taking part. Check that
-   `Phases` is 2, the steady range spans both temperatures, and `T gain` /
-   `H gain` show numbers (`–` means the span was too small or the gain is
-   indistinguishable from 1, so only the offset is written). `Enter`, `y` writes.
+1. **Together.** Pick the devices for a calibration and lay them side by side, a few cm
+   apart, the same way up, not touching, away from radiators, sun and people. The first
+   estimate comes after about 40 minutes; then the app shows how precise corrections
+   written now would be and how long each better level takes.
+2. **Second place (optional), for the gains.** Move them all at once somewhere at least
+   5 °C warmer or colder, e.g. outside: shaded, sheltered from rain, still in range, and
+   tap "I've moved them". Each device's readings there count once it has caught up with
+   the others, and readings above 95 %RH are dropped, so avoid fog and rain. Half an
+   hour of steady readings there gives a usable gain, longer a better one.
+3. **Write** when the precision is enough. The window starts no earlier than the last
+   calibration of the devices taking part. Keep them together a while afterwards: what
+   is left to correct should stay small.
 
-## 4. Algorithm (as implemented in `crates/calibration`)
+## 4. Algorithm (as implemented in the app's `calibration/`)
+
+A port of the archived Rust crate (`archive/tui/crates/calibration`), which this section
+first described. The app's sessions use it with shorter windows (20 minutes), hold each
+device back after a move until it has caught up, and trim the gain's span by 15 minutes
+at each end instead of percentiles; `android/README.md` has the numbers and the tests on
+real data behind them.
 
 All of it is pure computation on time series: no Bluetooth involved, fully unit-testable.
 Temperature and humidity are handled independently.
@@ -116,7 +120,7 @@ Temperature and humidity are handled independently.
 1. **Gather** each device's *live* samples for the window (downloaded log records
    are 30-minute averages and are not used). The window starts no earlier than the
    last coefficient change of any participating device (`calibrations.csv`).
-2. **Resample** to a common 5-minute grid. Reception on this laptop is lossy (only
+2. **Resample** to a common 5-minute grid. Reception is lossy (on a laptop only
    every second or third measurement arrives), so 1-minute bins were mostly empty.
 3. **Select usable readings.** A device's bin is used only if, over a 30-minute
    window, both the group median and the device itself changed by at most
@@ -154,16 +158,18 @@ Temperature and humidity are handled independently.
    `(offset_i − offset_ref) / gain_ref`).
 8. **Apply** after confirmation: compose onto the device's current coefficients
    (`k' = a·k`, `z' = a·z + 100·b`), write with `0x25`, read back and verify, log old
-   and new values to `calibrations.csv`. `x` on the calibration screen restores the
-   factory coefficients.
+   and new values to `calibrations.csv`. "Restore factory calibration" in the
+   calibration screen's menu brings back the factory coefficients.
 
 ## 5. Status
 
-Done: `crates/atc` (BLE client), `crates/calibration` (fit), `thermo calibrate
-[HOURS]` (offline report), the TUI calibration screen (`c`), clock sync with rate
-trimming, and log download with drift-corrected time mapping.
+Done in the Android app: the BLE client, the fit, a guided calibration session with a
+precision estimate and the time to each level, the hold after a move, the salt box,
+clock sync with rate trimming, and log download with drift-corrected time mapping. The
+archived terminal app had all but the session, the hold and the salt box.
 
-Findings from the first real run (5 devices on a table, 2026-10-26):
+Findings from the first real run (5 devices on a table, 2026-10-26, with the terminal
+app):
 
 - None of the device clocks had ever been set; they counted seconds since flashing.
   Log records are mapped to host time via the clock offset (and linear drift since
@@ -175,9 +181,9 @@ Findings from the first real run (5 devices on a table, 2026-10-26):
   sync is at least 12 h old, a sync also lengthens or shortens the device's second
   (`0x24`, in 16 MHz timer ticks, ±2000 ppm, kept in flash) by the measured drift.
   The rate still depends on temperature.
-- Connecting makes BlueZ pause discovery; the scanner restarts it 5 s after the
-  last device job. A connection that BlueZ completes after we gave up is
-  disconnected explicitly, because a connected thermometer stops advertising.
+- Connecting made BlueZ pause discovery; the terminal app's scanner restarted it 5 s
+  after the last device job. A connection completed after giving up is disconnected
+  explicitly, because a connected thermometer stops advertising.
 
 Not done: dew-point-based humidity comparison, validation fit on a held-out last
 phase.

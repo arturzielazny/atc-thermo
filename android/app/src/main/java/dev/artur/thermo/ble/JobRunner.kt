@@ -1,6 +1,6 @@
 /*
  * Background worker that connects to devices one at a time and runs commands on them;
- * the Android counterpart of `crates/thermo/src/jobs.rs`.
+ * the Android counterpart of `archive/tui/crates/thermo/src/jobs.rs`.
  */
 package dev.artur.thermo.ble
 

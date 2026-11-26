@@ -1,6 +1,6 @@
 /*
  * What device jobs do and report, without the Bluetooth part (that is `ble/JobRunner.kt`);
- * the types of `crates/thermo/src/jobs.rs` plus the settings presets of `forms.rs`.
+ * the types of `archive/tui/crates/thermo/src/jobs.rs` plus the settings presets of `forms.rs`.
  */
 package dev.artur.thermo.model
 

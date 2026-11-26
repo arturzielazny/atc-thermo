@@ -1,6 +1,6 @@
 /*
  * Consensus calibration of co-located temperature and humidity sensors; a port of
- * `crates/calibration` (algorithm in `docs/calibration.md` §4).
+ * `archive/tui/crates/calibration` (algorithm in `docs/calibration.md` §4).
  *
  * Sensors placed together measure the same air, so their disagreement is sensor error.
  * [calibrate] fits a linear correction `gain · reported + offset` per sensor such that
@@ -8,7 +8,7 @@
  * are not outliers, or to one reference sensor ([Options.reference]) declared correct.
  * Durations are in seconds throughout.
  *
- * Unlike the Rust crate, this port also estimates how precise each correction is
+ * Unlike the archived Rust crate, this port also estimates how precise each correction is
  * ([Fit.stderr], [QuantityReport.inflation]), for the app's live guidance; the fit itself is
  * the same.
  */

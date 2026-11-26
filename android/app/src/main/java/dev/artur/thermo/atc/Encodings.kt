@@ -1,6 +1,6 @@
 /*
  * Byte layouts and maths of the pvvx ATC_MiThermometer and THB2 command interfaces, with
- * no I/O; a port of `crates/atc/src/{config,coefficients,clock,log,screen}.rs`. Layouts
+ * no I/O; a port of `archive/tui/crates/atc/src/{config,coefficients,clock,log,screen}.rs`. Layouts
  * follow `src/app.h`, `src/sensor.h`, `src/logger.h` and `src/cmd_parser.c` of
  * <https://github.com/pvvx/ATC_MiThermometer>, firmware v4.7 and newer, and `config.h`,
  * `sensors.h` and `cmd_parser.c` of <https://github.com/pvvx/THB2>, v1.4 and newer.

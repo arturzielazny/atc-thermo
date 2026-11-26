@@ -1,132 +1,75 @@
-# thermo: dashboard and calibration for Xiaomi LYWSD03MMC thermometers
+# thermo: calibrate Xiaomi LYWSD03MMC thermometers with your phone
 
 [![CI](https://github.com/arturzielazny/atc-thermo/actions/workflows/ci.yml/badge.svg)](https://github.com/arturzielazny/atc-thermo/actions/workflows/ci.yml)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](#license)
 
-A Linux and macOS terminal app for BLE thermometers running the
+An Android app for BLE thermometers running the
 [pvvx ATC_MiThermometer](https://github.com/pvvx/ATC_MiThermometer) firmware with
-**BTHome v2** advertising (tested on eight Xiaomi LYWSD03MMC), or the
+**BTHome v2** advertising (tested on Xiaomi LYWSD03MMC), or the
 [pvvx THB2](https://github.com/pvvx/THB2) firmware (THB1, THB2, BTH01, TH05, …). It shows
-live readings and fills gaps from each device's log, even though the device clocks are
-wrong. It also syncs and trims those clocks, renames devices and changes their settings
-in bulk. Put all the thermometers side by side and it **calibrates them against each
-other**, writing a gain and offset into each one, so Home Assistant and every other
-BTHome receiver get the corrected values too. THB2 has no clock-rate trim.
+live readings, fills gaps from each device's own log even though the device clocks are
+wrong, syncs and trims those clocks, and renames devices and changes their settings in
+bulk. Put the thermometers side by side and it **calibrates them against each other** in
+a guided session that tells you how precise the corrections already are, then writes a
+gain and offset into each one, so Home Assistant and every other BTHome receiver get the
+corrected values too.
 
 **Website and guides:** https://arturzielazny.github.io/atc-thermo/
 
-![thermo dashboard: 24 h temperature chart of eight thermometers above a table of live readings](docs/images/dashboard.webp)
-
-## Features
-
-- **Live dashboard:** a chart (temperature, humidity or signal strength) above one row
-  per device with battery, voltage, latest and 5-minute median RSSI, last seen and
-  clock offset. In Ghostty or kitty the chart is a pixel image passed through shared
-  memory (a temporary file on macOS); elsewhere (SSH, tmux, Terminal.app) it's drawn
-  in braille.
-- **History:** saved to `~/.local/share/thermo/YYYY-MM-DD.csv` and reloaded on start.
-  Gaps in the last 24 h are filled from each device's own log, with its timestamps
-  corrected for clock offset and drift.
-- **Consensus calibration:** no reference instrument needed. A robust fit pulls every
-  device onto the group average, rejects outliers, fits gains only when the data spans
-  enough range, and writes the corrections to flash. Or, with `r`, corrects them to
-  match one device you trust. See
-  [the calibration guide](https://arturzielazny.github.io/atc-thermo/calibration.html)
-  and [docs/calibration.md](docs/calibration.md).
-- **Clock sync with drift trim**: the clocks ran ~200 ppm fast here.
-- **Bulk actions:** rename, advertising interval, measurement interval, TX power, log
-  interval, log download, identify (shows the device's number on its own LCD).
-- **Signal levelling:** listens for a while, then sets each device's TX power so it
-  arrives at about −70 dBm: still reliable, with no battery spent on a louder radio.
-
-![Calibration screen: per-device corrections with bars, and the chart with the excluded time shaded](docs/images/calibration.webp)
+<p>
+<img src="site/assets/android-dashboard.webp" width="240" alt="Dashboard: a temperature chart of the thermometers with a touch crosshair, and a card per device">
+<img src="site/assets/android-calibration.webp" width="240" alt="Calibration in a second place: steps, a chart with the move marked, and which thermometers are still catching up">
+<img src="site/assets/android-levelling.webp" width="240" alt="Signal levelling: a target signal strength and the TX power change planned per device">
+</p>
 
 ## Install
 
-Linux with BlueZ, Rust ≥ 1.90, and the D-Bus headers:
-
-```sh
-sudo apt install libdbus-1-dev pkg-config          # Debian, Ubuntu, Raspberry Pi OS
-sudo dnf install dbus-devel pkgconf-pkg-config     # Fedora
-sudo pacman -S --needed dbus pkgconf               # Arch
-
-cargo install --git https://github.com/arturzielazny/atc-thermo thermo
-thermo
-```
-
-macOS: see [docs/macos.md](docs/macos.md).
-
-`thermo calibrate 6` prints a calibration proposal for the last 6 hours of saved
-history without touching any device; `thermo calibrate 6 --match Kitchen` (a name or
-MAC) corrects the others to read like that device instead of the group average.
+Android 8 or newer: download the APK from the
+[latest Android release](https://github.com/arturzielazny/atc-thermo/releases) and open it
+on the phone. There is no store listing yet. To build it yourself, see
+[android/README.md](android/README.md).
 
 ### Flash the thermometers first
 
 Stock Xiaomi firmware encrypts its adverts and has no calibration interface. Flash the
 pvvx firmware wirelessly from a browser with
-[TelinkMiFlasher](https://pvvx.github.io/ATC_MiThermometer/TelinkMiFlasher.html), then
-set the advertising type to **BTHome v2**. Chrome on Linux needs
-`chrome://flags/#enable-experimental-web-platform-features` enabled for Web Bluetooth;
-Chrome on Android works out of the box.
+[TelinkMiFlasher](https://pvvx.github.io/ATC_MiThermometer/TelinkMiFlasher.html) (Chrome on
+Android works out of the box), then set the advertising type to **BTHome v2**.
 
-## Keys
+## What it does
 
-| Key | Action |
-|---|---|
-| `↑` `↓` | select a device · `Esc` clears marks, then the selection |
-| `space` / `a` | mark one / all devices: actions apply to marked devices, or the selected one |
-| `i` | identify: show the device's `#` from the table on its screen for 30 min (`333` for #3, with a smiley) |
-| `n` | rename the selected device |
-| `s` | sync device clocks with this computer and trim the drift measured since the last sync |
-| `e` | settings: advertising interval, measurement interval, TX power, log interval |
-| `d` | download the device log for the last 24 h |
-| `l` | signal levelling: `←` `→` target 1 dB, `Enter` change TX power, `x` factory TX power (both confirmed with `y`), `r` listen anew; mark devices there to level only those |
-| `c` | calibration screen: `Tab` start/end, `←` `→` move 15 min (`Shift`: 1 h), `r` `R` match a device instead of the group average, `Enter` apply, `x` factory reset |
-| `t` `h` `r` · `w` · `p` | temperature / humidity / signal strength · chart time span · lines or points |
-| `o` | order the table by address, or by signal strength now (strongest first, numbered from 1; devices heard later go last) |
-| `q` | quit |
+- **Dashboard:** a chart of temperature, humidity or signal strength you can scrub with a
+  finger, above a card per thermometer. History is kept as one CSV per day.
+- **Keeps recording** with the app closed, also after a reboot or an update, and fills
+  gaps from each device's log, with its timestamps corrected for clock offset and drift.
+- **Consensus calibration:** no reference instrument needed. Pick the thermometers lying
+  side by side; the app shows how precise corrections written now would be and how long a
+  better level takes, guides an optional move to a second place for the gains, and writes
+  the corrections to flash. Or it corrects them to match one device you trust. See
+  [the calibration guide](https://arturzielazny.github.io/atc-thermo/calibration.html).
+- **Clock sync with drift trim:** the clocks ran about 200 ppm fast here.
+- **Bulk actions:** rename, advertising and measurement interval, TX power, log interval,
+  log download, identify (shows the device's number on its own LCD).
+- **Signal levelling:** listens for a while, then sets each device's TX power so it
+  arrives at about −70 dBm: reliable, without a louder radio than it needs.
 
-## Calibrating in short
+[android/README.md](android/README.md) has the details: the calibration session, the
+precision estimate and how it was checked on real data, files, build and code layout.
 
-1. All thermometers side by side for at least 2 h, away from heat sources.
-2. Move them all at once somewhere at least 5 °C different for at least 3 h.
-3. Press `c`, set the window to cover both steady phases but not the move, check the
-   proposal, press `Enter` and confirm with `y`.
+## The terminal version (archived)
 
-Agreement isn't absolute accuracy. For absolute humidity, add a salt test (75.3 %RH
-over saturated NaCl).
-
-## Android
-
-[`android/`](android) has the same features as an Android app, built for touch: cards,
-a chart with a crosshair, multi-select actions, a range slider for the calibration
-window, and recording in the background. Its history files are the same CSVs and can be
-moved between phone and computer. See [android/README.md](android/README.md).
+thermo started as a terminal dashboard for Linux and macOS, in Rust. It is no longer
+developed and lives on, unchanged, in [archive/tui](archive/tui). The Android app has
+since gone further, in calibration above all. If you would rather have it on a computer,
+an AI coding agent can bring the terminal version up to the app's features: the Android
+code is the reference, and both keep the same files.
 
 ## Customize it with an AI agent
 
-[AGENTS.md](AGENTS.md) describes the architecture, what's platform-specific and how to
-port it, for Claude Code, Codex and similar agents. The
+[AGENTS.md](AGENTS.md) describes the architecture and the rules for working near real
+devices, for Claude Code, Codex and similar agents. The
 [agents guide](https://arturzielazny.github.io/atc-thermo/agents.html) has ready-made
-prompts: port to macOS or Windows, run headless on a Raspberry Pi with MQTT or
-InfluxDB, Fahrenheit display, other pvvx devices.
-
-## Crates
-
-| Crate | |
-|---|---|
-| [`crates/bthome`](crates/bthome) | dependency-free BTHome v2 payload decoder |
-| [`crates/calibration`](crates/calibration) | consensus calibration of co-located sensors, dependency-free |
-| [`crates/atc`](crates/atc) | async BLE client for the pvvx firmware's command interface (config, name, clock and its rate, coefficients, LCD, log download) |
-| [`crates/thermo`](crates/thermo) | the dashboard |
-
-`scripts/` holds the original Python prototypes (`bthome_listen.py`, `atc_config.py`).
-
-## Contributing
-
-Issues and pull requests are welcome, especially reports from other pvvx-supported
-models. Please run `cargo fmt`, `cargo clippy --workspace --all-targets -- -D warnings`
-and `cargo test --workspace` first.
+prompts. The Android app itself was ported from the terminal version this way.
 
 ## License
 

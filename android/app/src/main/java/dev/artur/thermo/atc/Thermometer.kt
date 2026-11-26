@@ -1,6 +1,6 @@
 /*
  * Client for the BLE command interface of the pvvx firmware, on Android's BluetoothGatt;
- * the transport half of `crates/atc/src/thermometer.rs`.
+ * the transport half of `archive/tui/crates/atc/src/thermometer.rs`.
  *
  * Each firmware exposes one GATT characteristic (ATC `0x1F1F`, THB2 `0xFFF4`) that takes
  * commands as writes and answers with notifications whose first byte echoes the command

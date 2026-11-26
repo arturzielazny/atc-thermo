@@ -1,6 +1,6 @@
 /*
  * Background BLE scan that forwards BTHome adverts; the Android counterpart of
- * `crates/thermo/src/scanner.rs`.
+ * `archive/tui/crates/thermo/src/scanner.rs`.
  */
 package dev.artur.thermo.ble
 

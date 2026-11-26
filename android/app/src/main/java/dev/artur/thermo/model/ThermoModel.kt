@@ -1,6 +1,6 @@
 /*
  * Application state and actions, independent of how they are shown and of Android; the
- * touch counterpart of `crates/thermo/src/app.rs`. It receives adverts and job events,
+ * touch counterpart of `archive/tui/crates/thermo/src/app.rs`. It receives adverts and job events,
  * and hands device work to [jobs]. Everything runs on one thread (the main thread in the
  * app); [io] moves file writes off it.
  */

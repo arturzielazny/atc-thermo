@@ -5,79 +5,75 @@ repository. Humans are welcome too.
 
 ## What this is
 
-`thermo` is a terminal dashboard and calibration tool for BLE thermometers running the
+`thermo` is an Android app for BLE thermometers running the
 [pvvx ATC_MiThermometer](https://github.com/pvvx/ATC_MiThermometer) firmware (tested on
 Xiaomi LYWSD03MMC) or the [pvvx THB2](https://github.com/pvvx/THB2) firmware (THB1, THB2,
 BTH01, TH05, …) with BTHome v2 advertising. It listens to adverts, charts them, stores
-history as CSV, downloads device logs, syncs clocks, changes settings and writes
-calibration coefficients over GATT. Linux (BlueZ via the `bluer` crate) and macOS
-(CoreBluetooth via `btleplug`), each a backend behind one boundary.
+history as CSV, downloads device logs, syncs clocks, changes settings, levels the
+devices' signal and calibrates them against each other in a guided session, writing the
+coefficients over GATT. Kotlin and Jetpack Compose, no other dependencies.
+
+**Only the Android app is maintained.** It began as a port of a Rust terminal app for
+Linux and macOS, which was archived on 2026-11-26 in [`archive/tui`](archive/tui). Don't
+change the archive unless asked. If asked to revive it, bring it up to the Android app's
+features with the Android code as the reference; `archive/tui/AGENTS.md` describes that
+code base.
 
 ## Layout
 
-| Path | What | Platform |
-|---|---|---|
-| `crates/bthome` | BTHome v2 payload decoder. No dependencies. | portable |
-| `crates/calibration` | Consensus calibration: binning, steady-state selection, Huber fit, outliers, anchoring. No dependencies. Algorithm described in `docs/calibration.md` §4. | portable |
-| `crates/atc` | The firmwares' command protocol on characteristic `0x1F1F` (ATC) or `0xFFF4` (THB2): name, MAC, config, coefficients, clock and clock rate, LCD message, log download. `firmware.rs` names the family by its characteristic and says which features a device has; `thermometer.rs` speaks the protocol over the `Transport` trait (`transport.rs`); `clock.rs`, `config.rs`, `coefficients.rs`, `log.rs`, `screen.rs` are byte encodings and maths; `device_id.rs` is `DeviceId` (a MAC, or a CoreBluetooth UUID). No Bluetooth I/O. | portable |
-| `crates/ble` | Bluetooth backends behind one API: `Bluetooth::scan` (BTHome adverts → `ScanEvent`), `connect` (→ `Thermometer`), `release`. `bluez.rs` is the Linux backend, `macos.rs` the macOS one; each platform's quirks stay inside its backend. | `bluez.rs` uses `bluer` (Linux), `macos.rs` uses `btleplug` (macOS) |
-| `crates/thermo/src/main.rs` | Event loop: keys, scan events, job events, chart frames, 1 s tick. | portable |
-| `crates/thermo/src/app.rs` | All state and key handling, no I/O, unit-tested. | portable |
-| `crates/thermo/src/jobs.rs` | One-at-a-time device worker: connect, run an `Action`, report an `Outcome`. | portable (uses `ble`) |
-| `crates/thermo/src/devices.rs` | Per-device latest readings, history, RSSI median. | portable |
-| `crates/thermo/src/store.rs` | `~/.local/share/thermo/`: `YYYY-MM-DD.csv` readings, `calibrations.csv`, `clocks.csv`, `downloads.csv`. | XDG paths |
-| `crates/thermo/src/calibrate.rs` | Glue from history to `calibration`, and from fits to coefficients. | portable |
-| `crates/thermo/src/level.rs` | Signal levelling: per-device median RSSI and the TX power change towards a common target. | portable |
-| `crates/thermo/src/ui/` | ratatui widgets. `chart.rs` axes and layout, `plot.rs` tiny-skia rasterizer, `kitty.rs` kitty graphics protocol via `/dev/shm` (`t=s`) or, where that is missing (macOS), a temp file (`t=t`), braille fallback in `chart.rs`. | portable |
-| `android/` | Android app (Kotlin, Compose): ports of `bthome`, `calibration`, the `atc` encodings and `app.rs`, plus an Android GATT client and scanner, for ATC and THB2 firmware. See `android/README.md`. | Android |
-| `scripts/` | The original Python prototypes (`dbus-python`). Not used by the app. | Linux |
-| `site/` | GitHub Pages site, deployed by `.github/workflows/pages.yml`. Static HTML, no build step. | — |
+Code under `android/app/src/main/java/dev/artur/thermo/`:
+
+| Path | What |
+|---|---|
+| `bthome/` | BTHome v2 payload decoder. No Android dependencies. |
+| `calibration/` | Consensus calibration: binning, steady-state selection, Huber fit, outliers, anchoring, plus the precision of each correction and the hold after a move. No Android dependencies. Algorithm described in `docs/calibration.md` §4. |
+| `atc/` | The firmwares' command protocol on characteristic `0x1F1F` (ATC) or `0xFFF4` (THB2): `Firmware.kt` names the family by its characteristic and says which features a device has, `Encodings.kt` the byte layouts (config, TX power, coefficients, clock, log, LCD), `Thermometer.kt` the GATT client on `BluetoothGatt`. |
+| `ble/` | The scanner (filtered on service data `0xFCD2`) and the one-at-a-time job worker. The only code that talks to Android Bluetooth. |
+| `model/` | All state, I/O-free and unit-tested: `ThermoModel` (receives adverts, job events and a 1 s tick, enqueues jobs), `Devices`, `Store` (CSV formats), `Level` (signal levelling), `Calibrate` (glue from history to the fit), `Session` (the calibration session: precision, time to each level, second place), `Salt` (salt box reference), `Speech` (what is spoken and when). |
+| `ui/` | Compose screens. `Chart.kt` draws with per-pixel min/max reduction. |
+| `Controller.kt`, `MonitorService.kt` | Process-wide wiring, background fits, and the foreground service that records with the app closed. |
+| `Speaker.kt`, `ThermoWidget.kt`, `BootReceiver.kt` | Text-to-speech, the home-screen widget, restart after boot. |
+
+Elsewhere:
+
+| Path | What |
+|---|---|
+| `android/app/src/test/` | JVM unit tests, no phone needed. Some replay real history when environment variables point at it (`RealDataTest`, `PrecisionDataTest`, `SettlingDataTest`, `SessionReplayTest`). |
+| `android/app/src/debug/` | `DebugHooks`: simulated demo devices and sessions (`--ez demo true`, see `android/README.md`), showing over the lock screen. |
+| `docs/calibration.md` | The firmware's calibration interface, the procedure and the algorithm. |
+| `site/` | GitHub Pages site, deployed by `.github/workflows/pages.yml`. Static HTML, no build step. |
+| `archive/tui/` | The archived Rust terminal app (Linux, macOS). Not built by CI. |
 
 ## Commands
 
 ```bash
-cargo fmt
-cargo clippy --workspace --all-targets -- -D warnings   # pedantic lints are on (Cargo.toml)
-cargo test --workspace                                   # no hardware needed
-cargo run --release -p thermo                            # needs Bluetooth
-cargo run --release -p thermo -- calibrate 6             # offline: fit the last 6 h of saved history
-cargo run -p ble --example probe -- A4:C1:38:xx:xx:xx    # read-only dump of one device
-```
-
-Android (`android/`, not part of the Cargo workspace):
-
-```bash
 cd android && ./gradlew testDebugUnitTest      # JVM tests, no phone needed
+cd android && ./gradlew lintDebug
 cd android && ./gradlew installDebug           # needs a phone with USB debugging
 ```
 
-Build dependencies: Rust ≥ 1.90 (`rust-version` in `Cargo.toml`, checked in CI); on
-Linux also `pkg-config` and the libdbus headers (`libdbus-1-dev` on Debian/Ubuntu,
-`dbus-devel` on Fedora, `dbus` on Arch). macOS needs only the Command Line Tools.
+Android SDK platform 36 and JDK 17–21; if Gradle picks a newer JDK, run it with
+`JAVA_HOME` pointing at JDK 21. Releases are signed with a key outside the repository;
+see `android/README.md`.
 
 ## Rules
 
 - **Never write to real devices unless the user asks.** Calibration, settings, rename,
-  clock sync, rate trim and factory reset all change device flash. Prefer unit tests and
-  `thermo calibrate` (offline). Reading adverts is harmless.
-- **Don't touch the user's real history** when experimenting. Run with a scratch data dir:
-  `env -u XDG_DATA_HOME HOME=/tmp/thermo-test thermo` (the status line then shows `~/.local/share/thermo`
-  relative to that home). A second instance on the same machine is fine for listening,
-  but it will try to download logs from devices whose history has gaps.
-- `unsafe_code = "forbid"` workspace-wide. Keep it.
-- Keep `bthome` and `calibration` free of dependencies and I/O, so they stay portable
-  and testable. `atc` does no Bluetooth I/O either: only `ble` talks to a BLE stack.
-- Platform code lives in one `ble` backend file. The app and `jobs.rs` must not ask
-  which platform they run on; if a backend needs a decision from them, add it to the
-  `ble` API for every backend.
-- `app.rs` must stay I/O-free: it receives events and enqueues `jobs::Action`s.
-  Add tests there for new keys and outcomes (see the existing `#[cfg(test)]` module).
-- Match the surrounding style: small modules with a `//!` doc line, doc comments on
-  items, named constants with a comment saying where the value comes from, `anyhow` in
-  `thermo`, typed errors in the library crates.
-- The Android app ports the Rust logic rather than calling it. A change to the
-  calibration algorithm, a byte layout or a CSV format must be made in both, with tests
-  on both sides; `android/.../RealDataTest.kt` compares a fit with the Rust crate on real data.
+  clock sync, rate trim, TX power and factory reset all change device flash. Prefer unit
+  tests, and the debug build's demo devices on a phone. Reading adverts is harmless.
+- **Don't touch the user's real history** when experimenting: the phone's files under
+  `Android/data/dev.artur.thermo/files/thermo/`. Copy them with `adb pull` and work on the
+  copy. The demo's history is never saved.
+- `model/` must stay I/O-free: it receives events and enqueues jobs. Add tests there for
+  new behaviour. `bthome/`, `calibration/` and `atc/Encodings.kt` stay free of Android
+  APIs, so they run in JVM tests.
+- Only `ble/` and `atc/Thermometer.kt` talk to Bluetooth.
+- Match the surrounding style: a comment at the top of each file saying what it is, KDoc
+  on declarations, named constants with a comment saying where the value comes from
+  (often a test on real data), plain words in the UI and spoken texts.
+- Texts that show numbers follow the phone's language for decimals (`"%.1f".format`),
+  except spoken ones, which use a decimal point. Don't put a formatted string holding `%`
+  into another format string.
 
 ## Firmware facts worth knowing
 
@@ -85,11 +81,11 @@ Linux also `pkg-config` and the libdbus headers (`libdbus-1-dev` on Debian/Ubunt
 - THB2 firmware (pvvx/THB2): command characteristic `0xFFF4`, write without response.
   Dev id reply `[0x00, ver, device, hw…, services u32]`; `services` bit `0x20` screen,
   `0x10` history, `0x1000` clock rate (not built, so `0x24` is absent). Config is
-  `[0x55, cfg_t]`, 12 bytes with its own offsets and TX power codes (`config.rs`).
-  Coefficient reply adds mid, vid, I²C address and sensor type; AHT2x gains must stay
-  ≤ 4095. `0x26` resets coefficients only in RAM, so `atc` writes the defaults with
-  `0x25` instead. `0x10` answers `[0x10, MAC]`, without ATC's length and random bytes.
-  `0x23` has no last-set time.
+  `[0x55, cfg_t]`, 12 bytes with its own offsets and TX power codes. Coefficient reply
+  adds mid, vid, I²C address and sensor type; AHT2x gains must stay ≤ 4095. `0x26`
+  resets coefficients only in RAM, so the app writes the defaults with `0x25` instead.
+  `0x10` answers `[0x10, MAC]`, without ATC's length and random bytes. `0x23` has no
+  last-set time.
 - `0x25` coefficients: `temp = raw·k_T/65536 + z_T` in 0.01 °C, same for humidity. Write
   composes as `k' = a·k`, `z' = a·z + 100·b`. `0x26` restores factory values.
 - `0x10` alone returns the device's MAC: `[0x10, 8, MAC least significant byte first,
@@ -100,64 +96,15 @@ Linux also `pkg-config` and the libdbus headers (`libdbus-1-dev` on Debian/Ubunt
   `0x55` config, `0x22` external LCD data.
 - Device clocks drift ~200 ppm and start at 0 after flashing. Never trust a device
   timestamp without the measured offset (`clocks.csv`).
-- A connected thermometer stops advertising; BlueZ pauses discovery during connects.
-  The BlueZ backend restarts discovery after jobs finish (`ScanControl::Resume`) and
-  whenever BlueZ ends it by itself.
-- CoreBluetooth only connects peripherals its own central has scanned, forgets them on
-  disconnect until the next advert, and keeps a connect request pending until the
-  device's next connectable advert. So the macOS backend shares one central between
-  scan and connect, keeps scanning during jobs (`ScanControl::Pause` only stops and
-  cancels identifications), waits for an advert in the last 60 s before connecting, and cancels
-  a connect request it gives up on. Every btleplug call has its own timeout
-  (`disconnect` can otherwise wait forever for a callback).
+- A connected thermometer stops advertising, so jobs run one at a time and a device is
+  released as soon as its job ends.
 
-## Porting to another OS
+## Common changes
 
-The protocol (`atc`), the app and the job worker are platform-independent; a port adds
-one backend to `crates/ble` and keeps the tests passing. macOS (`macos.rs`) follows
-these steps and is the closest example for another btleplug platform.
-
-1. **Backend.** Add `crates/ble/src/<platform>.rs` behind a `cfg` in `ble/src/lib.rs`,
-   with the same API as `bluez.rs`: a `Bluetooth` handle (`Default`, `Clone`) with
-   `scan`, `connect` and `release`, and a `Link` implementing `atc::Transport` (write to
-   characteristic `0x1F1F`, disconnect). Scan for service data under UUID `0xFCD2` and
-   keep RSSI. [`btleplug`](https://crates.io/crates/btleplug) covers CoreBluetooth and
-   WinRT.
-2. **Device ids.** History, `calibrations.csv` and the Android app key devices by MAC,
-   so every backend reports MACs whenever it can. CoreBluetooth hides them and hands out
-   per-host UUIDs instead; the macOS backend maps each UUID back to a MAC by connecting
-   once and reading `Thermometer::mac` (command `0x10`, read-only), then:
-   - keeps the UUID → MAC map in a cache file of its own (e.g.
-     `$HOME/Library/Caches/thermo/macos-ids.csv`), together with the UUIDs of BTHome
-     devices that aren't pvvx thermometers, so those aren't connected to on every
-     start; losing it only costs a re-read;
-   - sends adverts from mapped UUIDs as `DeviceId::Mac`, and `connect(DeviceId::Mac)`
-     looks the UUID up in the map;
-   - holds back adverts from an unmapped UUID until its first identification attempt
-     ends; if that fails (weak signal), sends them as `DeviceId::Uuid` so the readings
-     still show, and retries now and then;
-   - identifies only while scanning is not paused, one device at a time, and shares a
-     lock with `connect` so a job never connects alongside an identification; a pause
-     cancels a running identification, so a queued job doesn't wait for it.
-
-   All of this stays inside the backend: the app and `jobs.rs` see the same ids as on
-   Linux. A device in range of the Mac but never identified keeps its `DeviceId::Uuid`.
-3. **Chart images.** `kitty.rs` passes images through `/dev/shm`, which is Linux-only.
-   On macOS use direct transmission (`t=d`, base64 chunks) or a temp file (`t=t`).
-   Windows terminals generally lack the protocol, so the braille fallback is used.
-4. **Paths.** `Store::default_dir` uses XDG under `HOME`. On Windows use
-   `%LOCALAPPDATA%` (e.g. via the `dirs` crate).
-5. **CI.** Add the platform's runner to `.github/workflows/ci.yml` (fmt, clippy,
-   test); tests must not need Bluetooth.
-6. **Real devices.** `cargo run -p ble --example probe -- <id>` only reads, and must
-   work unchanged on the new backend (on macOS it also shows the identified MAC). Don't
-   test with commands that write (see Rules).
-
-## Other common changes
-
-- **Headless exporter** (MQTT, InfluxDB, Prometheus): reuse `ble::Bluetooth::scan` +
-  `bthome` and skip the TUI; add a binary under `crates/` rather than flags on `thermo`.
-- **Another device model:** check its pvvx config layout (`atc/src/config.rs`) and LCD
-  limits (`atc/src/screen.rs`); BTHome decoding is model-independent.
-- **°F display:** formatting lives in `ui/table.rs`, `ui/chart.rs` and
-  `ui/calibration.rs`; keep storage in °C.
+- **Another device model:** check its pvvx config layout and LCD limits against
+  `atc/Encodings.kt`; BTHome decoding is model-independent.
+- **°F display:** formatting lives in `ui/`; keep storage and calibration in °C.
+- **A change to the calibration fit:** test it on real history too (`RealDataTest`,
+  `PrecisionDataTest`, `SessionReplayTest`), and keep `docs/calibration.md` in step.
+- **A change to a CSV format:** the archived terminal app reads the same files; say so
+  in the change, but don't update the archive unless asked.

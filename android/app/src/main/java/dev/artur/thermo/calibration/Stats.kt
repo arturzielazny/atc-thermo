@@ -1,6 +1,6 @@
 /*
  * Small statistics helpers on unsorted samples, and Huber M-estimation: least squares
- * that down-weights outlying points. Ports of `crates/calibration/src/{stats,robust}.rs`.
+ * that down-weights outlying points. Ports of `archive/tui/crates/calibration/src/{stats,robust}.rs`.
  */
 package dev.artur.thermo.calibration
 

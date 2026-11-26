@@ -1,6 +1,6 @@
 /*
  * Measurement history on disk: append-only CSV, one file per UTC day; a port of
- * `crates/thermo/src/store.rs` with the same file formats, so a phone's files can be
+ * `archive/tui/crates/thermo/src/store.rs` with the same file formats, so a phone's files can be
  * copied into `~/.local/share/thermo/` and back.
  */
 package dev.artur.thermo.model

@@ -1,7 +1,7 @@
 /*
  * Signal levelling: TX power changes that bring every device to about the same signal
  * strength at this phone, by default the weakest that is still reliable, so no device
- * spends more battery on its radio than it needs; a port of `crates/thermo/src/level.rs`.
+ * spends more battery on its radio than it needs; a port of `archive/tui/crates/thermo/src/level.rs`.
  */
 package dev.artur.thermo.model
 

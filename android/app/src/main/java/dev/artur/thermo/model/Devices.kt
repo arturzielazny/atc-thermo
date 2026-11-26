@@ -1,6 +1,6 @@
 /*
  * Latest readings and history of every BTHome device heard so far; a port of
- * `crates/thermo/src/devices.rs`. Times are Unix milliseconds, addresses `AA:BB:..` text.
+ * `archive/tui/crates/thermo/src/devices.rs`. Times are Unix milliseconds, addresses `AA:BB:..` text.
  */
 package dev.artur.thermo.model
 

@@ -1,6 +1,6 @@
 /*
  * The two pvvx firmware families this app talks to, and where their layouts differ; a
- * port of `crates/atc/src/firmware.rs`.
+ * port of `archive/tui/crates/atc/src/firmware.rs`.
  *
  * - [Firmware.Atc]: <https://github.com/pvvx/ATC_MiThermometer> v4.7+ (Telink TLSR825x,
  *   e.g. Xiaomi LYWSD03MMC). Command characteristic `0x1F1F`.

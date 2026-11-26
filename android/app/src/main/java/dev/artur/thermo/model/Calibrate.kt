@@ -1,6 +1,6 @@
 /*
  * Runs the consensus calibration on recorded history; a port of
- * `crates/thermo/src/calibrate.rs`.
+ * `archive/tui/crates/thermo/src/calibrate.rs`.
  */
 package dev.artur.thermo.model
 

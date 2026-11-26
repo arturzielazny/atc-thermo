@@ -1,5 +1,5 @@
 /*
- * Ports of the unit tests of `crates/bthome` and `crates/atc`, with the same fixtures
+ * Ports of the unit tests of `archive/tui/crates/bthome` and `archive/tui/crates/atc`, with the same fixtures
  * captured from LYWSD03MMC thermometers on pvvx firmware v5.9.
  */
 package dev.artur.thermo

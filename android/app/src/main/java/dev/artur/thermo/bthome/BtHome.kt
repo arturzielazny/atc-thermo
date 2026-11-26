@@ -1,5 +1,5 @@
 /*
- * Decoder for BTHome v2 advertisement payloads; a port of `crates/bthome`.
+ * Decoder for BTHome v2 advertisement payloads; a port of `archive/tui/crates/bthome`.
  *
  * BTHome sensors put their readings in the service data of the 16-bit UUID
  * [SERVICE_UUID16]. The payload is one device-information byte followed by a list of

@@ -1,5 +1,5 @@
 /*
- * Port of `crates/calibration/src/tests.rs`: simulated sessions with known sensor errors.
+ * Port of `archive/tui/crates/calibration/src/tests.rs`: simulated sessions with known sensor errors.
  */
 package dev.artur.thermo
 

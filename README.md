@@ -47,6 +47,11 @@ Android works out of the box), then set the advertising type to **BTHome v2**.
   better level takes, guides an optional move to a second place for the gains, and writes
   the corrections to flash. Or it corrects them to match one device you trust. See
   [the calibration guide](https://arturzielazny.github.io/atc-thermo/calibration.html).
+- **Humidity from salt:** calibrate in a sealed box over damp kitchen salt, which holds
+  75 %RH, and once the box has settled the humidity is corrected to the salt instead of
+  the group's average.
+- **Spoken progress** during a calibration, about four times an hour, with news at once,
+  for a phone lying next to the thermometers.
 - **Clock sync with drift trim:** the clocks ran about 200 ppm fast here.
 - **Bulk actions:** rename, advertising and measurement interval, TX power, log interval,
   log download, identify (shows the device's number on its own LCD).

@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>How to calibrate Xiaomi LYWSD03MMC thermometers · thermo</title>
-<meta name="description" content="A practical guide to calibrating Xiaomi LYWSD03MMC and other pvvx ATC_MiThermometer thermometers: offsets and gains, consensus calibration without a reference, which temperature range to use, humidity salt tests, and how the fit works.">
+<meta name="description" content="A practical guide to calibrating Xiaomi LYWSD03MMC and other pvvx ATC_MiThermometer thermometers: offsets and gains, consensus calibration without a reference, calibrating humidity in a salt box, which temperature range to use, and how the fit works.">
 <meta name="keywords" content="LYWSD03MMC calibration, calibrate Xiaomi thermometer, pvvx calibration, temperature offset, humidity offset, hygrometer salt test, SHT4x calibration, BTHome thermometer accuracy">
 <link rel="canonical" href="https://arturzielazny.github.io/atc-thermo/calibration.html">
 <meta name="theme-color" content="#14151e">
@@ -112,7 +112,7 @@ humidity    = raw × k_H + z_H</code></pre>
     <figcaption>Agreement is not the same as accuracy. If every sensor reads 0.3 °C high, comparing them can't tell. But the average of eight is usually better than any single one.</figcaption>
   </figure>
   <p><strong>Have one you trust?</strong> If one thermometer has been checked against a good instrument, pick it with <strong>Correct to…</strong> in the calibration screen's menu. The fit stays the same, so every device still helps estimate how the others differ. Only the anchor moves: the others are corrected to read like that device, and it keeps its own calibration.</p>
-  <div class="callout"><p><strong>Want absolute humidity?</strong> Put the thermometers in a sealed box with a dish of table salt wetted into a thick slush. The air above saturated NaCl settles at <strong>75.3 %RH</strong> at room temperature (magnesium chloride: about 33 %RH). It's the classic cheap hygrometer check.</p></div>
+  <div class="callout"><p><strong>Want absolute humidity?</strong> The air in a sealed box over damp kitchen salt settles at about <strong>75 %RH</strong>, whatever the thermometers say. It's the classic cheap hygrometer check, and the app can calibrate against it: see <a href="#salt">with a salt box</a> below.</p></div>
 
   <h2>The procedure</h2>
   <ol class="steps">
@@ -124,6 +124,27 @@ humidity    = raw × k_H + z_H</code></pre>
     <img src="assets/android-calibration.webp" width="540" height="1085" style="max-width:300px;display:block;margin:0 auto" loading="lazy" alt="thermo Android calibration screen in the second place: steps Together, Second place and Written, a chart of five thermometers moved from 21 °C to 8 °C with a dashed line at the move, and checks on the new place">
     <figcaption>In the second place the app checks the move was big enough and waits for each thermometer to catch up. Shown with simulated demo devices. A real run with 8 devices brought the disagreement from 0.078 to 0.012 °C and from 1.76 to 0.40 %RH.</figcaption>
   </figure>
+
+  <h2 id="salt">With a salt box: humidity that's right, not only agreed</h2>
+  <p>On their own, thermometers can only agree with each other: if all of them read 2 %RH low, comparing them can't tell. A sealed box over saturated salt solution can. The air in it settles at a humidity the salt fixes, and for kitchen salt (NaCl) it hardly depends on the temperature: <strong>75.6 %RH at 15 °C, 75.5 at 20 °C, 75.3 at 25 °C</strong> (Greenspan, 1977, within ±0.1–0.3 %RH). The app's <strong>Salt box</strong> switch turns this into a calibration.</p>
+  <h3>What you need</h3>
+  <ul>
+    <li>A box that closes airtight, such as a food container, big enough to lay the thermometers apart. The less air in it, the sooner it settles.</li>
+    <li>Kitchen salt and a little water: damp like wet sand, with crystals left undissolved, spread thin on the bottom or in a dish. If all of it dissolves, add salt.</li>
+    <li>Something to keep the thermometers off the salt: a rack, a jar lid, a folded card.</li>
+  </ul>
+  <h3>The steps</h3>
+  <ol class="steps">
+    <li><strong>Into the box.</strong><p>Lay the thermometers apart, all the same way up and off the salt, and close the lid. Put the box somewhere its temperature stays steady; a cool room is fine. Keep the phone in range, but not next to the box, above all while it charges.</p></li>
+    <li><strong>Start a calibration and switch on Salt box.</strong><p>The app follows the humidity in the box and counts the salt once it has changed less than 0.03 %RH an hour for 3 hours. Until then it shows how fast the humidity is still rising and asks you to wait before writing. That can take a day: our first box, seven thermometers at 15 °C, was still rising 0.1–0.2 %RH an hour after 21 hours. Don't open the box meanwhile, or it starts over.</p></li>
+    <li><strong>Settled: write, or take them out for the gains.</strong><p>Once the box has settled, every humidity correction is shifted so that the group reads the salt's value. Write now, or for the gains take them out of the box to a place at least 5 °C warmer and 15 %RH drier, such as a heated room, and tap <strong>I've moved them</strong>. What the salt showed is kept, and the second place adds the gains. Write when they are ready.</p></li>
+  </ol>
+  <figure>
+    <img src="assets/android-salt.webp" width="540" height="1085" style="max-width:300px;display:block;margin:0 auto" loading="lazy" alt="thermo Android calibration screen with the salt box switched on: a humidity chart of five thermometers rising from 50–58 %RH to a plateau between 71 and 79 %RH, and the salt box card saying it has settled: corrected, they read 75.3 %RH where the salt holds 75.6 %RH at 14.9 °C, so their humidity is raised by 0.33 %RH">
+    <figcaption>Settled: corrected, the group reads 75.3 %RH where the salt holds 75.6, so every humidity correction is raised by 0.33 %RH. Shown with simulated demo devices.</figcaption>
+  </figure>
+  <h3>Lay them the same way up</h3>
+  <p>In the box a small difference in temperature matters a lot: at 75 %RH a thermometer 0.1 °C warmer than the salt reads about 0.5 %RH lower, though its sensor is fine. Thrown into a box in no particular order, three of seven read 0.3–0.8 °C warmer than the others all night, and 1.4–3.2 %RH drier. Their dew points agreed within 0.3 °C, so the sensors were right and where they lay was not. The app left the one 0.8 °C off uncorrected, but the other two would have ended up in the corrections, so lay them all alike and apart.</p>
 
   <h2>Which range should you calibrate in?</h2>
   <p>For temperature, the <em>width</em> of the range matters more than where it sits. A gain fitted over 16–22 °C is practically as good at 25 °C as one fitted over 18–25 °C. The extra error a few degrees past the fitted range is around a hundredth of a degree. A wider span such as 8–22 °C (an afternoon outside) pins the gain down even better. These sensors are close to linear, so a gain fitted on a wide span holds well beyond it. The app only fits a gain when the steady data spans at least 5 °C and the gain is clearly different from 1. Otherwise it writes only the offset.</p>

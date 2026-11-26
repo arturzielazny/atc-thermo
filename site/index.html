@@ -43,7 +43,7 @@
   "@type": "FAQPage",
   "mainEntity": [
     { "@type": "Question", "name": "Can I calibrate Xiaomi LYWSD03MMC thermometers without a reference thermometer?",
-      "acceptedAnswer": { "@type": "Answer", "text": "Yes, relative to each other. Put all thermometers side by side; the thermo app fits a gain and offset per device so that every one agrees with the group's average, then writes the coefficients into each device's flash through the pvvx firmware. The average of several sensors is usually closer to the truth than any single one. For absolute humidity accuracy add a salt test (75 %RH over saturated table salt)." } },
+      "acceptedAnswer": { "@type": "Answer", "text": "Yes, relative to each other. Put all thermometers side by side; the thermo app fits a gain and offset per device so that every one agrees with the group's average, then writes the coefficients into each device's flash through the pvvx firmware. The average of several sensors is usually closer to the truth than any single one. For absolute humidity, calibrate in a sealed box over damp table salt, which holds 75 %RH: the app then corrects the humidity to the salt." } },
     { "@type": "Question", "name": "Do calibrated values show up in Home Assistant?",
       "acceptedAnswer": { "@type": "Answer", "text": "Yes. The corrections are stored in the thermometer itself, so every BTHome receiver, including Home Assistant's BTHome integration and ESPHome Bluetooth proxies, receives the corrected values. The app only listens to adverts and can run alongside Home Assistant." } },
     { "@type": "Question", "name": "Which devices are supported?",
@@ -83,7 +83,7 @@
         <strong>BTHome v2</strong> readings and fills gaps from each device's own log. Put them side by side and start a calibration:
         the app tells you how precise the corrections already are, then writes them into the thermometers. Home Assistant sees the fixed values too.</p>
       <div class="cta">
-        <a class="btn primary" href="https://github.com/arturzielazny/atc-thermo/releases/tag/android-v0.4.0">
+        <a class="btn primary" href="https://github.com/arturzielazny/atc-thermo/releases/tag/android-v0.5.0">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg>
           Download the APK
         </a>
@@ -216,7 +216,12 @@
       <div class="card">
         <svg class="icon ill" viewBox="0 0 44 44" fill="none" stroke-width="2.5" stroke-linecap="round" aria-hidden="true"><path class="mstroke" d="M35 26a13 13 0 1 1-3-13"/><path class="astroke" d="M33 5v9h-9"/></svg>
         <h3>Keeps recording</h3>
-        <p>With the app closed it records in the background behind a notification, also after a reboot or an app update, and tells you when a calibration reaches the precision you picked. Bluetooth switched off and on: scanning picks up again by itself.</p>
+        <p>With the app closed it records in the background behind a notification, also after a reboot or an app update. During a calibration it tells you when the precision you picked is reached, and says its progress aloud about four times an hour.</p>
+      </div>
+      <div class="card">
+        <svg class="icon ill" viewBox="0 0 44 44" fill="none" stroke-width="2.5" stroke-linecap="round" aria-hidden="true"><rect class="mstroke" x="5" y="10" width="34" height="28" rx="5"/><path class="mstroke" d="M3 10h38"/><g class="accent" stroke="none"><circle cx="13" cy="32" r="2"/><circle cx="19" cy="31" r="2"/><circle cx="25" cy="32" r="2"/><circle cx="31" cy="31" r="2"/><circle cx="16" cy="28" r="2"/><circle cx="28" cy="28" r="2"/></g><path d="M12 20h20" stroke="#3d86d6"/></svg>
+        <h3>Humidity from salt</h3>
+        <p>A sealed box over damp kitchen salt holds 75 %RH. Calibrate in one and, once the box has settled, the app corrects the humidity to the salt instead of to the group's average.</p>
       </div>
     </div>
   </div>
@@ -231,7 +236,7 @@
         <li><strong>Somewhere 5 °C different, optionally.</strong><p>Move them all at once: outside in the shade, a cold room, a garage. The second temperature makes the gain measurable. The app waits for each thermometer to catch up before its readings count.</p></li>
         <li><strong>Write.</strong><p>One tap writes each device's own correction to its flash. Keep them together a while to see what is left. The factory values can always be restored.</p></li>
       </ol>
-      <p><a href="calibration.html">Read the full calibration guide →</a> It covers what range to calibrate in, humidity, salt tests, and how the fit works.</p>
+      <p><a href="calibration.html">Read the full calibration guide →</a> It covers what range to calibrate in, humidity, calibrating in a salt box, and how the fit works.</p>
     </div>
     <!-- Symbolic: steady indoor plateau, a move, a cooler plateau; the shaded settling hour is ignored. -->
     <svg class="ill" viewBox="0 0 520 330" role="img" aria-labelledby="proc-t">
@@ -267,8 +272,8 @@
 <section id="install" aria-labelledby="inst">
   <div class="wrap narrow">
     <h2 id="inst">Install</h2>
-    <p>Android 8 or newer. <a href="https://github.com/arturzielazny/atc-thermo/releases/tag/android-v0.4.0">Download the APK</a> from GitHub and open it on the phone, allowing your browser or file manager to install apps when asked. There's no store listing yet. Tested on a Galaxy S21 and a Pixel 10 Pro. To build it yourself, see <a href="https://github.com/arturzielazny/atc-thermo/tree/main/android"><code>android/</code></a>.</p>
-    <p class="cta"><a class="btn primary" href="https://github.com/arturzielazny/atc-thermo/releases/tag/android-v0.4.0">
+    <p>Android 8 or newer. <a href="https://github.com/arturzielazny/atc-thermo/releases/tag/android-v0.5.0">Download the APK</a> from GitHub and open it on the phone, allowing your browser or file manager to install apps when asked. There's no store listing yet. Tested on a Galaxy S21 and a Pixel 10 Pro. To build it yourself, see <a href="https://github.com/arturzielazny/atc-thermo/tree/main/android"><code>android/</code></a>.</p>
+    <p class="cta"><a class="btn primary" href="https://github.com/arturzielazny/atc-thermo/releases/tag/android-v0.5.0">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg>
       Download the APK
     </a></p>
@@ -324,7 +329,7 @@
   <div class="wrap narrow">
     <h2 id="faq">Questions</h2>
     <details><summary>Can I calibrate LYWSD03MMC thermometers without a reference thermometer?</summary>
-      <p>Yes, relative to each other: the app makes all devices agree with their group average, which is usually closer to the truth than any single sensor. Agreement isn't absolute accuracy, though. For absolute humidity, a sealed box over saturated table salt holds 75 %RH and makes a cheap reference. The <a href="calibration.html">guide</a> explains the details.</p></details>
+      <p>Yes, relative to each other: the app makes all devices agree with their group average, which is usually closer to the truth than any single sensor. Agreement isn't absolute accuracy, though. For humidity there is a cheap reference: a sealed box over damp table salt holds 75 %RH, and calibrated in one, the app corrects the humidity to the salt. The <a href="calibration.html#salt">guide</a> explains how.</p></details>
     <details><summary>Will Home Assistant see the calibrated values?</summary>
       <p>Yes. The gain and offset are written into each thermometer, so every receiver of its BTHome adverts gets corrected values: Home Assistant's BTHome integration, ESPHome Bluetooth proxies and anything else that decodes BTHome. The app only listens, so it runs fine next to them. Names set in the app appear in Home Assistant when it scans actively.</p></details>
     <details><summary>Which thermometers work?</summary>

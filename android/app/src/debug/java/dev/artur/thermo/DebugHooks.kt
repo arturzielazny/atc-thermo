@@ -4,8 +4,10 @@
  * hours of data: 12 h side by side inside, then moved 2 h ago to a place 13 °C colder and
  * 20 %RH more humid. One of them has a slow humidity sensor, an hour behind the air like
  * one on 2026-10-29, so it is still settling. `--ez demo_session true` also starts a
- * calibration of them over all of it, moved 2 h ago; end it from its menu. Nothing of the
- * history is saved.
+ * calibration of them over all of it, moved 2 h ago; end it from its menu. With
+ * `--ez demo_salt true` instead, all 14 h are in a sealed box over salt at 15 °C, its humidity
+ * settled at the salt's 75.6 %RH by now; the session is in that box. Nothing of the history is
+ * saved.
  * Debug builds also show over the lock screen, so they can be tested over adb while
  * the phone stays locked.
  */
@@ -15,8 +17,10 @@ import dev.artur.thermo.model.Measurement
 import dev.artur.thermo.model.Sample
 import dev.artur.thermo.model.Source
 import dev.artur.thermo.model.ThermoModel
+import dev.artur.thermo.model.naclHumidity
 import java.util.Random
 import kotlin.math.PI
+import kotlin.math.exp
 import kotlin.math.sin
 
 object DebugHooks {
@@ -41,7 +45,7 @@ object DebugHooks {
         doubleArrayOf(0.995, 0.70, 0.98, 1.0, 480.0, 580.0),
     )
 
-    fun loadDemo(model: ThermoModel, session: Boolean) {
+    fun loadDemo(model: ThermoModel, session: Boolean, salt: Boolean = false) {
         val now = System.currentTimeMillis()
         val start = now - 14 * HOUR
         val moved = now - 2 * HOUR
@@ -54,8 +58,17 @@ object DebugHooks {
             while (t < now) {
                 val elapsed = (t - start).toDouble()
                 val outside = t >= moved
-                val ta = if (outside) 8.0 + 0.3 * sin(2 * PI * elapsed / (5.0 * HOUR)) else 21.0 + 0.4 * sin(2 * PI * elapsed / (3.0 * HOUR))
-                val ha = if (outside) 75.0 else 55.0 + 2.0 * sin(2 * PI * elapsed / (4.0 * HOUR))
+                val ta = when {
+                    salt -> 15.0 + 0.1 * sin(2 * PI * elapsed / (5.0 * HOUR))
+                    outside -> 8.0 + 0.3 * sin(2 * PI * elapsed / (5.0 * HOUR))
+                    else -> 21.0 + 0.4 * sin(2 * PI * elapsed / (3.0 * HOUR))
+                }
+                val ha = when {
+                    // The box closed on air of 55 %RH, creeping to the salt's with a time constant of 1.5 h: settled by now.
+                    salt -> naclHumidity(ta) - (naclHumidity(ta) - 55.0) * exp(-elapsed / (1.5 * HOUR))
+                    outside -> 75.0
+                    else -> 55.0 + 2.0 * sin(2 * PI * elapsed / (4.0 * HOUR))
+                }
                 tCase += (ta - tCase) * 10.0 / s[4]
                 hCase += (ha - hCase) * 10.0 / s[5]
                 // Lossy reception: about half the measurements arrive.
@@ -73,9 +86,9 @@ object DebugHooks {
             }
         }
         model.onTick()
-        if (session) {
+        if (session || salt) {
             model.startCalibration(SENSORS.indices.map { "DE:00:00:00:00:%02X".format(it + 1) }, start = start)
-            model.markMoved(moved)
+            if (salt) model.setCalibrationSalt(0) else model.markMoved(moved)
         }
     }
 }

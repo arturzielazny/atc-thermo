@@ -100,6 +100,12 @@ class CalibrationSession(
         internal set
     /** Whether reaching [target] was announced. */
     internal var announced = false
+    /**
+     * The place the devices are or were in a sealed container over saturated salt: 0 the
+     * first, 1 the second; `null` if neither. Its humidity is then corrected to the salt's.
+     */
+    var salt: Int? = null
+        internal set
 
     var result: Result<CalibrationRun>? = null
         internal set
@@ -130,6 +136,7 @@ class CalibrationSession(
         appendLine("target=${target.name}")
         appendLine("written=${written ?: ""}")
         appendLine("announced=$announced")
+        appendLine("salt=${salt ?: ""}")
     }
 
     companion object {
@@ -152,6 +159,7 @@ class CalibrationSession(
                 target = Level.entries.firstOrNull { it.name == values["target"] } ?: Level.Fine
                 written = values["written"]?.toLongOrNull()
                 announced = values["announced"] == "true"
+                salt = values["salt"]?.toIntOrNull()?.takeIf { it in 0..1 }
             }
         }
     }
@@ -317,13 +325,28 @@ fun gainStatus(run: CalibrationRun): GainStatus {
     return GainStatus(fitted.size, written.size, uncertainty, humidity, span)
 }
 
-/** Whether [session]'s target is reached: precision, and in a second place also the gains. */
+/**
+ * Whether [session]'s target is reached: precision, in a second place also the gains, and in
+ * a salt container also the salt settled.
+ */
 internal fun targetReached(session: CalibrationSession, run: CalibrationRun): Boolean {
     if (eta(run, session.target) != Eta.Reached) return false
+    if (saltPending(session, run)) return false
     if (session.stage != Stage.SecondPlace) return true
     val second = run.places.getOrNull(1) ?: return false
     return second.steady >= SECOND_PLACE_STEADY_MS && gainStatus(run).fitted > 0
 }
+
+/** The index of the place the devices are in: 0 or 1; `null` once written. */
+fun currentPlace(session: CalibrationSession): Int? = when (session.stage) {
+    Stage.FirstPlace -> 0
+    Stage.SecondPlace -> 1
+    Stage.Checking -> null
+}
+
+/** Whether the devices are in the salt container and it hasn't settled yet: writing now would miss it. */
+fun saltPending(session: CalibrationSession, run: CalibrationRun): Boolean =
+    session.salt != null && session.salt == currentPlace(session) && run.salt?.shift == null
 
 /**
  * The largest correction any device still needs in the middle of the range fitted, °C and

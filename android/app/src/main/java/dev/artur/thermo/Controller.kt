@@ -202,7 +202,7 @@ class Controller(private val app: Application) {
         val (names, readings) = calibrationReadings(model.devices, input.devices, input.since, input.until)
         scope.launch {
             val result = withContext(Dispatchers.Default) {
-                runCatching { fitCalibration(names, readings, input.since, input.until, input.reference, input.moved) }
+                runCatching { fitCalibration(names, readings, input.since, input.until, input.reference, input.moved, input.salt) }
             }
             model.onCalibrationResult(input, result)
         }

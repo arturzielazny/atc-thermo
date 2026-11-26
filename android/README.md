@@ -67,6 +67,27 @@ button at the top turns it off.
 The words and the timing are in `model/Speech.kt` and `ThermoModel.takeSpeech`, tested by
 `SpeechTest`.
 
+**Salt box.** Without a reference, the corrections make the thermometers agree with their
+average, which is only as right as the average. In a sealed box over damp kitchen salt
+(NaCl, with crystals left undissolved) the air settles at a humidity the salt fixes: 75.6
+%RH at 15 °C, 75.3 at 25 °C (Greenspan 1977, ±0.1–0.3). The **Salt box** switch of a
+place says they are in such a box there. The app then:
+- waits until the group's humidity has drifted less than 0.03 %RH an hour over 3 hours. A
+  box of 7 thermometers at 15 °C still rose 0.1 %RH an hour after 21 hours and read 74.2
+  %RH, and a curve fitted to the rise didn't say where it would end (it moved from 71 to
+  75 %RH as hours came in), so the app measures rather than guesses;
+- then shifts every humidity correction by the same amount, so the group, as corrected,
+  reads the salt's value at its temperature. The consensus fit still decides how the
+  thermometers differ from each other, and the humidity gains if a second place differs
+  by 15 %RH;
+- keeps what the salt showed after the box is opened for the second place, from the last
+  settled stretch before that, so noting the move late doesn't matter;
+- says to wait before writing, and holds back the notification, while the box in their
+  current place hasn't settled.
+
+The thermometers should lie the same way up, apart and off the salt: at 75 %RH one 0.1 °C
+warmer than the salt reads about 0.5 %RH lower. `model/Salt.kt`, tested by `SaltTest`.
+
 The fit is the terminal app's (`crates/calibration`), with 20 minutes of steady data and a
 20-minute steadiness window instead of 60 and 30, so a first result comes after about
 40 minutes and the precision estimate, rather than a fixed minimum, says if it is enough.
@@ -171,6 +192,7 @@ shown it, with `THERMO_REPLAY` (see the files).
 
 Debug builds only: `adb shell am start -n dev.artur.thermo/.MainActivity --ez demo true`
 adds five simulated devices with 14 h of history, the last 2 h after a move (nothing is
-saved; `--ez demo_session true` also starts a calibration of them), and `--es screen
+saved; `--ez demo_session true` also starts a calibration of them; `--ez demo_salt true`
+instead keeps them all 14 h in a salt box, settled, with a calibration there), and `--es screen
 calibration|leveling|data|<address>` opens a screen. Debug builds also show over the lock
 screen, so they can be driven over adb on a locked phone.

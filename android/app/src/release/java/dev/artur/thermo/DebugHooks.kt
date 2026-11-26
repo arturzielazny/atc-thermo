@@ -8,5 +8,5 @@ import dev.artur.thermo.model.ThermoModel
 object DebugHooks {
     fun onCreate(activity: android.app.Activity) = Unit
 
-    fun loadDemo(model: ThermoModel, session: Boolean) = Unit
+    fun loadDemo(model: ThermoModel, session: Boolean, salt: Boolean = false) = Unit
 }

@@ -143,7 +143,9 @@ class MainActivity : ComponentActivity() {
 
     private fun handle(intent: Intent?) {
         val model = controller.model
-        if (intent?.getBooleanExtra("demo", false) == true) DebugHooks.loadDemo(model, intent.getBooleanExtra("demo_session", false))
+        if (intent?.getBooleanExtra("demo", false) == true) {
+            DebugHooks.loadDemo(model, intent.getBooleanExtra("demo_session", false), intent.getBooleanExtra("demo_salt", false))
+        }
         val target = intent?.getStringExtra("screen") ?: return
         open(when (target) {
             "calibration" -> Screen.Calibration

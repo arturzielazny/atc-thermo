@@ -86,7 +86,7 @@ data class DeviceState(
 )
 
 /** Readings handed to a background fit; see [ThermoModel.calibrationInput]. */
-class CalibrationInput(val devices: List<String>, val since: Long, val until: Long, val reference: String?, val moved: Long?)
+class CalibrationInput(val devices: List<String>, val since: Long, val until: Long, val reference: String?, val moved: Long?, val salt: Int? = null)
 
 class ThermoModel(
     /** Runs a job on a device; `false` if the worker is gone. `null` disables device commands. */
@@ -560,6 +560,20 @@ class ThermoModel(
         calibrationChanged()
     }
 
+    /**
+     * The devices are ([place] 0 the first, 1 the second) or were in a sealed container over
+     * saturated salt, or not ([place] `null`): their humidity is then corrected to the salt's.
+     */
+    fun setCalibrationSalt(place: Int?) {
+        val session = calibration ?: return
+        session.salt = place?.takeIf { it in 0..1 }
+        // Reached without waiting for the salt doesn't count any more, and the other way round.
+        session.announced = session.result?.getOrNull()?.let { targetReached(session, it) } ?: false
+        spoken?.saltSaid = false
+        session.computedAt = null
+        calibrationChanged()
+    }
+
     /** Aims for [level]; one already reached isn't announced again. */
     fun setCalibrationTarget(level: Level) {
         val session = calibration ?: return
@@ -579,19 +593,22 @@ class ThermoModel(
         session.fitted = session.devices
         session.start = windowStart(session.start, session.devices, lastCalibrations)
         if (session.reference !in session.devices) session.reference = null
-        return CalibrationInput(session.devices, session.start, now, session.reference, session.moved)
+        return CalibrationInput(session.devices, session.start, now, session.reference, session.moved, session.fittedSalt())
     }
+
+    /** The salt place to fit with: none once written, as the check after writing is relative. */
+    private fun CalibrationSession.fittedSalt(): Int? = salt.takeIf { stage != Stage.Checking }
 
     /** Fits [input] here; the app fits [calibrationReadings] off the main thread instead. */
     fun fit(input: CalibrationInput): Result<CalibrationRun> =
-        runCatching { runCalibration(devices, input.devices, input.since, input.until, input.reference, input.moved) }
+        runCatching { runCalibration(devices, input.devices, input.since, input.until, input.reference, input.moved, input.salt) }
 
     fun onCalibrationResult(input: CalibrationInput, result: Result<CalibrationRun>) {
         val session = calibration ?: return
         session.computing = false
         // A fit of devices or settings changed since is stale.
         if (session.devices != input.devices || session.start != input.since || session.reference != input.reference ||
-            session.moved != input.moved
+            session.moved != input.moved || session.fittedSalt() != input.salt
         ) return
         session.result = result
         session.computedAt = clock()
@@ -610,11 +627,15 @@ class ThermoModel(
     private fun noteSpeech(spoken: Spoken, session: CalibrationSession, run: CalibrationRun, reached: Boolean) {
         val first = spoken.fitted == null || (session.stage == Stage.Checking && spoken.fitted != Stage.Checking)
         spoken.fitted = session.stage
+        val salt = run.salt?.takeIf { it.shift != null && session.salt == currentPlace(session) }
         if (reached) {
             spoken.news += sayReached(session, run)
         } else if (first) {
             sayProgress(session, ::deviceNumber)?.let { spoken.news += if (session.stage == Stage.Checking) it else "First estimate. $it" }
+        } else if (salt != null && !spoken.saltSaid) {
+            spoken.news += saySaltSettled(salt)
         }
+        if (salt != null) spoken.saltSaid = true
         if (session.stage == Stage.SecondPlace) {
             if (heldBack(run, true) != null || heldBack(run, false) != null) {
                 spoken.settling = true
@@ -695,19 +716,19 @@ class ThermoModel(
             return head + (firstEstimateIn(error)?.let { " · first estimate in ${formatEta(it)}" } ?: " · ${error.message}")
         }
         val now = precision(run).temperature?.let { " · ±%.3f °C now".format(it) } ?: ""
+        val salt = if (saltPending(session, run)) " · salt settling" + (run.salt?.rate?.let { ", %+.${rateDecimals(it)}f %%RH/h".format(it) } ?: "") else ""
         if (session.stage == Stage.SecondPlace) {
             val steady = run.places.getOrNull(1)?.steady ?: 0
             val gain = gainStatus(run).uncertainty?.let { "gain ±%.2f %%".format(it * 100) } ?: "no gain yet"
-            return "$head · second place · ${formatAge(steady)} steady there · $gain"
+            return "$head · second place · ${formatAge(steady)} steady there · $gain$salt"
         }
-        val place = ""
-        val target = when (val eta = eta(run, session.target)) {
+        val target = if (salt.isNotEmpty()) salt else when (val eta = eta(run, session.target)) {
             Eta.Reached -> " · ${session.target.label} reached"
             is Eta.In -> " · ${session.target.label} in ${formatEta(eta.ms)}"
             Eta.Later -> " · ${session.target.label} in over ${formatEta(ETA_SURE_MS)}, if at all"
             Eta.Unlikely, null -> ""
         }
-        return head + place + now + target
+        return head + now + target
     }
 
     /** Devices of the session that seem out of range or not next to the others. */

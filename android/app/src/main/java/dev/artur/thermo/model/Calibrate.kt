@@ -46,12 +46,19 @@ data class CalibrationRun(
     val reference: String? = null,
     /** Conditions in each place of the session: one, or two once the devices were moved. */
     val places: List<Place> = emptyList(),
+    /** The salt container the devices were in, if any; once settled, [report]'s humidity is shifted to it. */
+    val salt: Salt? = null,
 ) {
     fun isReference(index: Int): Boolean = reference != null && devices.getOrNull(index)?.first == reference
 
-    /** The corrections to write to the device at [index]: none for the reference, which defines what is correct. */
-    fun corrections(index: Int): Pair<Correction?, Correction?> =
-        if (isReference(index)) null to null else report.sensors.getOrNull(index)?.let(::corrections) ?: (null to null)
+    /**
+     * The corrections to write to the device at [index]: none for the reference, which defines
+     * what is correct, except its humidity once a settled salt container defines that instead.
+     */
+    fun corrections(index: Int): Pair<Correction?, Correction?> {
+        val all = report.sensors.getOrNull(index)?.let(::corrections) ?: return null to null
+        return if (!isReference(index)) all else null to all.second.takeIf { salt?.shift != null }
+    }
 }
 
 /**
@@ -63,7 +70,8 @@ fun windowStart(requested: Long, devices: List<String>, lastCalibrations: Map<St
 
 /**
  * Fits corrections for [addresses] using their live samples in `since..until`, so they
- * agree with their average or, with a [reference] among them, with that device.
+ * agree with their average or, with a [reference] among them, with that device; with the
+ * place in a [salt] container (0 the first, 1 the second), their humidity with the salt.
  *
  * @throws dev.artur.thermo.calibration.CalibrationError with too few devices or too
  * little steady data, also from the reference.
@@ -75,9 +83,10 @@ fun runCalibration(
     until: Long,
     reference: String? = null,
     moved: Long? = null,
+    salt: Int? = null,
 ): CalibrationRun {
     val (names, readings) = calibrationReadings(devices, addresses, since, until)
-    return fitCalibration(names, readings, since, until, reference, moved)
+    return fitCalibration(names, readings, since, until, reference, moved, salt)
 }
 
 /** Fits [readings] from [calibrationReadings]; safe on any thread. */
@@ -88,12 +97,16 @@ fun fitCalibration(
     until: Long,
     reference: String?,
     moved: Long? = null,
+    salt: Int? = null,
 ): CalibrationRun {
     // A reference that isn't among the devices (never heard) leaves the average.
     val index = names.indexOfFirst { it.first == reference }.takeIf { it >= 0 }
     val report = calibrate(readings, SESSION_OPTIONS.copy(reference = index))
     val places = places(readings, report.temperature.steadyBins, SESSION_OPTIONS.bin, since, until, moved)
-    return CalibrationRun(names, since, until, report, reference.takeIf { index != null }, places)
+    // The place in the salt container, of those there are: the second only after a move.
+    val container = salt?.let { p -> places.getOrNull(p)?.takeIf { p == 0 || moved != null }?.let { saltStatus(readings, report, it, p) } }
+    val shifted = container?.shift?.let { shiftHumidity(report, it) } ?: report
+    return CalibrationRun(names, since, until, shifted, reference.takeIf { index != null }, places, container)
 }
 
 /**

@@ -51,6 +51,7 @@ import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -78,6 +79,9 @@ import dev.artur.thermo.model.GAIN_SPAN_H
 import dev.artur.thermo.model.GAIN_SPAN_T
 import dev.artur.thermo.model.Level
 import dev.artur.thermo.model.Metric
+import dev.artur.thermo.model.SALT_PER_TENTH_DEGREE
+import dev.artur.thermo.model.SALT_RATE_MS
+import dev.artur.thermo.model.SALT_SETTLED_RATE
 import dev.artur.thermo.model.SECOND_PLACE_STEADY_MS
 import dev.artur.thermo.model.SESSION_OPTIONS
 import dev.artur.thermo.model.Stage
@@ -92,9 +96,12 @@ import dev.artur.thermo.model.formatLag
 import dev.artur.thermo.model.gainStatus
 import dev.artur.thermo.model.heldBack
 import dev.artur.thermo.model.leftToCorrect
+import dev.artur.thermo.model.naclUncertainty
 import dev.artur.thermo.model.netCorrection
 import dev.artur.thermo.model.notes
 import dev.artur.thermo.model.precision
+import dev.artur.thermo.model.rateDecimals
+import dev.artur.thermo.model.saltPending
 import dev.artur.thermo.model.secondPlaceAdvice
 import kotlin.math.abs
 import kotlin.math.max
@@ -193,7 +200,10 @@ fun CalibrationScreen(
             ChartCard(model, session, run, revision, now, metric) { metric = it }
             when (session.stage) {
                 Stage.FirstPlace -> FirstPlace(model, session, run, now, onWrite = { confirm = "apply" }, onMoved = { model.markMoved(); onChanged() }, onChanged = onChanged)
-                Stage.SecondPlace -> SecondPlace(model, session, run, now, writable = model.calibrationWrites().isNotEmpty(), onWrite = { confirm = "apply" }, onBackToFirst = { model.unmarkMoved(); onChanged() })
+                Stage.SecondPlace -> SecondPlace(
+                    model, session, run, now, writable = model.calibrationWrites().isNotEmpty(), onWrite = { confirm = "apply" },
+                    onBackToFirst = { model.unmarkMoved(); onChanged() }, onChanged = onChanged,
+                )
                 Stage.Checking -> Checking(model, session, run, now, onFinish = { model.endCalibration(); onBack() })
             }
             if (run != null) CorrectionsCard(model, run, checking = session.stage == Stage.Checking)
@@ -355,7 +365,9 @@ private fun FirstPlace(
     onMoved: () -> Unit,
     onChanged: () -> Unit,
 ) {
-    if (!fittedOrProgress(session, now) || run == null) return
+    val fitted = fittedOrProgress(session, now)
+    SaltCard(model, session, run, place = 0, onChanged)
+    if (!fitted || run == null) return
     SettlingNote(model, run, now)
     PrecisionCard(run, session)
     LevelsCard(model, session, run, onChanged)
@@ -363,7 +375,11 @@ private fun FirstPlace(
     val p = precision(run)
     Section("Next") {
         val chosen = p.temperature?.let { "±%.3f °C".format(it) } ?: "this precision"
-        Text("If $chosen is enough for you, write the corrections now.", style = MaterialTheme.typography.bodyLarge)
+        Text(
+            if (saltPending(session, run)) "Wait for the salt before writing: written now, their humidity would only be corrected to their average."
+            else "If $chosen is enough for you, write the corrections now.",
+            style = MaterialTheme.typography.bodyLarge,
+        )
         val target = session.target
         when (val wait = eta(run, target)) {
             is Eta.In -> Text(
@@ -403,6 +419,10 @@ private fun FirstPlace(
                     style = MaterialTheme.typography.bodyMedium,
                 )
             }
+            if (session.salt == 0) {
+                Spacer(Modifier.height(6.dp))
+                Text("Take them out of the box for it; what the salt showed is kept.", style = MaterialTheme.typography.bodyMedium)
+            }
             Spacer(Modifier.height(6.dp))
             Text(
                 "Keep the phone in range, e.g. a balcony or a cold room. Readings there count once the thermometers have caught up, " +
@@ -432,7 +452,8 @@ private fun PrecisionCard(run: CalibrationRun, session: CalibrationSession) {
                 (run.report.temperature.range.first + run.report.temperature.range.second) / 2,
                 (run.report.humidity.range.first + run.report.humidity.range.second) / 2,
             ) + "from $steadyMin min of steady readings." +
-                if (gains.uncertainty == null && session.stage == Stage.FirstPlace) " Gains need a second place." else "",
+                (if (gains.uncertainty == null && session.stage == Stage.FirstPlace) " Gains need a second place." else "") +
+                (run.salt?.takeIf { it.shift != null }?.temperature?.let { " Their humidity is set by the salt, itself within ±%.1f %%RH.".format(naclUncertainty(it)) } ?: ""),
             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(top = 6.dp),
         )
@@ -495,6 +516,7 @@ private fun SecondPlace(
     writable: Boolean,
     onWrite: () -> Unit,
     onBackToFirst: () -> Unit,
+    onChanged: () -> Unit,
 ) {
     val moved = session.moved ?: return
     val first = run?.places?.getOrNull(0)
@@ -539,7 +561,13 @@ private fun SecondPlace(
                 style = MaterialTheme.typography.bodyMedium,
             )
         }
+        if (session.salt == 0) {
+            val shift = run?.salt?.shift
+            if (shift != null) Check(true, "The salt box settled before the move: humidity %s by %.2f %%RH.".format(if (shift >= 0) "raised" else "lowered", abs(shift)))
+            else if (run != null) Check(false, "The salt box hadn't settled before they were taken out: their humidity is corrected to their average.")
+        }
     }
+    if (session.salt != 0) SaltCard(model, session, run, place = 1, onChanged)
     if (!fittedOrProgress(session, now) || run == null) {
         OutlinedButton(onClick = onBackToFirst) { Text("Not moved after all") }
         return
@@ -548,6 +576,58 @@ private fun SecondPlace(
     Column {
         Button(onClick = onWrite, enabled = writable) { Text("Write corrections") }
         OutlinedButton(onClick = onBackToFirst) { Text("Not moved after all") }
+    }
+}
+
+/**
+ * Whether the devices sit in a sealed box over damp salt in [place] (0 the first, 1 the
+ * second), and how far its humidity has settled.
+ */
+@Composable
+private fun SaltCard(model: ThermoModel, session: CalibrationSession, run: CalibrationRun?, place: Int, onChanged: () -> Unit) {
+    val on = session.salt == place
+    Section("Salt box") {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("In a sealed box over damp salt", style = MaterialTheme.typography.bodyLarge)
+                Text(
+                    "Kitchen salt (NaCl) holds the air in it at about 75 %RH: their humidity is then corrected to that, not to their average.",
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(checked = on, onCheckedChange = { model.setCalibrationSalt(if (it) place else null); onChanged() }, modifier = Modifier.padding(start = 8.dp))
+        }
+        if (on) {
+            val salt = run?.salt
+            val holds = salt?.expected?.let { e -> salt.temperature?.let { "the salt holds %.1f %%RH at %.1f °C".format(e, it) } }
+            val read = salt?.read?.let { "%.1f %%RH".format(it) }
+            when {
+                salt == null -> {}
+                // Formatted piece by piece: the pieces hold "%RH".
+                salt.shift != null -> Check(
+                    true,
+                    "Settled: corrected, they read $read where $holds, so their humidity is " +
+                        "%s by %.2f %%RH.".format(if (salt.shift!! >= 0) "raised" else "lowered", abs(salt.shift!!)),
+                )
+                salt.rate != null -> Check(
+                    false,
+                    "Still settling: their humidity %s %.${rateDecimals(salt.rate)}f %%RH an hour, ".format(if (salt.rate >= 0) "rises" else "falls", abs(salt.rate)) +
+                        "at $read where $holds. " +
+                        "It counts once that is under %.2f an hour; a sealed box can take a day.".format(SALT_SETTLED_RATE),
+                )
+                else -> Check(
+                    false,
+                    "It counts once their humidity has changed less than %.2f %%RH an hour for ".format(SALT_SETTLED_RATE) +
+                        formatDuration(SALT_RATE_MS) + (holds?.let { "; $it" } ?: "") + ".",
+                )
+            }
+            Text(
+                "Damp salt with crystals left, spread thin; the lid shut and the temperature steady. Lay them the same way up, apart and off the salt: " +
+                    "one %.1f °C warmer than the others reads about %.1f %%RH lower here.".format(0.1, SALT_PER_TENTH_DEGREE),
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 6.dp),
+            )
+        }
     }
 }
 

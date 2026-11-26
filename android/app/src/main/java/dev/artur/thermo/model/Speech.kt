@@ -37,6 +37,8 @@ internal class Spoken(
     var caughtUpSaid = false
     /** Corrections sent; how it went is said once none is pending. */
     var writes = 0
+    /** Whether the salt container's settling was said. */
+    var saltSaid = false
 }
 
 internal fun sayStarted(devices: Int): String =
@@ -62,6 +64,7 @@ private fun sayFirstPlace(session: CalibrationSession, run: CalibrationRun): Str
     val best = Level.entries.lastOrNull { eta(run, it) == Eta.Reached }
     val now = if (best != null) "${best.label} so far: $precision." else "So far $precision."
     val target = session.target.label
+    if (saltPending(session, run)) return now + " " + saySaltSettling(run.salt)
     val next = when (val eta = eta(run, session.target)) {
         Eta.Reached -> " Ready to write, or to move them to a second place for the gains."
         is Eta.In -> " $target in about ${sayDuration(eta.ms)}."
@@ -82,6 +85,7 @@ private fun saySecondPlace(session: CalibrationSession, run: CalibrationRun, num
         if (held.isNotEmpty()) parts += "${if (temperature) "Temperature" else "Humidity"} of ${sayNumbers(held)} still settling."
     }
     val gain = gainStatus(run).uncertainty
+    if (saltPending(session, run)) parts += saySaltSettling(run.salt)
     parts += when {
         targetReached(session, run) -> "Gains ready" + (gain?.let { ", plus or minus ${sayPercent(it * 100)}" } ?: "") + ": write the corrections."
         gain != null -> "Gains so far plus or minus ${sayPercent(gain * 100)}."
@@ -100,14 +104,28 @@ private fun sayChecking(session: CalibrationSession, run: CalibrationRun, number
 }
 
 /** When the session's target was reached: the moment to write, or to move them for the gains. */
-internal fun sayReached(session: CalibrationSession, run: CalibrationRun): String =
-    if (session.stage == Stage.SecondPlace) {
+internal fun sayReached(session: CalibrationSession, run: CalibrationRun): String {
+    val salt = run.salt?.takeIf { session.salt == currentPlace(session) && it.shift != null }?.let { " " + saySaltSettled(it) } ?: ""
+    return if (session.stage == Stage.SecondPlace) {
         val gain = gainStatus(run).uncertainty?.let { ", plus or minus ${sayPercent(it * 100)}" } ?: ""
-        "Gains ready$gain. Write the corrections."
+        "Gains ready$gain.$salt Write the corrections."
     } else {
         val precision = sayPrecision(precision(run))?.let { ": $it" } ?: ""
-        "${session.target.label} reached$precision. Write the corrections, or move the thermometers to a second place for the gains."
+        "${session.target.label} reached$precision.$salt Write the corrections, or move the thermometers to a second place for the gains."
     }
+}
+
+/** The salt container still settling: how fast its humidity drifts. */
+internal fun saySaltSettling(salt: Salt?): String {
+    val rate = salt?.rate ?: return "Waiting for the salt: it counts after ${sayDuration(SALT_RATE_MS)} of readings in the box."
+    return "Waiting for the salt: humidity still %s %.${rateDecimals(rate)}f percent an hour.".fmt(if (rate >= 0) "rising" else "falling", abs(rate))
+}
+
+/** The salt container settled: what that does to the humidity. */
+internal fun saySaltSettled(salt: Salt): String {
+    val shift = salt.shift ?: return ""
+    return "The salt has settled: humidity corrections %s by %.1f percent.".fmt(if (shift >= 0) "raised" else "lowered", abs(shift))
+}
 
 /** After the writes: how many went through. */
 internal fun sayWritten(writes: Int, failed: Int, failedNumbers: List<Int>): String {
